@@ -27,7 +27,7 @@ RUN cargo build --release -p dnscraft --features web-ui --locked
 FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3 AS runtime
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates curl iproute2 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -r -u 10001 -s /usr/sbin/nologin dnscraft \
     && mkdir -p /var/lib/dnscraft /etc/dnscraft \
@@ -35,6 +35,11 @@ RUN apt-get update \
 
 COPY --from=builder /build/target/release/dnscraft /usr/local/bin/dnscraft
 COPY deploy/dnscraft.docker.toml /etc/dnscraft/config.toml
+
+# glibc keeps the filter-reload peak as resident heap otherwise (~3x RSS).
+ENV MALLOC_ARENA_MAX=2 \
+    MALLOC_TRIM_THRESHOLD_=131072 \
+    MALLOC_MMAP_THRESHOLD_=131072
 
 USER dnscraft
 

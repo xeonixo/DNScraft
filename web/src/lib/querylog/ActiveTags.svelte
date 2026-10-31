@@ -38,6 +38,8 @@
 				return m.querylog_device_id();
 			case 'node_id':
 				return m.querylog_node_id();
+			case 'subnet':
+				return m.querylog_subnet();
 			case 'view_id':
 				return m.querylog_view_id();
 			case 'profile_id':
@@ -81,6 +83,8 @@
 				return draft.device_id;
 			case 'node_id':
 				return draft.node_id;
+			case 'subnet':
+				return draft.subnet;
 			case 'view_id':
 				return draft.view_id;
 			case 'profile_id':

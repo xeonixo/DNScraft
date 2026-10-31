@@ -227,6 +227,7 @@
 	"querylog_device_id": "Device (ID)",
 	"querylog_client_name": "Client name contains",
 	"querylog_node_id": "Node ID",
+	"querylog_subnet": "Subnet (CIDR)",
 	"querylog_protocol": "Protocol",
 	"querylog_status": "Status",
 	"querylog_only_blocked": "Only blocked",

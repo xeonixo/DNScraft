@@ -263,6 +263,22 @@
 				{@render fieldError('node_id')}
 			</div>
 			<div class="field-wrap">
+				<label class="field-label" for={inputId('subnet')}>{m.querylog_subnet()}</label>
+				<input
+					id={inputId('subnet')}
+					class="field mono-field"
+					type="text"
+					maxlength="64"
+					placeholder="192.168.1.0/24"
+					autocomplete="off"
+					spellcheck="false"
+					bind:value={draft.subnet}
+					aria-invalid={errorOf('subnet') !== null}
+					aria-describedby={errorOf('subnet') !== null ? errorId('subnet') : undefined}
+				/>
+				{@render fieldError('subnet')}
+			</div>
+			<div class="field-wrap">
 				<label class="field-label" for={inputId('view_id')}>{m.querylog_view_id()}</label>
 				<input
 					id={inputId('view_id')}

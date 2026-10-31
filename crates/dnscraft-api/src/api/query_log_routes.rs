@@ -33,6 +33,7 @@ pub(crate) struct RawQueryLogParams {
     from: Option<String>,
     to: Option<String>,
     node_id: Option<String>,
+    subnet: Option<String>,
     client_id: Option<String>,
     client_name_substr: Option<String>,
     device_id: Option<String>,
@@ -74,6 +75,7 @@ impl RawQueryLogParams {
             from_us,
             to_us,
             node_id: non_empty(self.node_id),
+            subnet: subnet(self.subnet)?,
             client_id: non_empty(self.client_id),
             client_name_substr: non_empty(self.client_name_substr),
             device_id: non_empty(self.device_id),
@@ -109,6 +111,18 @@ fn enum_value(
         Some(value) if !allowed.contains(&value.as_str()) => {
             Err(ControlApiError::QueryLogInvalid {
                 reason: format!("`{field}` must be one of {}", allowed.join(", ")),
+            })
+        }
+        other => Ok(other),
+    }
+}
+
+/// An optional CIDR (or bare address) filter; empty means no filter.
+fn subnet(value: Option<String>) -> Result<Option<String>, ControlApiError> {
+    match non_empty(value) {
+        Some(value) if crate::query_log::parse_cidr(&value).is_none() => {
+            Err(ControlApiError::QueryLogInvalid {
+                reason: "`subnet` must be an IP address or CIDR such as 192.168.1.0/24".to_owned(),
             })
         }
         other => Ok(other),

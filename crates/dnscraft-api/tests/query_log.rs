@@ -190,6 +190,18 @@ async fn query_log_filters_order_and_pagination_over_ten_thousand_rows() {
     assert_eq!(page.next_offset, Some(50));
     assert_eq!(page.records[0]["answer_size"], 100 + 9_999);
 
+    // Subnet filter: every sample client sits in 192.0.2.0/24.
+    for (subnet, expect_rows) in [("192.0.2.0/24", true), ("198.51.100.0/24", false)] {
+        let page = log
+            .list(&QueryLogFilter {
+                subnet: Some(subnet.to_owned()),
+                ..default_filter()
+            })
+            .await
+            .unwrap();
+        assert_eq!(!page.records.is_empty(), expect_rows, "{subnet}");
+    }
+
     // Two adjacent pages yield disjoint ids.
     let first = log
         .list(&QueryLogFilter {

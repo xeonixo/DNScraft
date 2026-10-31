@@ -129,6 +129,8 @@ pub struct QueryLogFilter {
     pub to_us: Option<i64>,
     /// Exact originating node id.
     pub node_id: Option<String>,
+    /// Client subnet in CIDR notation (a bare address means one host).
+    pub subnet: Option<String>,
     /// Exact client id (DoH/DoT client id or directory id).
     pub client_id: Option<String>,
     /// Case-insensitive substring of the client display name.
@@ -1001,6 +1003,44 @@ fn read_counter(conn: &Connection, key: &str, default: i64) -> Result<i64, Contr
     }
 }
 
+/// Parses `addr/prefix` (or a bare address as a host route) into its parts.
+pub fn parse_cidr(raw: &str) -> Option<(std::net::IpAddr, u8)> {
+    let (addr, prefix) = match raw.split_once('/') {
+        Some((addr, prefix)) => (addr, Some(prefix.parse::<u8>().ok()?)),
+        None => (raw, None),
+    };
+    let addr: std::net::IpAddr = addr.parse().ok()?;
+    let max = if addr.is_ipv4() { 32 } else { 128 };
+    let prefix = prefix.unwrap_or(max);
+    (prefix <= max).then_some((addr, prefix))
+}
+
+/// Whether `ip` lies inside `cidr`; unparsable input or a family mismatch never matches.
+fn ip_in_cidr(ip: &str, cidr: &str) -> bool {
+    use std::net::IpAddr;
+    let (Some((net, prefix)), Ok(ip)) = (parse_cidr(cidr), ip.parse::<IpAddr>()) else {
+        return false;
+    };
+    let (a, b, bits) = match (ip, net) {
+        (IpAddr::V4(a), IpAddr::V4(b)) => (u128::from(u32::from(a)), u128::from(u32::from(b)), 32),
+        (IpAddr::V6(a), IpAddr::V6(b)) => (u128::from(a), u128::from(b), 128),
+        _ => return false,
+    };
+    let shift = bits - u32::from(prefix);
+    shift >= 128 || (a >> shift) == (b >> shift)
+}
+
+/// Registers the `ip_in_cidr(ip, cidr)` SQL function the subnet filter uses.
+pub(crate) fn register_sql_functions(conn: &Connection) -> rusqlite::Result<()> {
+    use rusqlite::functions::FunctionFlags;
+    conn.create_scalar_function(
+        "ip_in_cidr",
+        2,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| Ok(ip_in_cidr(&ctx.get::<String>(0)?, &ctx.get::<String>(1)?)),
+    )
+}
+
 /// Builds the shared `WHERE` conditions for a [`QueryLogFilter`].
 ///
 /// The returned suffix starts with `" AND "` and is appended to
@@ -1020,6 +1060,10 @@ fn filter_clause(filter: &QueryLogFilter) -> (String, Vec<Value>) {
     if let Some(node_id) = &filter.node_id {
         sql.push_str(" AND node_id = ?");
         values.push(Value::Text(node_id.clone()));
+    }
+    if let Some(subnet) = &filter.subnet {
+        sql.push_str(" AND ip_in_cidr(source_ip, ?)");
+        values.push(Value::Text(subnet.clone()));
     }
     if let Some(client_id) = &filter.client_id {
         sql.push_str(" AND client_id = ?");
@@ -1685,6 +1729,18 @@ mod tests {
 
     use super::*;
     use dnscraft_common::clock::ManualClock;
+
+    #[test]
+    fn cidr_matching() {
+        assert!(ip_in_cidr("172.20.20.163", "172.20.20.0/24"));
+        assert!(!ip_in_cidr("172.20.21.1", "172.20.20.0/24"));
+        assert!(ip_in_cidr("10.0.0.7", "10.0.0.7"));
+        assert!(ip_in_cidr("1.2.3.4", "0.0.0.0/0"));
+        assert!(ip_in_cidr("fd20:1082:556b:f13c::f2b9", "fd20:1082:556b::/48"));
+        assert!(!ip_in_cidr("fd20:1082:556b::1", "172.20.20.0/24"));
+        assert!(!ip_in_cidr("garbage", "10.0.0.0/8"));
+        assert!(parse_cidr("10.0.0.0/33").is_none());
+    }
 
     #[test]
     fn storage_failures_on_reads_use_the_query_log_read_code() {

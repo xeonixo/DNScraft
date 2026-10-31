@@ -31,6 +31,7 @@ export const FILTER_KEYS = [
 	'from',
 	'to',
 	'node_id',
+	'subnet',
 	'client_id',
 	'client_name_substr',
 	'device_id',
@@ -64,6 +65,7 @@ export const FILTER_GROUPS: { id: string; keys: FilterKey[] }[] = [
 	{ id: 'client_name_substr', keys: ['client_name_substr'] },
 	{ id: 'device_id', keys: ['device_id'] },
 	{ id: 'node_id', keys: ['node_id'] },
+	{ id: 'subnet', keys: ['subnet'] },
 	{ id: 'view_id', keys: ['view_id'] },
 	{ id: 'profile_id', keys: ['profile_id'] },
 	{ id: 'protocol', keys: ['protocol'] },
@@ -84,6 +86,13 @@ const DEFAULTS: Partial<Record<FilterKey, string>> = {
 const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
 const BOOLEAN_TRUE = ['true', '1'];
 const BOOLEAN_FALSE = ['false', '0'];
+
+/** An IPv4/IPv6 address with an optional /prefix; the API does the strict parse. */
+function isCidr(value: string): boolean {
+	const [addr, prefix, ...rest] = value.split('/');
+	if (rest.length > 0 || !/^[0-9a-fA-F:.]+$/.test(addr) || !/[.:]/.test(addr)) return false;
+	return prefix === undefined || (/^\d{1,3}$/.test(prefix) && Number(prefix) <= (addr.includes(':') ? 128 : 32));
+}
 
 export function emptyDraft(): Draft {
 	return Object.fromEntries(FILTER_KEYS.map((key) => [key, ''])) as Draft;
@@ -113,6 +122,7 @@ export function validateDraft(draft: Draft): FieldErrors {
 	if (!errors.from && !errors.to && draft.from !== '' && draft.to !== '') {
 		if (Date.parse(draft.from) > Date.parse(draft.to)) bad('from');
 	}
+	if (draft.subnet !== '' && !isCidr(draft.subnet)) bad('subnet');
 	if (draft.protocol !== '' && !(PROTOCOLS as readonly string[]).includes(draft.protocol)) {
 		bad('protocol');
 	}

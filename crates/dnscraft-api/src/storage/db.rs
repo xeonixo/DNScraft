@@ -48,6 +48,7 @@ impl Db {
             // 0600 before WAL so the -wal/-shm sidecars inherit the same mode.
             tighten_file(&path, existed).map_err(io_err)?;
             apply_pragmas(&mut conn, true)?;
+            crate::query_log::register_sql_functions(&conn).map_err(db_err)?;
             tighten_sidecars(&path).map_err(io_err)?;
             migrate(&mut conn)?;
             let mut readers = Vec::with_capacity(READ_CONNECTIONS);
@@ -60,6 +61,7 @@ impl Db {
                 reader
                     .execute_batch("PRAGMA busy_timeout = 5000; PRAGMA query_only = ON;")
                     .map_err(db_err)?;
+                crate::query_log::register_sql_functions(&reader).map_err(db_err)?;
                 readers.push(Mutex::new(reader));
             }
             Ok((conn, readers))
@@ -79,6 +81,7 @@ impl Db {
         let conn = tokio::task::spawn_blocking(|| -> Result<Connection, ControlApiError> {
             let mut conn = Connection::open_in_memory().map_err(db_err)?;
             apply_pragmas(&mut conn, false)?;
+            crate::query_log::register_sql_functions(&conn).map_err(db_err)?;
             migrate(&mut conn)?;
             Ok(conn)
         })

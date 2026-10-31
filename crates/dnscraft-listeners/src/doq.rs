@@ -20,7 +20,7 @@ use crate::bans::StrikeReason;
 use crate::clock::{Clock, add_duration, wait_until};
 use crate::config::{Exposure, Limits, ListenerConfig};
 use crate::core::{QueryMeta, error_result_from_wire, handle_wire};
-use crate::doh::{ConnActivity, release_per_source};
+use crate::doh::{ConnActivity, needs_address_validation, release_per_source};
 use crate::error::ListenersError;
 use crate::events::{QueryEventSink, emit_optional};
 use crate::framing::{MAX_MESSAGE_LEN, write_frame};
@@ -254,6 +254,19 @@ where
         }
         public_client_id_required(shared.listener.exposure, adm.classify(source))
     };
+
+    // Unvalidated public source: Retry before taking a permit or any per-source state.
+    if needs_address_validation(
+        &shared.admission,
+        shared.listener.exposure,
+        source,
+        incoming.remote_address_validated(),
+    ) {
+        if let Err(e) = incoming.retry() {
+            e.into_incoming().ignore();
+        }
+        return;
+    }
 
     let Ok(conn_permit) = shared.conn_cap.clone().try_acquire_owned() else {
         DoqStats::bump(&shared.stats.rejected_conn_cap);

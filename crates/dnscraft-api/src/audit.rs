@@ -569,6 +569,7 @@ mod tests {
     /// assertion covers the full value space, not just the defaults.
     fn non_default_config() -> ControlApiConfig {
         ControlApiConfig {
+            allow_wildcard_bind: true,
             bind: "10.1.2.3".parse().unwrap(),
             port: 9000,
             tls: false,

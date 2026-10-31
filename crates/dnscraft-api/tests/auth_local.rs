@@ -274,21 +274,22 @@ async fn lockout_after_max_attempts_unlocks_after_window_on_manual_clock() {
         assert_eq!(body["error"]["code"], "control_api.auth.local");
     }
 
-    // The attempt that reaches the limit locks the account.
+    // The attempt that reaches the limit locks the account. The response is the
+    // same as a wrong password, so a lock is not visible to the caller.
     let (status, _, body) = login(&router, "admin", "wrong").await;
-    assert_eq!(status, StatusCode::LOCKED, "{body}");
-    assert_eq!(body["error"]["code"], "control_api.auth.locked");
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(body["error"]["code"], "control_api.auth.local");
 
     // A correct password is rejected while locked, with no session cookie.
     let (status, headers, body) = login(&router, "admin", PASSWORD).await;
-    assert_eq!(status, StatusCode::LOCKED);
-    assert_eq!(body["error"]["code"], "control_api.auth.locked");
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"]["code"], "control_api.auth.local");
     assert!(headers.get(header::SET_COOKIE).is_none());
 
     // One second before the window expires the account is still locked.
     clock.advance(WINDOW - Duration::from_secs(1));
     let (status, _, body) = login(&router, "admin", PASSWORD).await;
-    assert_eq!(status, StatusCode::LOCKED, "{body}");
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
 
     // Once the window has fully elapsed the account unlocks and the correct
     // password works again — no wall-clock sleep.
@@ -354,7 +355,7 @@ async fn audit_records_the_locked_attempt_too() {
         let _ = login(&router, "admin", "wrong").await;
     }
     let (status, _, _) = login(&router, "admin", PASSWORD).await;
-    assert_eq!(status, StatusCode::LOCKED);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     let records = db.audit_list(20, 0).await.unwrap();
     assert_eq!(records.len(), MAX_ATTEMPTS as usize + 1);

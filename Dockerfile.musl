@@ -8,7 +8,7 @@
 
 ARG RUST_VERSION=1.88
 
-FROM rust:${RUST_VERSION}-alpine AS builder
+FROM rust:${RUST_VERSION}-alpine@sha256:9dfaae478ecd298b6b5a039e1f2cc4fc040fc818a2de9aa78fa714dea036574d AS builder
 
 RUN apk add --no-cache musl-dev
 

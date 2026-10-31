@@ -18,8 +18,12 @@ use tokio::sync::{Notify, Semaphore, oneshot, watch};
 use crate::admission::Admission;
 use crate::clock::{Clock, add_duration, wait_until};
 use crate::config::{Limits, ListenerConfig};
-use crate::doh::{ConnActivity, DohShared, DohStats, process_doh_request, release_per_source};
+use crate::doh::{
+    ConnActivity, DohShared, DohStats, needs_address_validation, process_doh_request,
+    release_per_source, resolve_path_client_id,
+};
 use crate::doh_request::MAX_DOH_HEADER_LIST_SIZE;
+use crate::doh_request::parse_doh_path;
 use crate::error::ListenersError;
 use crate::events::QueryEventSink;
 use crate::framing::MAX_MESSAGE_LEN;
@@ -192,6 +196,19 @@ where
 {
     let peer = incoming.remote_address();
     let source = peer.ip().to_canonical();
+    // Unvalidated public source: Retry before any state, so spoofed sources cannot hold
+    // permits or cause handshake strikes.
+    if needs_address_validation(
+        &shared.doh.admission,
+        shared.doh.listener.exposure,
+        source,
+        incoming.remote_address_validated(),
+    ) {
+        if let Err(e) = incoming.retry() {
+            e.into_incoming().ignore();
+        }
+        return;
+    }
 
     {
         let now = shared.doh.clock.now();
@@ -401,6 +418,21 @@ where
     };
     let (parts, ()) = req.into_parts();
 
+    // Path / Client-ID gate before reading the body (same as HTTP/2 and HTTP/1.1).
+    let client_id_state =
+        match resolve_path_client_id(&shared.doh, peer, &parse_doh_path(parts.uri.path())) {
+            Ok(state) => state,
+            Err(status) => {
+                let resp = http::Response::builder()
+                    .status(status)
+                    .body(())
+                    .map_err(|_| ())?;
+                stream.send_response(resp).await.map_err(|_| ())?;
+                stream.finish().await.map_err(|_| ())?;
+                return Ok(());
+            }
+        };
+
     let mut body = Vec::new();
     loop {
         let mut chunk = tokio::select! {
@@ -444,7 +476,16 @@ where
         Bytes::from(body)
     };
 
-    let mut out = process_doh_request(&shared.doh, peer, &method, &uri, &headers, body_bytes).await;
+    let mut out = process_doh_request(
+        &shared.doh,
+        peer,
+        client_id_state,
+        &method,
+        &uri,
+        &headers,
+        body_bytes,
+    )
+    .await;
 
     // The response already travels over HTTP/3, so Alt-Svc is redundant; the
     // HTTP/2 DoH listener advertises the UDP port instead.

@@ -46,11 +46,11 @@ Requires Rust **1.88+** (workspace `rust-version`; CI uses `stable`).
 ```bash
 cargo run -p dnscraft -- deploy/dnscraft.example.toml
 dig @127.0.0.1 -p 5300 example.com A +short
-curl -fsS http://127.0.0.1:8080/healthz
+curl -kfsS https://127.0.0.1/healthz
 ```
 
 The sample binds plain DNS on `127.0.0.1:5300` and the control API on loopback
-`:8080`. Persistence defaults under the process `data_dir` (see the TOML).
+`:443` (TLS, self-signed until a certificate is configured). Persistence defaults under the process `data_dir` (see the TOML).
 Secrets (TLS PEMs, OIDC, UniFi, Cloudflare, cluster join) come from the
 environment or `*_FILE` — never from the config file. See
 [`deploy/README.md`](deploy/README.md).
@@ -59,11 +59,11 @@ environment or `*_FILE` — never from the config file. See
 
 ```bash
 docker compose up --build
-curl -fsS http://127.0.0.1:8080/healthz
+curl -fsS http://127.0.0.1:80/healthz
 dig @127.0.0.1 -p 5300 example.com A +short
 ```
 
-DNS on host port **5300**, control API on **8080**, data in the
+DNS on host port **5300**, control API on loopback port **80**, data in the
 `dnscraft-data` volume. Image variants (glibc vs musl/scratch) and Buildx:
 [`deploy/README.md`](deploy/README.md).
 
@@ -135,8 +135,8 @@ addresses, cluster role, secrets paths).
 
 ```bash
 # Health
-curl -fsS http://127.0.0.1:8080/healthz
-curl -fsS http://127.0.0.1:8080/readyz
+curl -kfsS https://127.0.0.1/healthz
+curl -kfsS https://127.0.0.1/readyz
 
 # REST surface (auth required for /api/v1/*)
 # MCP is opt-in: [control_api.mcp] enabled = true

@@ -231,8 +231,11 @@ impl Default for RateLimitConfig {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ControlApiConfig {
-    /// Bind address. Must be loopback/private/ULA (never `0.0.0.0`/`::`).
+    /// Bind address. Must be loopback/private/ULA; `0.0.0.0`/`::` only with `allow_wildcard_bind`.
     pub bind: IpAddr,
+    /// Allows a wildcard `bind` (`0.0.0.0`/`::`) for containers, where the published port is the
+    /// real exposure control. Off by default; never enable it on a host with a public interface.
+    pub allow_wildcard_bind: bool,
     /// TCP listen port.
     pub port: u16,
     /// Serve direct TLS via the `tls` module `CertResolver` (with self-signed bootstrap).
@@ -257,6 +260,7 @@ impl Default for ControlApiConfig {
     fn default() -> Self {
         Self {
             bind: DEFAULT_BIND,
+            allow_wildcard_bind: false,
             port: DEFAULT_PORT,
             tls: true,
             shared_doh_listener: None,
@@ -272,9 +276,9 @@ impl Default for ControlApiConfig {
 impl ControlApiConfig {
     /// Validates the bind address, port and each sub-section against the spec limits.
     pub fn validate(&self) -> Result<(), ControlApiError> {
-        if !is_internal_bind(self.bind) {
+        if !is_internal_bind(self.bind) && !(self.allow_wildcard_bind && self.bind.is_unspecified()) {
             return Err(ControlApiError::config(format!(
-                "bind address {} is not loopback/private/ULA",
+                "bind address {} is not loopback/private/ULA (wildcard needs allow_wildcard_bind)",
                 self.bind
             )));
         }
@@ -435,6 +439,20 @@ mod tests {
     }
 
     #[test]
+    fn wildcard_bind_needs_the_explicit_flag_and_never_allows_public_addresses() {
+        assert!(config_with_bind("0.0.0.0").validate().is_err());
+        let mut wildcard = config_with_bind("0.0.0.0");
+        wildcard.allow_wildcard_bind = true;
+        assert!(wildcard.validate().is_ok());
+        let mut v6 = config_with_bind("::");
+        v6.allow_wildcard_bind = true;
+        assert!(v6.validate().is_ok());
+        let mut public = config_with_bind("8.8.8.8");
+        public.allow_wildcard_bind = true;
+        assert!(public.validate().is_err());
+    }
+
+    #[test]
     fn bind_accepts_loopback_private_and_ula() {
         for addr in [
             "127.0.0.1",
@@ -568,6 +586,7 @@ mod tests {
     /// the round-trip covers the full value space.
     fn non_default_config() -> ControlApiConfig {
         ControlApiConfig {
+            allow_wildcard_bind: true,
             bind: "127.0.0.1".parse().unwrap(),
             port: 8443,
             tls: false,

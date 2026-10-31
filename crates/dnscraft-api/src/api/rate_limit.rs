@@ -237,17 +237,29 @@ impl RateLimiter {
 }
 
 /// Resolves the rate-limit source: the trusted peer IP, unless the peer is a
-/// configured `trusted_proxies` address, in which case the leftmost
-/// `X-Forwarded-For` entry (the original client) is honoured. Malformed or
-/// missing forwarded headers fall back to the peer IP.
+/// configured `trusted_proxies` address. Then `X-Forwarded-For` is walked from
+/// the right (the entry closest to us, appended by our proxy chain) and the
+/// first entry that is not itself a trusted proxy is the client. The leftmost
+/// entry is client-controlled and is never trusted. A malformed entry, a
+/// missing header, or a list made only of trusted proxies falls back to the peer.
 fn resolve_source(peer: IpAddr, trusted: &[IpAddr], headers: &HeaderMap) -> IpAddr {
-    if trusted.contains(&peer)
-        && let Some(raw) = headers.get(HeaderName::from_static("x-forwarded-for"))
-        && let Ok(value) = raw.to_str()
-        && let Some(first) = value.split(',').next()
-        && let Ok(ip) = first.trim().parse::<IpAddr>()
-    {
-        return ip.to_canonical();
+    if !trusted.contains(&peer) {
+        return peer;
+    }
+    let Some(raw) = headers
+        .get(HeaderName::from_static("x-forwarded-for"))
+        .and_then(|value| value.to_str().ok())
+    else {
+        return peer;
+    };
+    for entry in raw.rsplit(',') {
+        let Ok(ip) = entry.trim().parse::<IpAddr>() else {
+            return peer;
+        };
+        let ip = ip.to_canonical();
+        if !trusted.contains(&ip) {
+            return ip;
+        }
     }
     peer
 }
@@ -459,6 +471,50 @@ mod tests {
             resolve_source(peer, &trusted, &headers),
             "198.51.100.7".parse::<IpAddr>().unwrap()
         );
+    }
+
+    #[test]
+    fn resolve_source_ignores_spoofed_leftmost_entries() {
+        // The client prepended a fake address; the proxy appended the real one.
+        let peer = "10.0.0.1".parse::<IpAddr>().unwrap();
+        let trusted: Vec<IpAddr> = vec![peer];
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("x-forwarded-for"),
+            HeaderValue::from_static("192.0.2.66, 198.51.100.7, 10.0.0.1"),
+        );
+        assert_eq!(
+            resolve_source(peer, &trusted, &headers),
+            "198.51.100.7".parse::<IpAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn resolve_source_skips_chained_trusted_proxies() {
+        let peer = "10.0.0.1".parse::<IpAddr>().unwrap();
+        let inner = "10.0.0.2".parse::<IpAddr>().unwrap();
+        let trusted: Vec<IpAddr> = vec![peer, inner];
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("x-forwarded-for"),
+            HeaderValue::from_static("198.51.100.7, 10.0.0.2, 10.0.0.1"),
+        );
+        assert_eq!(
+            resolve_source(peer, &trusted, &headers),
+            "198.51.100.7".parse::<IpAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn resolve_source_falls_back_to_peer_when_every_entry_is_trusted() {
+        let peer = "10.0.0.1".parse::<IpAddr>().unwrap();
+        let trusted: Vec<IpAddr> = vec![peer];
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("x-forwarded-for"),
+            HeaderValue::from_static("10.0.0.1, 10.0.0.1"),
+        );
+        assert_eq!(resolve_source(peer, &trusted, &headers), peer);
     }
 
     #[test]

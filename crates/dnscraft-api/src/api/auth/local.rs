@@ -238,8 +238,11 @@ impl LocalAccountStore {
 
     /// [`authenticate`](Self::authenticate) plus a per-source lockout (GA11):
     /// after `max_attempts` credential failures from `source` within the lock
-    /// window, further attempts from it are refused as `control_api.auth.locked`
-    /// whichever account they name. The source is the resolved client address.
+    /// window, further attempts from it are refused whichever account they
+    /// name. The source is the resolved client address.
+    ///
+    /// Locked attempts answer `control_api.auth.local` like any wrong password;
+    /// the audit row keeps `control_api.auth.locked` as the real reason.
     pub async fn authenticate_from(
         &self,
         source: IpAddr,
@@ -249,19 +252,23 @@ impl LocalAccountStore {
         let now = self.db.now_unix();
         let window = self.lock_window.as_secs() as i64;
         if self.source_locked(source, now, window) {
+            // Same Argon2 cost as a real attempt, so timing does not reveal the lock.
+            self.db
+                .with_conn(move |_| {
+                    let _ = hash_password(password.as_bytes());
+                    Ok(())
+                })
+                .await?;
             self.audit(
                 username.trim(),
                 "error",
                 Some(ControlApiError::AuthLocked.code().to_owned()),
             )
             .await?;
-            return Err(ControlApiError::AuthLocked);
+            return Err(ControlApiError::AuthLocal);
         }
         let result = self.authenticate(username, password).await;
-        if matches!(
-            result,
-            Err(ControlApiError::AuthLocal | ControlApiError::AuthLocked)
-        ) {
+        if matches!(result, Err(ControlApiError::AuthLocal)) {
             self.note_source_failure(source, now, window);
         }
         result
@@ -296,9 +303,16 @@ impl LocalAccountStore {
     /// Verifies `password` for `username`, enforcing lockout on the injected
     /// clock, and returns the account's role on success.
     ///
-    /// Errors are [`ControlApiError::AuthLocal`] for an unknown account or a
-    /// wrong password and [`ControlApiError::AuthLocked`] while the lock window
-    /// is active. Each attempt is audited, including locked attempts.
+    /// Every failure, including a locked account, returns
+    /// [`ControlApiError::AuthLocal`] so callers cannot probe for accounts or
+    /// locks. Each attempt is audited with its real reason (`auth.locked` while
+    /// the lock window is active), including locked attempts.
+    ///
+    // ponytail: the per-account lock is a known DoS residual: anyone who can reach
+    // this endpoint can lock a known username with max_attempts wrong passwords,
+    // spread over sources to dodge the per-source lock. Upgrade path: back off
+    // instead of hard-locking, or let sources that already succeeded for the
+    // account keep signing in.
     pub async fn authenticate(
         &self,
         username: &str,
@@ -345,6 +359,10 @@ impl LocalAccountStore {
                     message: format!("unknown local account role in storage: {role_str}"),
                 })?;
                 if locked_until.is_some_and(|until| now < until) {
+                    // Run the same Argon2 verification a real attempt would, so a
+                    // locked account is not timing-distinguishable. The result is
+                    // ignored: a locked account never succeeds.
+                    let _ = password_matches(password.as_bytes(), &hash);
                     return Ok(Attempt::Failure(ControlApiError::AuthLocked));
                 }
 
@@ -392,7 +410,8 @@ impl LocalAccountStore {
 
         match attempt {
             Attempt::Success(role) => Ok(role),
-            Attempt::Failure(err) => Err(err),
+            // The audit row above carries the real reason; the caller sees one code.
+            Attempt::Failure(_) => Err(ControlApiError::AuthLocal),
         }
     }
 
@@ -595,7 +614,7 @@ mod tests {
 
     #[tokio::test]
     async fn source_lockout_refuses_a_source_across_accounts_only() {
-        let (store, _db) = store().await;
+        let (store, db) = store().await;
         store
             .upsert("admin", "correct horse", Role::Admin)
             .await
@@ -609,17 +628,49 @@ mod tests {
                 .unwrap_err();
             assert_eq!(err.code(), "control_api.auth.local");
         }
-        // The attacker is locked even for a correct password on a real account.
+        // The attacker is locked even for a correct password on a real account,
+        // and the refusal looks like any wrong password.
         let err = store
             .authenticate_from(attacker, "admin", "correct horse".into())
             .await
             .unwrap_err();
-        assert_eq!(err.code(), "control_api.auth.locked");
+        assert_eq!(err.code(), "control_api.auth.local");
+        let records = db.audit_list(20, 0).await.unwrap();
+        assert!(
+            records
+                .iter()
+                .any(|r| r.error_code.as_deref() == Some("control_api.auth.locked")),
+            "the real reason must still be audited: {records:?}"
+        );
         // Another source is not affected.
         let role = store
             .authenticate_from(other, "admin", "correct horse".into())
             .await
             .unwrap();
         assert_eq!(role, Role::Admin);
+    }
+
+    #[tokio::test]
+    async fn locked_account_refuses_correct_password_as_auth_local() {
+        let (store, db) = store().await;
+        store
+            .upsert("admin", "correct horse", Role::Admin)
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            let _ = store.authenticate("admin", "wrong".into()).await;
+        }
+        let err = store
+            .authenticate("admin", "correct horse".into())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "control_api.auth.local");
+        let records = db.audit_list(20, 0).await.unwrap();
+        assert!(
+            records
+                .iter()
+                .any(|r| r.error_code.as_deref() == Some("control_api.auth.locked")),
+            "the locked attempt must be audited: {records:?}"
+        );
     }
 }

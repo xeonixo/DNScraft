@@ -28,6 +28,8 @@ export async function oidcStatusPublic(): Promise<{ enabled: boolean }> {
 /** Admin view of live OIDC settings (never includes the client secret). */
 export interface OidcStatus {
 	enabled: boolean;
+	/** Whether the identity provider's discovery document answered recently. */
+	reachable: boolean;
 	has_client_secret: boolean;
 	issuer: string;
 	client_id: string;
@@ -44,6 +46,7 @@ export async function getOidcStatus(): Promise<OidcStatus> {
 	}
 	return {
 		enabled: data.enabled,
+		reachable: data.reachable === true,
 		has_client_secret: data.has_client_secret === true,
 		issuer: typeof data.issuer === 'string' ? data.issuer : '',
 		client_id: typeof data.client_id === 'string' ? data.client_id : '',

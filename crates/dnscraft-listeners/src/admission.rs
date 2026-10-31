@@ -44,6 +44,22 @@ pub fn default_classifier() -> SourceClassifier {
     Arc::new(SourceClass::of)
 }
 
+/// Key under which per-source state (rate buckets, bans, strikes) is kept.
+///
+/// IPv4 is used as-is. IPv6 is collapsed to its /64 prefix (low 64 bits zeroed):
+/// one host or subscriber typically owns a whole /64, so keying on the full
+/// address would let it dodge bans and rate limits by rotating addresses.
+pub fn source_key(ip: IpAddr) -> IpAddr {
+    match ip.to_canonical() {
+        IpAddr::V6(v6) => {
+            let mut octets = v6.octets();
+            octets[8..].fill(0);
+            IpAddr::V6(Ipv6Addr::from(octets))
+        }
+        v4 => v4,
+    }
+}
+
 fn is_private_source(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => is_private_v4(v4),
@@ -103,6 +119,8 @@ pub fn public_client_id_required(exposure: Exposure, class: SourceClass) -> bool
 }
 
 /// Admission state: rate buckets and ban table.
+///
+/// Per-source state is keyed by [`source_key`] (IPv6 aggregated to /64).
 pub struct Admission {
     rate_per_source: TokenRate,
     rate_per_client_id: TokenRate,
@@ -195,17 +213,17 @@ impl Admission {
         if self.classify(source) != SourceClass::Public {
             return false;
         }
-        self.bans.is_banned(source, now)
+        self.bans.is_banned(source_key(source), now)
     }
 
-    /// Currently banned sources with their ban expiry.
+    /// Currently banned sources (IPv6 as its /64 network address) with their ban expiry.
     pub fn banned_sources(&self, now: SystemTime) -> Vec<(IpAddr, SystemTime)> {
         self.bans.banned(now)
     }
 
-    /// Lifts the ban on `source`; `true` when it was banned.
+    /// Lifts the ban on `source`'s aggregation key; `true` when it was banned.
     pub fn unban(&mut self, source: IpAddr, now: SystemTime) -> bool {
-        self.bans.unban(source.to_canonical(), now)
+        self.bans.unban(source_key(source), now)
     }
 
     /// Records a ban strike for a public source (no-op for private sources).
@@ -214,7 +232,7 @@ impl Admission {
         if self.classify(source) != SourceClass::Public {
             return;
         }
-        self.bans.strike(source, reason, now);
+        self.bans.strike(source_key(source), reason, now);
     }
 
     /// Admission check for one query / connection attempt.
@@ -231,8 +249,9 @@ impl Admission {
         let source = source.to_canonical();
         let class = self.classify(source);
         let proto = listener.protocol;
+        let key = source_key(source);
 
-        if class == SourceClass::Public && self.bans.is_banned(source, now) {
+        if class == SourceClass::Public && self.bans.is_banned(key, now) {
             // Spec: close immediately (no DNS answer on any transport).
             return AdmitDecision::Drop {
                 code: "listeners.banned",
@@ -256,7 +275,7 @@ impl Admission {
             }
         }
 
-        if !self.take_source(source, now) {
+        if !self.take_source(key, now) {
             return drop_or_refuse(proto, "listeners.rate_limited");
         }
 
@@ -308,6 +327,44 @@ mod tests {
 
     fn public_ip() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1))
+    }
+
+    #[test]
+    fn source_key_collapses_ipv6_to_slash_64_and_keeps_ipv4() {
+        let v6: IpAddr = "2001:db8:1:2:dead:beef:0:1".parse().unwrap();
+        assert_eq!(
+            source_key(v6),
+            "2001:db8:1:2::".parse::<IpAddr>().unwrap(),
+            "low 64 bits must be zeroed"
+        );
+        let v4 = public_ip();
+        assert_eq!(source_key(v4), v4);
+        let mapped: IpAddr = "::ffff:203.0.113.1".parse().unwrap();
+        assert_eq!(source_key(mapped), v4, "IPv4-mapped uses the IPv4 key");
+    }
+
+    #[test]
+    fn ipv6_ban_applies_to_whole_slash_64() {
+        let public = PublicConfig {
+            ban_strikes: 1,
+            ..PublicConfig::default()
+        };
+        let mut adm = Admission::new(&Limits::default(), &public);
+        let now = SystemTime::UNIX_EPOCH;
+        let a: IpAddr = "2001:db8:1:2::1".parse().unwrap();
+        let sibling: IpAddr = "2001:db8:1:2:ffff::9".parse().unwrap();
+        let other_net: IpAddr = "2001:db8:1:3::1".parse().unwrap();
+
+        adm.strike(a, StrikeReason::UnknownClientId, now);
+        assert!(adm.is_banned(sibling, now), "same /64 must share the ban");
+        assert!(!adm.is_banned(other_net, now), "other /64 is unaffected");
+
+        let banned = adm.banned_sources(now);
+        assert_eq!(banned.len(), 1);
+        assert_eq!(banned[0].0, "2001:db8:1:2::".parse::<IpAddr>().unwrap());
+
+        assert!(adm.unban(sibling, now), "unban via any address in the /64");
+        assert!(!adm.is_banned(a, now));
     }
 
     #[test]

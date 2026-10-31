@@ -67,6 +67,9 @@ const DEFAULT_RETURN_TO: &str = "/dashboard";
 const LOGIN_ERROR_PATH: &str = "/login?oidc=error";
 /// How long an initiated login may wait for the provider callback.
 const PENDING_TTL_SECS: i64 = 10 * 60;
+/// Most logins that may be awaiting a callback at once (bounds memory against
+/// an unauthenticated flood of `authorization_url` calls).
+const MAX_PENDING_LOGINS: usize = 1024;
 /// Scopes requested for Authentik compatibility (`profile` carries `groups`).
 const OIDC_SCOPES: [&str; 2] = ["profile", "email"];
 /// JWS algorithms accepted for ID tokens. Deliberately asymmetric-only, so an
@@ -198,7 +201,14 @@ pub struct OidcState {
     clock: Arc<dyn Clock>,
     http: OidcHttpClient,
     pending: Mutex<HashMap<String, PendingAuth>>,
+    /// Last discovery probe: `(unix seconds, reachable)`.
+    probe: Mutex<Option<(i64, bool)>>,
 }
+
+/// How long a discovery probe result is reused (bounds outbound calls from the public status route).
+const PROBE_TTL_SECS: i64 = 30;
+/// Upper bound for one discovery probe.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl fmt::Debug for OidcState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -290,7 +300,28 @@ impl OidcState {
                 client: build_http_client()?,
             },
             pending: Mutex::new(HashMap::new()),
+            probe: Mutex::new(None),
         }))
+    }
+
+    /// Whether the provider's discovery document is currently reachable.
+    ///
+    /// The result is cached for [`PROBE_TTL_SECS`], so anonymous callers cannot
+    /// make the server hit the identity provider more than about every 30 s.
+    pub async fn reachable(&self) -> bool {
+        let now = unix_seconds(self.clock.now());
+        if let Some((at, ok)) = *self.probe.lock().unwrap_or_else(PoisonError::into_inner)
+            && now.saturating_sub(at) < PROBE_TTL_SECS
+        {
+            return ok;
+        }
+        let discovery = CoreProviderMetadata::discover_async(self.issuer.clone(), &self.http);
+        let ok = matches!(
+            tokio::time::timeout(PROBE_TIMEOUT, discovery).await,
+            Ok(Ok(_))
+        );
+        *self.probe.lock().unwrap_or_else(PoisonError::into_inner) = Some((now, ok));
+        ok
     }
 
     /// Starts a login: discovers the provider, builds the authorization URL
@@ -317,8 +348,8 @@ impl OidcState {
         let now = unix_seconds(self.clock.now());
         let state_value = state.secret().clone();
         let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
-        pending.retain(|_, auth| auth.expires_at > now);
-        pending.insert(
+        insert_pending(
+            &mut pending,
             state_value.clone(),
             PendingAuth {
                 nonce,
@@ -327,7 +358,8 @@ impl OidcState {
                 return_to,
                 expires_at: now.saturating_add(PENDING_TTL_SECS),
             },
-        );
+            now,
+        )?;
         drop(pending);
         Ok((url.to_string(), state_value))
     }
@@ -500,8 +532,14 @@ pub(crate) async fn oidc_status(
     State(state): State<AppState>,
     authenticated: Option<Extension<Authenticated>>,
 ) -> Result<Response, ControlApiError> {
-    let enabled = state.oidc_state().is_some();
-    let mut body = json!({ "enabled": enabled });
+    let configured = state.oidc_state();
+    let enabled = configured.is_some();
+    // The sign-in page shows the SSO button only while the provider answers.
+    let reachable = match &configured {
+        Some(oidc) => oidc.reachable().await,
+        None => false,
+    };
+    let mut body = json!({ "enabled": reachable });
     let is_admin = authenticated
         .as_ref()
         .is_some_and(|auth| auth.0.scope().is_admin());
@@ -513,6 +551,7 @@ pub(crate) async fn oidc_status(
         let settings = state.oidc_state().map(|oidc| oidc.settings());
         body = json!({
             "enabled": enabled,
+            "reachable": reachable,
             "has_client_secret": has_client_secret,
             "issuer": settings.as_ref().map(|s| s.issuer.as_str()).unwrap_or(""),
             "client_id": settings.as_ref().map(|s| s.client_id.as_str()).unwrap_or(""),
@@ -759,10 +798,46 @@ fn oidc_error(message: impl Into<String>) -> ControlApiError {
     }
 }
 
+/// Records a pending login after pruning expired ones. When the map is still
+/// full of live logins the new one is refused, never evicting a live login.
+fn insert_pending(
+    pending: &mut HashMap<String, PendingAuth>,
+    state: String,
+    auth: PendingAuth,
+    now: i64,
+) -> Result<(), ControlApiError> {
+    pending.retain(|_, entry| entry.expires_at > now);
+    if pending.len() >= MAX_PENDING_LOGINS {
+        return Err(oidc_error("too many pending OIDC logins; retry shortly"));
+    }
+    pending.insert(state, auth);
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_logins_are_capped_until_they_expire() {
+        let auth = |expires_at| PendingAuth {
+            nonce: Nonce::new("n".to_owned()),
+            code_verifier: PkceCodeChallenge::new_random_sha256().1,
+            redirect_url: RedirectUrl::new("https://dns.example/cb".to_owned()).unwrap(),
+            return_to: "/".to_owned(),
+            expires_at,
+        };
+        let mut pending = HashMap::new();
+        for i in 0..MAX_PENDING_LOGINS {
+            insert_pending(&mut pending, format!("s{i}"), auth(100), 0).unwrap();
+        }
+        assert!(insert_pending(&mut pending, "extra".into(), auth(100), 0).is_err());
+        assert_eq!(pending.len(), MAX_PENDING_LOGINS);
+        // Once the live entries expire they are pruned and a login is accepted.
+        insert_pending(&mut pending, "extra".into(), auth(200), 100).unwrap();
+        assert_eq!(pending.len(), 1);
+    }
 
     /// Threat model: `alg=none` and HMAC algorithms (alg-confusion) must never
     /// be accepted for an ID token. The integration suite proves rejection

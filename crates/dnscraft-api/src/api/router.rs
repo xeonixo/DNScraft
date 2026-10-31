@@ -1,11 +1,12 @@
 //! Router assembly: liveness/readiness, the `/api/v1` prefix, and the HTTP
 //! envelope / error-mapping boundaries.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::{DefaultBodyLimit, Request, State};
-use axum::http::StatusCode;
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Extension, Request, State};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
@@ -17,7 +18,7 @@ use super::auth::local::local_login;
 use super::auth::oidc::{oidc_authorize_url, oidc_callback, oidc_status, put_oidc_client_secret};
 use super::auth::session_routes::{list_sessions, revoke_session};
 use super::auth::tokens::{create_token, delete_token, list_tokens};
-use super::auth::{auth_me, auth_middleware, logout, rbac_middleware};
+use super::auth::{Principal, auth_me, auth_middleware, bearer_token, logout, rbac_middleware};
 use super::clients_routes::{
     create_manual, delete_manual, get_unifi, list_clients, list_manual, put_manual,
     put_unifi_api_key, sync_clients,
@@ -355,7 +356,9 @@ pub(crate) fn build_router(state: AppState) -> Router {
         // Rate limiting is outermost: it runs before body-size mapping so an
         // over-limit source is rejected before any body is read. It needs the
         // state (for the limiter) so it uses `from_fn_with_state`.
-        .layer(middleware::from_fn_with_state(state, rate_limit))
+        .layer(middleware::from_fn_with_state(state.clone(), rate_limit))
+        // Outermost: its headers also land on the 429 from the limiter above.
+        .layer(middleware::from_fn_with_state(state, security_headers))
 }
 
 async fn healthz() -> impl IntoResponse {
@@ -374,17 +377,26 @@ async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
     )
 }
 
-/// Status: build version, module readiness, TLS mode, leaf fingerprint, the
-/// full typed TLS DTO, the cluster block when a role is active, and any active
-/// warnings (self-signed bootstrap certificate).
+/// Status. Anonymous callers get only readiness (`ready`, `modules_not_ready`).
+/// Authenticated callers (cookie session or bearer token) also get the build
+/// version, the TLS mode, leaf fingerprint, the full typed TLS DTO, the cluster
+/// block when a role is active, and any active warnings (self-signed bootstrap
+/// certificate).
 ///
 /// When this process does not terminate TLS (reverse-proxy mode), the TLS
 /// fields are omitted entirely.
-async fn status(State(state): State<AppState>) -> impl IntoResponse {
+async fn status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    principal: Option<Extension<Principal>>,
+) -> impl IntoResponse {
+    let not_ready = state.readiness().not_ready_modules();
+    if !caller_is_authenticated(&state, &headers, principal.is_some()).await {
+        return success(json!({ "ready": not_ready.is_empty(), "modules_not_ready": not_ready }));
+    }
     let mut body = serde_json::Map::new();
     // Build version and module readiness (GA14). Only non-secret state.
     body.insert("version".to_owned(), json!(state.version()));
-    let not_ready = state.readiness().not_ready_modules();
     body.insert("ready".to_owned(), json!(not_ready.is_empty()));
     body.insert("modules_not_ready".to_owned(), json!(not_ready));
     if let Some(tls) = state.tls_status_async().await {
@@ -408,6 +420,66 @@ async fn status(State(state): State<AppState>) -> impl IntoResponse {
         body.insert("cluster".to_owned(), cluster.to_json());
     }
     success(serde_json::Value::Object(body))
+}
+
+/// Whether the caller presented a valid session or bearer credential. Public
+/// routes skip RBAC, so the bearer token is checked here directly.
+async fn caller_is_authenticated(state: &AppState, headers: &HeaderMap, has_session: bool) -> bool {
+    if has_session {
+        return true;
+    }
+    match (state.auth_state(), bearer_token(headers)) {
+        (Some(auth), Some(token)) => auth.tokens().authenticate(token).await.is_ok(),
+        _ => false,
+    }
+}
+
+/// Adds the baseline response headers to every response (outermost layer, so
+/// 404s and 429s carry them too). A header the handler already set is kept.
+async fn security_headers(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let path = req.uri().path().to_owned();
+    let is_api = path == "/api" || path.starts_with("/api/");
+    let no_store = is_api || path.starts_with("/mcp/") || path.starts_with("/oauth/");
+    // `X-Forwarded-Proto` counts only from a trusted proxy peer (GA10). The
+    // rate limiter strips it from other peers, but it runs after this layer.
+    let forwarded_https = state.is_trusted_proxy(peer.ip().to_canonical())
+        && req
+            .headers()
+            .get("x-forwarded-proto")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(',').next())
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("https"));
+    let tls = state.tls_status().is_some() || forwarded_https;
+
+    let mut res = next.run(req).await;
+    let headers = res.headers_mut();
+    if tls {
+        set_if_absent(
+            headers,
+            HeaderName::from_static("strict-transport-security"),
+            "max-age=31536000; includeSubDomains",
+        );
+    }
+    set_if_absent(headers, header::X_CONTENT_TYPE_OPTIONS, "nosniff");
+    set_if_absent(headers, header::REFERRER_POLICY, "no-referrer");
+    if no_store {
+        set_if_absent(headers, header::CACHE_CONTROL, "no-store");
+    }
+    if is_api {
+        set_if_absent(headers, HeaderName::from_static("x-frame-options"), "DENY");
+    }
+    res
+}
+
+fn set_if_absent(headers: &mut HeaderMap, name: HeaderName, value: &'static str) {
+    if !headers.contains_key(&name) {
+        headers.insert(name, HeaderValue::from_static(value));
+    }
 }
 
 async fn not_found(req: Request) -> Response {
@@ -487,6 +559,14 @@ mod tests {
             .await
             .unwrap();
         String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[test]
+    fn set_if_absent_keeps_a_header_the_handler_already_set() {
+        let mut headers = HeaderMap::new();
+        set_if_absent(&mut headers, header::CACHE_CONTROL, "private, max-age=60");
+        set_if_absent(&mut headers, header::CACHE_CONTROL, "no-store");
+        assert_eq!(headers[header::CACHE_CONTROL], "private, max-age=60");
     }
 
     #[tokio::test]

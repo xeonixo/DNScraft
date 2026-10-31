@@ -654,6 +654,65 @@ async fn doh_partial_headers_closed() {
     h.stop().await;
 }
 
+/// A POST that sends complete headers and then stalls mid-body must get `408` once the
+/// read budget (`tcp_idle_timeout`) elapses, and the connection must close with it.
+#[tokio::test]
+async fn doh_slow_body_gets_408_and_closes() {
+    install_ring();
+    let engine = policy_engine_with_client_ids(&["phone"]).await;
+    let gate = SniGate {
+        public_domain: DOMAIN.into(),
+        reserved: Arc::new(std::sync::RwLock::new(ReservedLabels::new(
+            ["node1".into()],
+        ))),
+        registry: Arc::new(PolicyClientIds(engine)),
+    };
+    let (pem, key, _) = example_dns_cert();
+    let certs = Arc::new(CertResolver::new());
+    certs.install(&pem, &key).unwrap();
+    // Real time: the body deadline is measured by the system clock.
+    let idle = Duration::from_millis(300);
+    let h = DohHarness::spawn(
+        Exposure::Local,
+        Limits {
+            tcp_idle_timeout: idle,
+            ..Limits::default()
+        },
+        gate,
+        certs,
+        60,
+    )
+    .await;
+
+    let connector = connector(&[b"http/1.1"]);
+    let tcp = TcpStream::connect(h.addr).await.unwrap();
+    let name = ServerName::try_from("dns.example.com").unwrap();
+    let mut tls = connector.connect(name, tcp).await.unwrap();
+    // Promise 64 body bytes, send 3, then stall.
+    tls.write_all(
+        b"POST /dns-query HTTP/1.1\r\nHost: dns.example.com\r\n\
+          Content-Type: application/dns-message\r\nContent-Length: 64\r\n\r\nabc",
+    )
+    .await
+    .unwrap();
+
+    let mut buf = Vec::new();
+    // Ends when the server closes the connection; a timeout here is also a failure below.
+    let _ = tokio::time::timeout(Duration::from_secs(3), tls.read_to_end(&mut buf)).await;
+    let text = String::from_utf8_lossy(&buf);
+    assert!(
+        text.starts_with("HTTP/1.1 408"),
+        "expected 408, got: {text:?}"
+    );
+    assert_eq!(h.stats.request_timeouts.load(Ordering::Relaxed), 1);
+    poll_until(
+        || h.stats.closed.load(Ordering::Relaxed) >= 1,
+        Duration::from_secs(3),
+    )
+    .await;
+    h.stop().await;
+}
+
 #[tokio::test]
 async fn doh_idle_h1_keepalive_closed() {
     install_ring();

@@ -12,16 +12,33 @@ use axum::http::{Request, StatusCode};
 use serde_json::Value;
 use tower::ServiceExt as _;
 
-use dnscraft_api::{AppState, ClusterStatus, ClusterStatusHandle};
+use dnscraft_api::{
+    AppState, AuthState, ClusterStatus, ClusterStatusHandle, Db, ManualClock, Scope, SessionStore,
+    TokenStore,
+};
 
 const NOW: u64 = 1_700_000_000;
+const DAY: Duration = Duration::from_secs(24 * 3600);
 
 fn at(seconds: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)
 }
 
+/// `GET /api/v1/status` as an authenticated viewer: the cluster block is
+/// returned only to authenticated callers.
 async fn status_body(state: AppState) -> Value {
+    let clock = Arc::new(ManualClock::new(SystemTime::UNIX_EPOCH));
+    let db = Db::open_in_memory(clock).await.unwrap();
+    let token = TokenStore::new(db.clone(), 365 * DAY)
+        .create("v".into(), "viewer".into(), Scope::Viewer, None)
+        .await
+        .unwrap();
+    let auth = AuthState::new(
+        SessionStore::new(db.clone(), Duration::from_secs(3600), 12 * DAY),
+        TokenStore::new(db.clone(), 365 * DAY),
+    );
     let router = state
+        .with_auth(auth)
         .router()
         .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 40_000))));
     let response = router
@@ -29,6 +46,10 @@ async fn status_body(state: AppState) -> Value {
             Request::builder()
                 .method("GET")
                 .uri("/api/v1/status")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token.plaintext().expose()),
+                )
                 .body(Body::empty())
                 .unwrap(),
         )

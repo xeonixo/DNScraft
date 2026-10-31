@@ -132,12 +132,13 @@ async fn response_content_type_is_json() {
 
 #[tokio::test]
 async fn status_reports_version_and_module_readiness() {
-    // GA14: public status carries the build version and the modules that are
-    // not ready (names only).
+    // GA14: public status carries readiness and the modules that are not
+    // ready (names only). The build version is withheld from anonymous
+    // callers; it is covered for authenticated ones in security_headers.rs.
     let state = AppState::new();
     let (status, body) = get(state.clone(), "/api/v1/status").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["data"]["version"], env!("CARGO_PKG_VERSION"));
+    assert!(body["data"].get("version").is_none(), "{body}");
     assert_eq!(body["data"]["ready"], true);
 
     state.readiness().expect_module("resolver");

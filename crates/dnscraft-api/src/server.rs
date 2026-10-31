@@ -1,9 +1,10 @@
 //! axum server: shared state, readiness, and the network entry point.
 
 use std::collections::BTreeSet;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::time::Duration;
 
 use axum::extract::ConnectInfo;
 use axum::http::Request;
@@ -45,6 +46,9 @@ pub struct AppState {
     tls_admin: Option<Arc<dyn TlsAdmin>>,
     clients: Option<Arc<dyn ClientDirectory>>,
     rate_limiter: Arc<RateLimiter>,
+    /// Trusted reverse-proxy peers; read by the response-header middleware to
+    /// honour `X-Forwarded-Proto` only from them.
+    trusted_proxies: Vec<IpAddr>,
     auth: Option<Arc<AuthState>>,
     local_login: Option<Arc<LocalAccountStore>>,
     /// Live OIDC relying party; swapped when WebUI settings change.
@@ -100,6 +104,7 @@ impl AppState {
                 Arc::new(SystemClock),
                 Vec::new(),
             )),
+            trusted_proxies: Vec::new(),
             auth: None,
             local_login: None,
             oidc: Arc::new(RwLock::new(None)),
@@ -613,6 +618,18 @@ impl AppState {
         self.clients.as_ref()
     }
 
+    /// Records the trusted reverse-proxy peers (the same list the rate limiter
+    /// uses) so response headers can honour a forwarded `https` scheme.
+    pub fn with_trusted_proxies(mut self, trusted: Vec<IpAddr>) -> Self {
+        self.trusted_proxies = trusted;
+        self
+    }
+
+    /// Whether `peer` is a configured trusted proxy.
+    pub(crate) fn is_trusted_proxy(&self, peer: IpAddr) -> bool {
+        self.trusted_proxies.contains(&peer)
+    }
+
     /// Attaches a caller-configured rate limiter (built from the validated
     /// config and the trusted-proxy list at startup).
     pub fn with_rate_limiter(mut self, rate_limiter: Arc<RateLimiter>) -> Self {
@@ -737,13 +754,15 @@ pub async fn serve(
         })?;
     // Defence in depth: refuse to serve even if a bug let a wildcard or
     // dual-stack bind through to a public address.
-    ensure_internal_socket(
-        listener
-            .local_addr()
-            .map_err(|e| ControlApiError::Internal {
-                message: format!("read local address of {addr}: {e}"),
-            })?,
-    )?;
+    let local = listener
+        .local_addr()
+        .map_err(|e| ControlApiError::Internal {
+            message: format!("read local address of {addr}: {e}"),
+        })?;
+    // An explicitly allowed wildcard bind (container) is the one non-internal address accepted.
+    if !(config.allow_wildcard_bind && local.ip().is_unspecified()) {
+        ensure_internal_socket(local)?;
+    }
     let router = prepare_router(&config, state).await?;
     if config.tls {
         let server_config = tls.ok_or_else(|| ControlApiError::Internal {
@@ -772,11 +791,13 @@ pub async fn prepare_router(
     config.validate()?;
     // Build the rate limiter from the validated config so the trusted-proxy
     // list is honoured without the binary having to wire it manually.
-    let state = state.with_rate_limiter(Arc::new(RateLimiter::new(
-        config.rate_limit.clone(),
-        Arc::new(SystemClock),
-        config.trusted_proxies.clone(),
-    )));
+    let state = state
+        .with_rate_limiter(Arc::new(RateLimiter::new(
+            config.rate_limit.clone(),
+            Arc::new(SystemClock),
+            config.trusted_proxies.clone(),
+        )))
+        .with_trusted_proxies(config.trusted_proxies.clone());
     // `allowed_origins` arrives already derived from the public hostname: the
     // production assembler fills it before the config reaches this point (GM11).
     let mcp_config = config.mcp.clone();
@@ -856,14 +877,22 @@ async fn serve_tls(
     router: axum::Router,
     server_config: Arc<rustls::ServerConfig>,
 ) -> Result<(), ControlApiError> {
+    /// Stalled request-header reads are dropped after this long (slowloris).
+    const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
+    /// Pause after a failed `accept()` (e.g. `EMFILE`) so the loop cannot spin.
+    const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
+
     let acceptor = tokio_rustls::TlsAcceptor::from(server_config);
     loop {
-        let (stream, peer) = listener
-            .accept()
-            .await
-            .map_err(|e| ControlApiError::Internal {
-                message: format!("accept: {e}"),
-            })?;
+        let (stream, peer) = match listener.accept().await {
+            Ok(accepted) => accepted,
+            Err(e) => {
+                // A transient accept failure must not take the whole API down.
+                tracing::warn!(error = %e, "control-api accept failed; retrying");
+                tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
+                continue;
+            }
+        };
         let acceptor = acceptor.clone();
         let router = router.clone();
         tokio::spawn(async move {
@@ -886,10 +915,11 @@ async fn serve_tls(
                 async move { router.oneshot(req).await }
             });
             let service = hyper_util::service::TowerToHyperService::new(service);
-            if let Err(e) = hyper::server::conn::http1::Builder::new()
-                .serve_connection(io, service)
-                .await
-            {
+            let mut builder = hyper::server::conn::http1::Builder::new();
+            builder
+                .timer(hyper_util::rt::TokioTimer::new())
+                .header_read_timeout(HEADER_READ_TIMEOUT);
+            if let Err(e) = builder.serve_connection(io, service).await {
                 tracing::debug!(%peer, error = %e, "control-api connection error");
             }
         });

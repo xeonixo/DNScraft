@@ -149,7 +149,7 @@ impl TlsStatusProvider for FakeTls {
 }
 
 #[tokio::test]
-async fn status_reports_tls_mode_fingerprint_and_self_signed_warning() {
+async fn status_hides_tls_detail_from_anonymous_callers() {
     let state = AppState::new().with_tls(Arc::new(FakeTls(TlsStatus::new(
         TlsMode::SelfSigned,
         "ab".repeat(32),
@@ -170,12 +170,10 @@ async fn status_reports_tls_mode_fingerprint_and_self_signed_warning() {
         .await
         .unwrap();
     let body: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(body["data"]["tls_mode"], "self_signed");
-    assert_eq!(body["data"]["tls_fingerprint"], "ab".repeat(32));
-    assert_eq!(
-        body["data"]["warnings"],
-        serde_json::json!(["control_api.tls.self_signed"])
-    );
+    assert_eq!(body["data"]["ready"], true);
+    assert!(body["data"].get("tls_mode").is_none(), "{body}");
+    assert!(body["data"].get("tls_fingerprint").is_none(), "{body}");
+    assert!(body["data"].get("warnings").is_none(), "{body}");
 }
 
 #[tokio::test]
@@ -244,9 +242,9 @@ async fn serve_tls_round_trip_reports_self_signed_status() {
     let text = String::from_utf8(raw).unwrap();
 
     assert!(text.starts_with("HTTP/1.1 200 OK"), "response: {text}");
-    assert!(text.contains("\"tls_mode\":\"self_signed\""), "{text}");
-    assert!(text.contains("\"tls_fingerprint\""), "{text}");
-    assert!(text.contains("control_api.tls.self_signed"), "{text}");
+    assert!(text.contains("\"modules_not_ready\""), "{text}");
+    assert!(!text.contains("\"tls_fingerprint\""), "{text}");
+    assert!(!text.contains("control_api.tls.self_signed"), "{text}");
 
     handle.abort();
 }

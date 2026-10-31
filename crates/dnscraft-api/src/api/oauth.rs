@@ -6,11 +6,13 @@
 //! revocation and the token list are unchanged.
 //!
 //! - Public clients only, PKCE `S256` mandatory, no client secrets.
-//! - Dynamic client registration is stateless: a registration only checks the
-//!   redirect URIs; `client_id` is not stored or verified later. The redirect
-//!   allow-list plus PKCE plus the admin consent carry the security.
+//! - Dynamic client registration remembers `client_id` and its redirect URIs
+//!   (bounded). When the consent flow names a `client_id` it must match a
+//!   registration and its redirect URI. Without one, only loopback redirects
+//!   are accepted. The redirect allow-list plus PKCE plus the admin consent
+//!   carry the security.
 //! - Authorization codes live in memory for 60 s and are single-use.
-//! - No refresh tokens: the access token lives 30 days, then the client signs
+//! - No refresh tokens: the access token lives 7 days, then the client signs
 //!   in again.
 
 use std::collections::HashMap;
@@ -36,11 +38,37 @@ use super::auth::{Role, Scope, csrf_matches, csrf_token_for, session_cookie_valu
 use crate::server::AppState;
 
 const CODE_TTL: Duration = Duration::from_secs(60);
-const TOKEN_TTL: Duration = Duration::from_secs(30 * 24 * 3600);
+const TOKEN_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
 const ALLOWED_REDIRECTS: [&str; 2] = [
     "https://claude.ai/api/mcp/auth_callback",
     "https://claude.com/api/mcp/auth_callback",
 ];
+/// Most registered clients remembered; the oldest is forgotten first.
+const MAX_REGISTERED_CLIENTS: usize = 1000;
+
+/// Clients registered in this process as `(client_id, redirect_uris)`.
+// ponytail: process-global list, oldest-first eviction, linear scan at 1000 entries.
+// Keeps AppState unchanged; a restart forgets clients, which then re-register.
+static REGISTERED_CLIENTS: Mutex<Vec<(String, Vec<String>)>> = Mutex::new(Vec::new());
+
+fn remember_client(client_id: String, redirect_uris: Vec<String>) {
+    let mut clients = REGISTERED_CLIENTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if clients.len() >= MAX_REGISTERED_CLIENTS {
+        clients.remove(0);
+    }
+    clients.push((client_id, redirect_uris));
+}
+
+/// Whether `client_id` was registered with `redirect_uri`.
+fn client_allows(client_id: &str, redirect_uri: &str) -> bool {
+    REGISTERED_CLIENTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .any(|(id, uris)| id == client_id && uris.iter().any(|uri| uri == redirect_uri))
+}
 
 /// One issued, not yet redeemed authorization code.
 pub(crate) struct PendingCode {
@@ -66,20 +94,22 @@ fn public_base(state: &AppState, headers: &HeaderMap) -> String {
     let proto = headers
         .get("x-forwarded-proto")
         .and_then(|v| v.to_str().ok())
-        .unwrap_or("http");
+        .unwrap_or("https");
     format!("{proto}://{host}")
 }
 
-fn redirect_allowed(uri: &str) -> bool {
-    if ALLOWED_REDIRECTS.contains(&uri) {
-        return true;
-    }
-    // Native clients (Claude Code) use a loopback redirect on any port.
+/// A plain-http redirect to a loopback address (native clients such as Claude Code).
+fn is_loopback(uri: &str) -> bool {
     url::Url::parse(uri).is_ok_and(|u| {
         u.scheme() == "http"
             && matches!(u.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))
             && u.fragment().is_none()
     })
+}
+
+fn redirect_allowed(uri: &str) -> bool {
+    // Native clients (Claude Code) use a loopback redirect on any port.
+    ALLOWED_REDIRECTS.contains(&uri) || is_loopback(uri)
 }
 
 fn random_hex(len: usize) -> Option<String> {
@@ -165,6 +195,10 @@ pub(crate) async fn register(Json(body): Json<Value>) -> Response {
     let Some(client_id) = random_hex(16) else {
         return oauth_error(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
     };
+    remember_client(
+        client_id.clone(),
+        uris.iter().map(|uri| (*uri).to_owned()).collect(),
+    );
     (
         StatusCode::CREATED,
         Json(json!({
@@ -184,6 +218,8 @@ pub(crate) struct AuthorizeParams {
     #[serde(default)]
     response_type: String,
     #[serde(default)]
+    client_id: String,
+    #[serde(default)]
     redirect_uri: String,
     #[serde(default)]
     state: String,
@@ -194,9 +230,20 @@ pub(crate) struct AuthorizeParams {
 }
 
 impl AuthorizeParams {
+    /// With a `client_id` it must be a registered client with this redirect URI.
+    /// Without one, only a loopback redirect is accepted.
+    fn client_ok(&self) -> bool {
+        if self.client_id.is_empty() {
+            is_loopback(&self.redirect_uri)
+        } else {
+            client_allows(&self.client_id, &self.redirect_uri)
+        }
+    }
+
     fn valid(&self) -> bool {
         self.response_type == "code"
             && redirect_allowed(&self.redirect_uri)
+            && self.client_ok()
             && self.code_challenge_method == "S256"
             && !self.code_challenge.is_empty()
     }
@@ -269,19 +316,26 @@ pub(crate) async fn authorize_page(
             escape(value)
         )
     };
+    let host = url::Url::parse(&p.redirect_uri)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_owned))
+        .unwrap_or_default();
     page(
         StatusCode::OK,
         &format!(
             "<h1>Zugriff erlauben?</h1>\
              <p>Eine Anwendung (z. B. Claude) möchte über MCP auf diesen DNScraft-Knoten \
              zugreifen: Abfragen lesen sowie – sofern aktiviert – Regeln ändern. \
-             Der Zugriff gilt 30 Tage und lässt sich in den API-Tokens widerrufen.</p>\
-             <p>Weiterleitung an: <code>{}</code></p>\
-             <form method=\"post\" action=\"/oauth/authorize\">{}{}{}{}{}\
+             Der Zugriff gilt 7 Tage und lässt sich in den API-Tokens widerrufen.</p>\
+             <p style=\"font-size:1.2rem\">Rückgabe an Host: <strong><code>{}</code></strong></p>\
+             <p>Vollständige Weiterleitung: <code>{}</code></p>\
+             <form method=\"post\" action=\"/oauth/authorize\">{}{}{}{}{}{}\
              <button name=\"decision\" value=\"allow\">Erlauben</button> \
              <button name=\"decision\" value=\"deny\">Ablehnen</button></form>",
+            escape(&host),
             escape(&p.redirect_uri),
             hidden("csrf", csrf.expose()),
+            hidden("client_id", &p.client_id),
             hidden("redirect_uri", &p.redirect_uri),
             hidden("state", &p.state),
             hidden("code_challenge", &p.code_challenge),
@@ -323,6 +377,7 @@ pub(crate) async fn authorize_decision(
     let get = |k: &str| f.get(k).map(String::as_str).unwrap_or_default();
     let params = AuthorizeParams {
         response_type: "code".to_owned(),
+        client_id: get("client_id").to_owned(),
         redirect_uri: get("redirect_uri").to_owned(),
         state: get("state").to_owned(),
         code_challenge: get("code_challenge").to_owned(),
@@ -506,15 +561,34 @@ mod tests {
         req.body(Body::from(body)).unwrap()
     }
 
-    fn consent_form(cookie: &str, decision: &str) -> String {
+    /// Registers a client for [`REDIRECT`] and returns its `client_id`.
+    async fn register_client(app: &Router) -> String {
+        let req = Request::post("/oauth/register")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                json!({ "redirect_uris": [REDIRECT] }).to_string(),
+            ))
+            .unwrap();
+        let (status, _, body) = send(app, req).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let json: Value = serde_json::from_str(&body).unwrap();
+        json["client_id"].as_str().unwrap().to_owned()
+    }
+
+    fn consent_form_for(cookie: &str, client_id: &str, redirect: &str, decision: &str) -> String {
         url::form_urlencoded::Serializer::new(String::new())
             .append_pair("csrf", csrf_token_for(cookie).expose())
-            .append_pair("redirect_uri", REDIRECT)
+            .append_pair("client_id", client_id)
+            .append_pair("redirect_uri", redirect)
             .append_pair("state", "xyz")
             .append_pair("code_challenge", &challenge())
             .append_pair("code_challenge_method", "S256")
             .append_pair("decision", decision)
             .finish()
+    }
+
+    fn consent_form(cookie: &str, client_id: &str, decision: &str) -> String {
+        consent_form_for(cookie, client_id, REDIRECT, decision)
     }
 
     fn token_form(code: &str) -> String {
@@ -540,12 +614,13 @@ mod tests {
     #[tokio::test]
     async fn full_flow_issues_a_single_use_mcp_token() {
         let (app, cookie) = app().await;
+        let client_id = register_client(&app).await;
         let (status, headers, _) = send(
             &app,
             post_form(
                 "/oauth/authorize",
                 Some(&cookie),
-                consent_form(&cookie, "allow"),
+                consent_form(&cookie, &client_id, "allow"),
             ),
         )
         .await;
@@ -567,12 +642,13 @@ mod tests {
     #[tokio::test]
     async fn wrong_verifier_csrf_and_anonymous_are_refused() {
         let (app, cookie) = app().await;
+        let client_id = register_client(&app).await;
         let (_, headers, _) = send(
             &app,
             post_form(
                 "/oauth/authorize",
                 Some(&cookie),
-                consent_form(&cookie, "allow"),
+                consent_form(&cookie, &client_id, "allow"),
             ),
         )
         .await;
@@ -581,28 +657,87 @@ mod tests {
         let (status, _, _) = send(&app, post_form("/oauth/token", None, bad)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
 
-        let forged =
-            consent_form(&cookie, "allow").replace(csrf_token_for(&cookie).expose(), "nope");
+        let forged = consent_form(&cookie, &client_id, "allow")
+            .replace(csrf_token_for(&cookie).expose(), "nope");
         let (status, _, _) = send(&app, post_form("/oauth/authorize", Some(&cookie), forged)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
 
         let (status, _, _) = send(
             &app,
-            post_form("/oauth/authorize", None, consent_form(&cookie, "allow")),
+            post_form(
+                "/oauth/authorize",
+                None,
+                consent_form(&cookie, &client_id, "allow"),
+            ),
         )
         .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
+    async fn unregistered_or_mismatched_clients_are_refused() {
+        let (app, cookie) = app().await;
+        let client_id = register_client(&app).await;
+
+        // An unknown client_id is refused even for an allowed redirect.
+        let (status, _, _) = send(
+            &app,
+            post_form(
+                "/oauth/authorize",
+                Some(&cookie),
+                consent_form(&cookie, "not-registered", "allow"),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // A registered client may not redirect to a URI it did not register.
+        let other = "https://claude.com/api/mcp/auth_callback";
+        let (status, _, _) = send(
+            &app,
+            post_form(
+                "/oauth/authorize",
+                Some(&cookie),
+                consent_form_for(&cookie, &client_id, other, "allow"),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // Without a client_id only a loopback redirect is accepted.
+        let (status, _, _) = send(
+            &app,
+            post_form(
+                "/oauth/authorize",
+                Some(&cookie),
+                consent_form_for(&cookie, "", REDIRECT, "allow"),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let loopback = "http://127.0.0.1:53682/callback";
+        let (status, _, _) = send(
+            &app,
+            post_form(
+                "/oauth/authorize",
+                Some(&cookie),
+                consent_form_for(&cookie, "", loopback, "allow"),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+    }
+
+    #[tokio::test]
     async fn deny_redirects_with_access_denied_and_register_checks_redirects() {
         let (app, cookie) = app().await;
+        let client_id = register_client(&app).await;
         let (status, headers, _) = send(
             &app,
             post_form(
                 "/oauth/authorize",
                 Some(&cookie),
-                consent_form(&cookie, "deny"),
+                consent_form(&cookie, &client_id, "deny"),
             ),
         )
         .await;

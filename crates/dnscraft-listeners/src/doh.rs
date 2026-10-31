@@ -18,7 +18,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::net::{TcpListener as TokioTcpListener, TcpStream};
 use tokio::sync::{Notify, Semaphore, oneshot, watch};
 use tokio_rustls::TlsAcceptor;
@@ -66,7 +66,7 @@ pub struct DohStats {
     pub http_429: AtomicU64,
     /// Ban strikes recorded for unknown public path ids.
     pub path_strikes: AtomicU64,
-    /// HTTP/3 requests whose header/body read deadline fired (stream reset).
+    /// Requests whose header/body read deadline fired (HTTP/3 stream reset, or HTTP/1.1 / HTTP/2 `408`).
     pub request_timeouts: AtomicU64,
     /// HTTP/3 request processing errors (resolve / recv / send failures).
     pub request_errors: AtomicU64,
@@ -216,6 +216,8 @@ where
             }
             accepted = listener_tok.accept() => {
                 let Ok((stream, peer)) = accepted else {
+                    // Back off (e.g. EMFILE) instead of spinning on a persistent error.
+                    tokio::time::sleep(Duration::from_millis(50)).await;
                     continue;
                 };
                 handle_accept(
@@ -447,6 +449,26 @@ impl ConnActivity {
     }
 }
 
+/// Whether a QUIC connection attempt must be answered with a Retry (address validation).
+///
+/// Only unvalidated sources on a public listener, where a spoofed source could otherwise hold
+/// connection permits or trigger handshake strikes against a victim address.
+pub(crate) fn needs_address_validation(
+    admission: &Mutex<Admission>,
+    exposure: Exposure,
+    source: IpAddr,
+    validated: bool,
+) -> bool {
+    if validated {
+        return false;
+    }
+    let class = admission
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .classify(source);
+    public_client_id_required(exposure, class)
+}
+
 /// Decrements (and prunes at zero) the per-source connection counter.
 pub(crate) fn release_per_source(per_source: &Mutex<HashMap<IpAddr, u32>>, source: IpAddr) {
     let mut map = per_source
@@ -542,11 +564,29 @@ where
     H: QueryHandler,
 {
     let (parts, body) = req.into_parts();
-    let collected = match Limited::new(body, MAX_MESSAGE_LEN + 1).collect().await {
-        Ok(c) => c.to_bytes(),
-        Err(_) => {
-            strike_malformed(&shared, peer);
-            return status_empty(StatusCode::PAYLOAD_TOO_LARGE);
+    // Path / Client-ID gate first: unknown paths are refused before any body is read.
+    let client_id_state =
+        match resolve_path_client_id(&shared, peer, &parse_doh_path(parts.uri.path())) {
+            Ok(state) => state,
+            Err(status) => return status_empty(status),
+        };
+
+    // Total read budget for the body (same window as HTTP/3 and idle close). Without it a
+    // peer that sends headers and then trickles or stalls the body would hold the connection
+    // open indefinitely, since idle close is suspended while a request is in flight.
+    let read_deadline = add_duration(shared.clock.now(), shared.limits.tcp_idle_timeout);
+    let read_wake = Notify::new();
+    let collected = tokio::select! {
+        r = Limited::new(body, MAX_MESSAGE_LEN + 1).collect() => match r {
+            Ok(c) => c.to_bytes(),
+            Err(_) => {
+                strike_malformed(&shared, peer);
+                return status_empty(StatusCode::PAYLOAD_TOO_LARGE);
+            }
+        },
+        () = wait_until(shared.clock.as_ref(), read_deadline, &read_wake) => {
+            DohStats::bump(&shared.stats.request_timeouts);
+            return status_empty(StatusCode::REQUEST_TIMEOUT);
         }
     };
     if collected.len() > MAX_MESSAGE_LEN {
@@ -557,6 +597,7 @@ where
     let parts_out = process_doh_request(
         &shared,
         peer,
+        client_id_state,
         &parts.method,
         &parts.uri,
         &parts.headers,
@@ -566,10 +607,14 @@ where
     parts_to_response(parts_out)
 }
 
-/// Shared DoH path/admission/`handle_wire` for HTTP/1.1, HTTP/2, and HTTP/3.
+/// Shared DoH admission/`handle_wire` for HTTP/1.1, HTTP/2, and HTTP/3.
+///
+/// `client_id_state` comes from [`resolve_path_client_id`], which callers run before reading
+/// the body.
 pub(crate) async fn process_doh_request<H>(
     shared: &Arc<DohShared<H>>,
     peer: IpAddr,
+    client_id_state: ClientIdState,
     method: &Method,
     uri: &Uri,
     headers: &HeaderMap,
@@ -578,12 +623,6 @@ pub(crate) async fn process_doh_request<H>(
 where
     H: QueryHandler,
 {
-    let path = parse_doh_path(uri.path());
-    let client_id_state = match resolve_path_client_id(shared, peer, &path) {
-        Ok(state) => state,
-        Err(status) => return empty_parts(status),
-    };
-
     let wire = match extract_wire(method, uri, content_type_of(headers), &body) {
         Ok(w) => w,
         Err(e) => {
@@ -760,7 +799,8 @@ fn parts_to_response(parts: DohHttpParts) -> Response<Full<Bytes>> {
         .unwrap_or_else(|_| status_empty(StatusCode::INTERNAL_SERVER_ERROR))
 }
 
-fn resolve_path_client_id<H: ?Sized>(
+/// Path / Client-ID admission for a DoH request (may record a path strike).
+pub(crate) fn resolve_path_client_id<H: ?Sized>(
     shared: &DohShared<H>,
     peer: IpAddr,
     path: &DohPath,

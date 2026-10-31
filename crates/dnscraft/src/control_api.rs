@@ -83,6 +83,15 @@ pub(crate) async fn start(
     })?;
 
     let shared_port = shared_listener_port(set, &api_config);
+    if let (Some(listener), Some(_)) = (api_config.shared_doh_listener.as_deref(), shared_port) {
+        tracing::warn!(
+            shared_doh_listener = listener,
+            "control-api shares a DoH listener: source classification uses the TCP peer address, \
+             and Docker userland-proxy, NAT or reverse proxies make all clients look private \
+             (open DoH without client-id, web UI reachable, no bans). Use host networking or \
+             iptables publishing that preserves source IPs; see deploy/README.md"
+        );
+    }
     let hostname = api_hostname(config);
     let mut mcp_config = api_config.mcp.clone();
     // The web UI stores the MCP switches in the config store; they win over TOML.

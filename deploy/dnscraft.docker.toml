@@ -24,6 +24,8 @@ address = "0.0.0.0:5300"
 
 [control_api]
 bind = "0.0.0.0"
+# Containers only: the published port is the exposure control (compose maps it to loopback).
+allow_wildcard_bind = true
 # Plain HTTP sample: port 80. With `tls = true` prefer 443 (crate default).
 port = 80
 tls = false

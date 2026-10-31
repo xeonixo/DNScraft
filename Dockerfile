@@ -8,14 +8,14 @@
 
 ARG RUST_VERSION=1.88
 
-FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS web
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da AS web
 WORKDIR /web
 RUN corepack enable && corepack prepare pnpm@9 --activate
 COPY web .
 RUN pnpm install --frozen-lockfile
 RUN pnpm run build
 
-FROM rust:${RUST_VERSION}-bookworm AS builder
+FROM rust:${RUST_VERSION}-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS builder
 WORKDIR /build
 
 COPY Cargo.toml Cargo.lock deny.toml rust-toolchain.toml ./
@@ -24,7 +24,7 @@ COPY --from=web /web/build ./crates/dnscraft-api/embed-web-ui
 
 RUN cargo build --release -p dnscraft --features web-ui --locked
 
-FROM debian:bookworm-slim AS runtime
+FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3 AS runtime
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \

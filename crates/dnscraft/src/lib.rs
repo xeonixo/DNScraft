@@ -300,13 +300,24 @@ pub async fn build_with_enrollment(
     // AS12: SQLite query-log consumer over the same database. The bounded
     // sink keeps the answer path non-blocking; the consumer batch-inserts and
     // applies retention. The client enricher comes from the live directory.
+    let node_id = config
+        .node_id()
+        .map_err(|e| Error::startup("dnscraft.startup.node_id", format!("node_id: {e}")))?;
+    // The master's own rows carry its real node id so the node filter finds them. A sub-node
+    // keeps `local`: its outbox sequence counters are keyed by it and replication re-labels
+    // the rows with the enrolled id on the master.
+    let log_node_id = if cluster.as_ref().map(|c| c.role) == Some(Role::SubNode) {
+        CONFIG_NODE_ID
+    } else {
+        node_id.as_str()
+    };
     let (query_sink, query_rx) = QueryLog::channel(QUERY_LOG_CHANNEL_CAPACITY);
     // The sink is attached so the overview reports `query_log.dropped`.
     let query_log = Arc::new(
         QueryLog::new(
             db.clone(),
             config.control_api.query_log.clone(),
-            CONFIG_NODE_ID,
+            log_node_id,
         )
         .with_client_enricher(Arc::new(engine::EngineClients {
             engine: Arc::clone(&engines.clients),
@@ -359,9 +370,6 @@ pub async fn build_with_enrollment(
     let listener_sink = Arc::clone(&sink);
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let api_acme = certs.clone();
-    let node_id = config
-        .node_id()
-        .map_err(|e| Error::startup("dnscraft.startup.node_id", format!("node_id: {e}")))?;
     let set = Arc::new(
         ListenerSet::start(
             listeners,

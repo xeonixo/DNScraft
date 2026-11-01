@@ -217,6 +217,13 @@ same label under **different** domains is fine (`phone.iot.example.com` ≠
 FQDN: manual wins; the UniFi client is (re)labelled with the suffix as above.
 Assignments of evicted clients are dropped with the client.
 
+**Foreign addresses:** when a UniFi client resolves to a network that publishes
+an IPv4/IPv6 prefix, addresses outside that prefix are dropped before indexing
+(and before retention). Classic often keeps a stale `last_ip` / `fixed_ip` from
+another VLAN on the row; those must not steal `by_ip` from the device that
+actually holds the address. Families without a known prefix on the network are
+left untouched.
+
 **IP conflicts** (two clients claim the same address, e.g. DHCP reuse while an
 offline client is still retained, or a retained rotating IPv6 address), applied
 after the source precedence above: an **online** client beats a retained-offline

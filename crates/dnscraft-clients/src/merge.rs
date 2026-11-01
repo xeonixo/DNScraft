@@ -63,6 +63,9 @@ pub struct NetworkInfo {
 pub struct MergeStats {
     /// UniFi↔UniFi IP claims resolved by dropping the loser from the index.
     pub ip_conflicts: u64,
+    /// Addresses dropped because they lie outside the client's known network prefix
+    /// (stale Classic `last_ip` / `fixed_ip` on another VLAN, etc.).
+    pub foreign_addresses: u64,
     /// True when the soft 2 000-client warn fired.
     pub warned_too_many: bool,
 }
@@ -269,9 +272,19 @@ pub fn build(
 
     let mut unifi_meta: Vec<UnifiMeta> = Vec::with_capacity(unifi_list.len());
 
-    for draft in unifi_list {
+    for mut draft in unifi_list {
         let idx = clients.len() as u32;
         let network = resolve_network(&draft, &net_by_id, networks);
+        let dropped = drop_foreign_addresses(&mut draft, network);
+        if dropped > 0 {
+            stats.foreign_addresses = stats.foreign_addresses.saturating_add(dropped);
+            warn!(
+                client = %draft.id,
+                dropped,
+                network = network.map(|n| n.name.as_str()).unwrap_or("-"),
+                "dropped UniFi addresses outside the client's network prefix"
+            );
+        }
         let vlan = network.and_then(vlan_info);
         let domain = resolve_domain(cfg, &default_domain, network);
 
@@ -511,6 +524,37 @@ fn resolve_network<'a>(
         }
     }
     best.map(|(n, _)| n)
+}
+
+/// Drops addresses that cannot belong on the client's resolved network.
+///
+/// Classic UniFi often keeps a stale `last_ip` / `fixed_ip` from another VLAN on
+/// the client row. Those must not win `by_ip` against the device that actually
+/// holds the address. When the network has no prefix for a family, addresses of
+/// that family are kept (cannot validate). Returns how many addresses were
+/// removed.
+fn drop_foreign_addresses(draft: &mut DraftUnifi, network: Option<&NetworkInfo>) -> u64 {
+    let Some(network) = network else {
+        return 0;
+    };
+    let has_v4 = network.ipv4_prefix.is_some();
+    let has_v6 = network.ipv6_prefix.is_some();
+    if !has_v4 && !has_v6 {
+        return 0;
+    }
+    let before = draft.addresses.len();
+    draft.addresses.retain(|addr| match addr {
+        IpAddr::V4(_) => network
+            .ipv4_prefix
+            .is_none_or(|prefix| prefix.contains(addr)),
+        IpAddr::V6(_) => network
+            .ipv6_prefix
+            .is_none_or(|prefix| prefix.contains(addr)),
+    });
+    draft
+        .v6_timestamps
+        .retain(|addr, _| draft.addresses.contains(addr));
+    u64::try_from(before.saturating_sub(draft.addresses.len())).unwrap_or(u64::MAX)
 }
 
 /// `None` when the matched network has no 802.1Q id: an unknown VLAN is not id 0.

@@ -210,6 +210,55 @@ fn ip_conflict_online_beats_retained_offline() {
 }
 
 #[test]
+fn drops_unifi_addresses_outside_the_client_network_prefix() {
+    // Classic often leaves a stale last_ip from another VLAN on the ATV row.
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(2_000_000);
+    let networks = [
+        net("net-iot", "IoT", 40, Some("172.20.40.0/24"), None),
+        net("net-user", "User", 20, Some("172.20.20.0/24"), None),
+    ];
+    let out = build(
+        &[],
+        &[
+            obs(
+                "atv",
+                "ATV Schlafzimmer",
+                &["172.20.40.106", "172.20.20.103"],
+                Some("net-iot"),
+                Some(now),
+                true,
+            ),
+            obs(
+                "phone",
+                "iPhone",
+                &["172.20.20.103"],
+                Some("net-user"),
+                Some(now),
+                true,
+            ),
+        ],
+        &networks,
+        &State::default(),
+        &cfg(),
+        now,
+    )
+    .unwrap();
+
+    assert_eq!(out.stats.foreign_addresses, 1);
+    let phone = out.lookup.by_ip(ip("172.20.20.103")).unwrap();
+    assert_eq!(phone.id.as_str(), "phone");
+    assert_eq!(phone.display_name, "iPhone");
+    assert!(out.lookup.by_ip(ip("172.20.40.106")).unwrap().id.as_str() == "atv");
+    let atv = out
+        .lookup
+        .clients()
+        .iter()
+        .find(|c| c.id.as_str() == "atv")
+        .unwrap();
+    assert_eq!(atv.addresses.as_ref(), &[ip("172.20.40.106")]);
+}
+
+#[test]
 fn offline_retain_then_evict() {
     let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
     let mut cfg = cfg();

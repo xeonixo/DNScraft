@@ -99,6 +99,41 @@ fn identical_combinations_share_one_index() {
 }
 
 #[test]
+fn build_reusing_keeps_shared_list_index_on_custom_edit() {
+    let b = bodies(&[("a", LIST_A)]);
+    let cfg = config(
+        &[("a", true)],
+        vec![set_cfg("s", &["a"], "||first.example^\n")],
+    );
+    let snap = SnapshotBuilder::new(b.clone()).build(&cfg).unwrap();
+    let calls_after_build = b.calls.load(Ordering::SeqCst);
+    assert!(calls_after_build > 0);
+
+    let mut next = cfg.clone();
+    next.sets[0].custom_rules = "||first.example^\n||second.example^\n".into();
+    let reused = SnapshotBuilder::new(b.clone())
+        .build_reusing(&next, &snap, &cfg)
+        .unwrap();
+    assert_eq!(
+        b.calls.load(Ordering::SeqCst),
+        calls_after_build,
+        "reusing must not re-open list bodies"
+    );
+    assert!(Arc::ptr_eq(
+        snap.shared_index(&sid("s")).unwrap(),
+        reused.shared_index(&sid("s")).unwrap()
+    ));
+    assert!(matches!(
+        verdict(&reused, "s", "second.example", t(0)),
+        Verdict::Blocked(_)
+    ));
+    assert!(matches!(
+        verdict(&reused, "s", "ads.example", t(0)),
+        Verdict::Blocked(_)
+    ));
+}
+
+#[test]
 fn custom_allow_overrides_list_block() {
     let b = bodies(&[("a", LIST_A)]);
     let cfg = config(

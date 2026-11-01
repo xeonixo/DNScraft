@@ -350,6 +350,9 @@ impl ConfigService {
                 return Err(err);
             }
         };
+        // Remote list refresh is only needed when list sources/enablement change
+        // (GF2). Custom-rule / set edits reuse cached bodies; the scheduler and
+        // explicit "update now" cover freshness.
         self.commit(
             actor,
             "config.write",
@@ -357,7 +360,7 @@ impl ConfigService {
             previous.as_ref(),
             &snapshot,
             ApplyStoreMode::Bump {
-                refresh_lists: true,
+                refresh_lists: remote_lists_need_refresh(previous.as_ref(), &snapshot),
             },
         )
         .await
@@ -771,7 +774,9 @@ impl ConfigService {
             .await;
             return Err(err);
         }
-        if let Err(err) = self.refresh_filtering_lists(&snapshot).await {
+        if remote_lists_need_refresh(previous.as_ref(), &snapshot)
+            && let Err(err) = self.refresh_filtering_lists(&snapshot).await
+        {
             self.record(
                 actor,
                 "config.rollback",
@@ -1006,6 +1011,25 @@ impl ConfigService {
             tracing::error!(error = %err, "failed to write config audit record");
         }
     }
+}
+
+/// Whether a versioned write must refresh remote filter lists (GF2).
+///
+/// True on the first stored version (populate caches) and whenever
+/// `filtering.lists` or `filtering.max_list_size_mb` changes. Pure set / custom
+/// rule / MCP edits leave list bodies untouched, so a refetch would only add
+/// latency under the apply lock.
+fn remote_lists_need_refresh(previous: Option<&Value>, snapshot: &Value) -> bool {
+    let Some(previous) = previous else {
+        return true;
+    };
+    let prev_filtering = previous.get("filtering");
+    let next_filtering = snapshot.get("filtering");
+    let prev_lists = prev_filtering.and_then(|section| section.get("lists"));
+    let next_lists = next_filtering.and_then(|section| section.get("lists"));
+    let prev_max = prev_filtering.and_then(|section| section.get("max_list_size_mb"));
+    let next_max = next_filtering.and_then(|section| section.get("max_list_size_mb"));
+    prev_lists != next_lists || prev_max != next_max
 }
 
 /// Cross-module validation performed before any module apply.

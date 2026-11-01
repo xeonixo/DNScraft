@@ -180,6 +180,26 @@ pub struct FilterConfig {
 }
 
 impl FilterConfig {
+    /// True when list identities that affect the shared indexes are unchanged.
+    ///
+    /// Compares each list's `id` / `source` / `enabled` (display names may
+    /// differ) and `max_list_size_mb`. Set-level fields (custom rules, MCP,
+    /// which lists a set selects) are ignored: those can reuse cached shared
+    /// indexes when bodies have not changed.
+    pub fn list_material_eq(&self, other: &Self) -> bool {
+        if self.max_list_size_mb != other.max_list_size_mb {
+            return false;
+        }
+        if self.lists.len() != other.lists.len() {
+            return false;
+        }
+        self.lists.iter().zip(other.lists.iter()).all(|(a, b)| {
+            a.id == b.id && a.source == b.source && a.enabled == b.enabled
+        })
+    }
+}
+
+impl FilterConfig {
     /// Rejects list URLs that are not `http(s)://host/...`
     /// (`filter_list.url_invalid`). Called on config validation and at build.
     pub fn validate_list_urls(&self) -> Result<(), SnapshotError> {

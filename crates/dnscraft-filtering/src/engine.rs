@@ -721,21 +721,33 @@ impl FilterEngine {
             armed: true,
         };
         loop {
-            let (pending_cfg, waiters) = {
+            // Config-only rebuilds can reuse shared list indexes. A coalesced
+            // list refresh must rebuild from bodies (checksum may have changed).
+            let (pending_cfg, lists_pending, waiters) = {
                 let mut g = inner
                     .coalesce
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                g.pending_lists = None;
-                (g.pending_config.take(), std::mem::take(&mut g.waiters))
+                let lists_pending = g.pending_lists.take().is_some();
+                (
+                    g.pending_config.take(),
+                    lists_pending,
+                    std::mem::take(&mut g.waiters),
+                )
             };
-            let cfg = pending_cfg.unwrap_or_else(|| {
-                inner
-                    .config
+            let reuse_lists = pending_cfg.is_some() && !lists_pending;
+            let prev_cfg = inner
+                .config
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            let prev_snap = Arc::clone(
+                &self
+                    .snapshot
                     .read()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone()
-            });
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
+            let cfg = pending_cfg.unwrap_or_else(|| prev_cfg.clone());
 
             let mut store = inner.store.clone();
             store.set_max_body_bytes(cfg.max_list_size_bytes());
@@ -751,7 +763,12 @@ impl FilterEngine {
                 if delay > 0 {
                     std::thread::sleep(Duration::from_millis(delay));
                 }
-                build_snapshot(bodies, &cfg, catalog, clock).map(|snap| (snap, cfg))
+                let snap = if reuse_lists && cfg.list_material_eq(&prev_cfg) {
+                    build_snapshot_reusing(bodies, &cfg, catalog, clock, &prev_snap, &prev_cfg)
+                } else {
+                    build_snapshot(bodies, &cfg, catalog, clock)
+                };
+                snap.map(|snap| (snap, cfg))
             })
             .await;
 
@@ -959,6 +976,23 @@ fn build_snapshot(
         .with_catalog(catalog)
         .with_clock(clock)
         .build(config)
+        .map_err(|e: SnapshotError| FilterError::BuildFailed {
+            message: e.to_string(),
+        })
+}
+
+fn build_snapshot_reusing(
+    bodies: Arc<dyn ListBodies>,
+    config: &FilterConfig,
+    catalog: Option<Arc<ServiceCatalog>>,
+    clock: Arc<dyn Clock>,
+    previous: &Snapshot,
+    previous_config: &FilterConfig,
+) -> Result<Snapshot, FilterError> {
+    SnapshotBuilder::new(bodies)
+        .with_catalog(catalog)
+        .with_clock(clock)
+        .build_reusing(config, previous, previous_config)
         .map_err(|e: SnapshotError| FilterError::BuildFailed {
             message: e.to_string(),
         })

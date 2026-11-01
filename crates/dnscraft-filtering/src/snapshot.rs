@@ -475,6 +475,34 @@ impl SnapshotBuilder {
     /// [`RuleSource::Service`](crate::RuleSource::Service); unknown ids are
     /// recorded on the snapshot and are not fatal.
     pub fn build(&self, config: &FilterConfig) -> Result<Snapshot, SnapshotError> {
+        self.build_with_shared(config, HashMap::new())
+    }
+
+    /// Like [`Self::build`], but reuses shared list indexes from `previous`
+    /// when list material is unchanged.
+    ///
+    /// Custom / MCP / services side indexes are always rebuilt (cheap). Sets
+    /// that need `$badfilter` / dnsrewrite-disable merges still parse their
+    /// lists. Callers must only pass a previous snapshot built from the same
+    /// list bodies (config-only edits); after a list download, use
+    /// [`Self::build`] instead.
+    pub fn build_reusing(
+        &self,
+        config: &FilterConfig,
+        previous: &Snapshot,
+        previous_config: &FilterConfig,
+    ) -> Result<Snapshot, SnapshotError> {
+        if !config.list_material_eq(previous_config) {
+            return self.build(config);
+        }
+        self.build_with_shared(config, shared_pool(previous, previous_config))
+    }
+
+    fn build_with_shared(
+        &self,
+        config: &FilterConfig,
+        mut shared: HashMap<Vec<ListId>, Arc<SharedIndex>>,
+    ) -> Result<Snapshot, SnapshotError> {
         config.validate_list_urls()?;
         let mut enabled: HashMap<&ListId, bool> = HashMap::new();
         for l in &config.lists {
@@ -482,26 +510,18 @@ impl SnapshotBuilder {
                 return Err(SnapshotError::DuplicateList(l.id.clone()));
             }
         }
-        let mut shared: HashMap<Vec<ListId>, Arc<SharedIndex>> = HashMap::new();
         let mut sets: HashMap<SetId, SetEntry> = HashMap::new();
         let now = self.clock.now();
         for s in &config.sets {
             if sets.contains_key(&s.id) {
                 return Err(SnapshotError::DuplicateSet(s.id.clone()));
             }
-            let mut combo: Vec<ListId> = Vec::new();
-            for l in &s.lists {
-                match enabled.get(l) {
-                    None => {
-                        return Err(SnapshotError::UnknownList {
-                            set: s.id.clone(),
-                            list: l.clone(),
-                        });
-                    }
-                    Some(true) if !combo.contains(l) => combo.push(l.clone()),
-                    Some(_) => {}
+            let combo = effective_combo(&s.lists, &enabled).map_err(|list| {
+                SnapshotError::UnknownList {
+                    set: s.id.clone(),
+                    list,
                 }
-            }
+            })?;
             let mcp = build_mcp_index(&s.id, &s.mcp_rules, now)?;
             let mut custom = parse_custom(&s.custom_rules);
             let (service_srcs, unknown_services) =
@@ -517,7 +537,7 @@ impl SnapshotBuilder {
                     Some(a) => Arc::clone(a),
                     None => {
                         let a = Arc::new(self.build_list_index(&combo, None, &[])?);
-                        shared.insert(combo, Arc::clone(&a));
+                        shared.insert(combo.clone(), Arc::clone(&a));
                         a
                     }
                 };
@@ -770,4 +790,51 @@ fn needs_merge(rules: &[Rule]) -> bool {
     rules.iter().any(|r| {
         r.modifiers().badfilter || matches!(r.modifiers().dnsrewrite, Some(DnsRewrite::Disable))
     })
+}
+
+/// Enabled lists of a set, in set order without repeats.
+fn effective_combo(
+    set_lists: &[ListId],
+    enabled: &HashMap<&ListId, bool>,
+) -> Result<Vec<ListId>, ListId> {
+    let mut combo = Vec::new();
+    for list in set_lists {
+        match enabled.get(list) {
+            None => return Err(list.clone()),
+            Some(true) if !combo.contains(list) => combo.push(list.clone()),
+            Some(_) => {}
+        }
+    }
+    Ok(combo)
+}
+
+/// Shared list indexes from `previous` keyed by effective list combination.
+///
+/// Merged (private) indexes are skipped: they embed custom rules and must not
+/// be shared with other sets.
+fn shared_pool(
+    previous: &Snapshot,
+    previous_config: &FilterConfig,
+) -> HashMap<Vec<ListId>, Arc<SharedIndex>> {
+    let enabled: HashMap<&ListId, bool> = previous_config
+        .lists
+        .iter()
+        .map(|list| (&list.id, list.enabled))
+        .collect();
+    let mut pool = HashMap::new();
+    for set in &previous_config.sets {
+        if previous
+            .custom_facts(&set.id)
+            .is_some_and(|facts| facts.merged_into_list_index)
+        {
+            continue;
+        }
+        let Ok(combo) = effective_combo(&set.lists, &enabled) else {
+            continue;
+        };
+        if let Some(index) = previous.shared_index(&set.id) {
+            pool.entry(combo).or_insert_with(|| Arc::clone(index));
+        }
+    }
+    pool
 }

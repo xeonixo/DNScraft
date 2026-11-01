@@ -102,20 +102,33 @@ async fn apply_stored_current_does_not_fetch_remote_catalog() {
 
     let body = full_snapshot();
     service
-        .replace(body, &ConfigActor::local(), None)
+        .replace(body.clone(), &ConfigActor::local(), None)
         .await
-        .expect("versioned write may refresh lists");
+        .expect("first versioned write refreshes lists");
     let hits_after_replace = FETCHES.load(Ordering::SeqCst);
     assert!(
         hits_after_replace >= 2,
-        "replace should refresh the services catalog (hits={hits_after_replace})"
+        "first replace should refresh the services catalog (hits={hits_after_replace})"
+    );
+
+    FETCHES.store(0, Ordering::SeqCst);
+    let mut rule_only = body;
+    rule_only["filtering"]["sets"][0]["custom_rules"] = json!("||offline.example^\n||extra.example^");
+    service
+        .replace(rule_only, &ConfigActor::local(), None)
+        .await
+        .expect("custom-rule edit applies");
+    assert_eq!(
+        FETCHES.load(Ordering::SeqCst),
+        0,
+        "custom-rule replace must not re-fetch remote lists/catalog"
     );
 
     FETCHES.store(0, Ordering::SeqCst);
     assert_eq!(
         service.apply_stored_current().await.unwrap(),
-        Some(1),
-        "re-applies the stored row"
+        Some(2),
+        "re-applies the stored row (version 2 after rule-only replace)"
     );
     assert_eq!(
         FETCHES.load(Ordering::SeqCst),

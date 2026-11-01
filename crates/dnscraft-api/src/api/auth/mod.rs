@@ -275,11 +275,14 @@ pub async fn auth_middleware(
     let principal = match auth.validate(&cookie).await {
         Ok(principal) => principal,
         Err(ControlApiError::AuthSessionExpired) => {
-            // Public sign-in routes treat a stale cookie as anonymous so the
-            // user can log in again; everything else is rejected and the
-            // browser is told to drop the dead cookie.
+            // Public sign-in/out routes treat a stale cookie as anonymous so
+            // the user can log in again; still clear it so the browser stops
+            // sending the dead session. Everything else is rejected and
+            // cleared the same way.
             if is_public_auth_path(&path) {
-                return next.run(req).await;
+                let mut response = next.run(req).await;
+                append_clear_cookie(&mut response);
+                return response;
             }
             let mut response = ControlApiError::AuthSessionExpired.into_response();
             append_clear_cookie(&mut response);

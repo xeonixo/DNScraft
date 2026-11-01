@@ -49,5 +49,7 @@ the unban has no audit row (tracing only). Add when needed.
 - [x] (toggle only: `web/src/lib/settings/WebAccessPanel.svelte`; ban list with unban done) Web: Seite unter Einstellungen — Schalter „Öffentlich erreichbar" mit Warnhinweis
       (nur HTTPS, Admin-Passwort/OIDC prüfen), Ban-Parameter, Tabelle gesperrter IPs mit „Entsperren".
       Lead with the toggle + current ban count; thresholds as secondary fields.
-- [ ] Lock-out guard: refuse enabling public access while only the default/bootstrap admin password is set.
+- [x] Lock-out guard: `PUT /web-access` with `public_enabled=true` refuses while
+      `DNSCRAFT_ADMIN_PASSWORD_FILE` is set or neither OIDC nor a local account exists
+      (`control_api.web_access.bootstrap_auth`, 2026-11-01).
 - [ ] Gates: `cargo fmt --check`, `cargo clippy`, `cargo test -p dnscraft-api -p dnscraft-listeners`, `pnpm check/lint/test`, Playwright toggle + unban flow; verify desktop/mobile/dark in browser.

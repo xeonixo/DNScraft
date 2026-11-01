@@ -177,6 +177,7 @@ pub fn requirement(method: &Method, path: &str) -> Requirement {
         || path == "/api/v1/auth/oidc/callback"
         || (method == Method::GET && path == "/api/v1/auth/oidc/status")
         || path == "/api/v1/auth/local/login"
+        || path == "/api/v1/auth/logout"
     {
         return Requirement::Public;
     }
@@ -187,7 +188,7 @@ pub fn requirement(method: &Method, path: &str) -> Requirement {
     if path == "/api/v1/auth/tokens" || path.starts_with("/api/v1/auth/tokens/") {
         return Requirement::ApiAdmin;
     }
-    if path == "/api/v1/auth/logout" || path == "/api/v1/auth/me" {
+    if path == "/api/v1/auth/me" {
         return Requirement::Api;
     }
     // Session list/revoke: viewers reach their own sessions; the handlers
@@ -505,7 +506,7 @@ mod tests {
         );
         assert_eq!(
             requirement(&Method::POST, "/api/v1/auth/logout"),
-            Requirement::Api
+            Requirement::Public
         );
         assert_eq!(
             requirement(&Method::GET, "/api/v1/auth/me"),
@@ -563,7 +564,7 @@ mod tests {
 
         for (method, path) in [
             (Method::GET, "/api/v1/query-log"),
-            (Method::POST, "/api/v1/auth/logout"),
+            (Method::GET, "/api/v1/auth/me"),
         ] {
             assert!(
                 authorize(requirement(&method, path), viewer.scope()).is_ok(),

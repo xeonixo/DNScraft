@@ -143,11 +143,14 @@ pub struct QueryLogFilter {
     pub domain_substr: Option<String>,
     /// Transport (`udp53`, `tcp53`, `dot`, `doh`, `doq`).
     pub protocol: Option<String>,
+    /// Exact query type (`A`, `AAAA`, …).
+    pub query_type: Option<String>,
     /// Exact policy view id.
     pub view_id: Option<String>,
     /// Exact policy profile id.
     pub profile_id: Option<String>,
-    /// Derived outcome (`allowed`, `blocked`, `dnssec_bogus`, `servfail`).
+    /// Derived outcome (`allowed`, `blocked`, `dnssec_bogus`, `servfail`) or
+    /// `cache` (a resolve step answered from cache).
     pub status: Option<String>,
     /// Shorthand for `status = blocked`.
     pub only_blocked: bool,
@@ -172,6 +175,8 @@ pub struct QueryLogPage {
     pub has_more: bool,
     /// Offset to request for the next page.
     pub next_offset: Option<u64>,
+    /// Rows matching the filter, ignoring pagination.
+    pub total: i64,
 }
 
 /// Sink half of the bounded query-log channel.
@@ -576,8 +581,20 @@ impl QueryLog {
             .clamp(1, self.config().max_rows_per_request.max(1));
         let offset = i64::try_from(filter.offset).unwrap_or(i64::MAX);
 
-        let mut sql = String::from("SELECT record FROM query_log WHERE 1 = 1");
         let (conditions, mut values) = filter_clause(filter);
+        let total = {
+            let sql = format!("SELECT COUNT(*) FROM query_log WHERE 1 = 1{conditions}");
+            let values = values.clone();
+            self.db
+                .with_read_conn(move |conn| {
+                    conn.query_row(&sql, params_from_iter(values), |row| row.get::<_, i64>(0))
+                        .map_err(db_err)
+                })
+                .await
+                .map_err(read_error)?
+        };
+
+        let mut sql = String::from("SELECT record, status FROM query_log WHERE 1 = 1");
         sql.push_str(&conditions);
         let column = match filter.order_by {
             OrderBy::Time => "time",
@@ -593,7 +610,7 @@ impl QueryLog {
         sql.push_str(&format!(
             " ORDER BY {column} {direction}, id {direction} LIMIT ? OFFSET ?"
         ));
-        // Probe one extra row to expose `has_more` without a COUNT.
+        // Probe one extra row to expose `has_more`. `total` is the separate COUNT above.
         values.push(Value::Integer(i64::from(limit) + 1));
         values.push(Value::Integer(offset));
 
@@ -602,29 +619,26 @@ impl QueryLog {
             .with_read_conn(move |conn| {
                 let mut stmt = conn.prepare(&sql).map_err(db_err)?;
                 let rows = stmt
-                    .query_map(params_from_iter(values), |row| row.get::<_, String>(0))
+                    .query_map(params_from_iter(values), |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })
                     .map_err(db_err)?;
-                rows.collect::<Result<Vec<String>, _>>().map_err(db_err)
+                rows.collect::<Result<Vec<(String, String)>, _>>()
+                    .map_err(db_err)
             })
             .await
             .map_err(read_error)?;
 
         let has_more = fetched.len() > limit as usize;
         let mut records = Vec::with_capacity(fetched.len().min(limit as usize));
-        for raw in fetched.into_iter().take(limit as usize) {
-            match serde_json::from_str::<Json>(&raw) {
-                Ok(record) => records.push(record),
-                Err(_) => {
-                    return Err(ControlApiError::QueryLogRead {
-                        message: "stored query-log record is not valid JSON".to_owned(),
-                    });
-                }
-            }
+        for (raw, status) in fetched.into_iter().take(limit as usize) {
+            records.push(attach_status(raw, status)?);
         }
         Ok(QueryLogPage {
             records,
             has_more,
             next_offset: has_more.then_some(filter.offset + u64::from(limit)),
+            total,
         })
     }
 
@@ -671,9 +685,9 @@ impl QueryLog {
             .with_read_conn(move |conn| {
                 use rusqlite::OptionalExtension as _;
                 conn.query_row(
-                    "SELECT record FROM query_log WHERE id = ?1",
+                    "SELECT record, status FROM query_log WHERE id = ?1",
                     params![id],
-                    |row| row.get::<_, String>(0),
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                 )
                 .optional()
                 .map_err(db_err)
@@ -682,13 +696,7 @@ impl QueryLog {
             .map_err(read_error)?;
         match raw {
             None => Ok(None),
-            Some(raw) => {
-                serde_json::from_str(&raw)
-                    .map(Some)
-                    .map_err(|_| ControlApiError::QueryLogRead {
-                        message: "stored query-log record is not valid JSON".to_owned(),
-                    })
-            }
+            Some((raw, status)) => attach_status(raw, status).map(Some),
         }
     }
 
@@ -1041,6 +1049,20 @@ pub(crate) fn register_sql_functions(conn: &Connection) -> rusqlite::Result<()> 
     )
 }
 
+/// Puts the denormalised `status` column on a record that was stored without one.
+fn attach_status(raw: String, status: String) -> Result<Json, ControlApiError> {
+    let mut record: Json =
+        serde_json::from_str(&raw).map_err(|_| ControlApiError::QueryLogRead {
+            message: "stored query-log record is not valid JSON".to_owned(),
+        })?;
+    if record.get("status").and_then(Json::as_str).is_none()
+        && let Some(obj) = record.as_object_mut()
+    {
+        obj.insert("status".to_owned(), Json::String(status));
+    }
+    Ok(record)
+}
+
 /// Builds the shared `WHERE` conditions for a [`QueryLogFilter`].
 ///
 /// The returned suffix starts with `" AND "` and is appended to
@@ -1089,6 +1111,10 @@ fn filter_clause(filter: &QueryLogFilter) -> (String, Vec<Value>) {
         sql.push_str(" AND protocol = ?");
         values.push(Value::Text(protocol.clone()));
     }
+    if let Some(query_type) = &filter.query_type {
+        sql.push_str(" AND query_type = ?");
+        values.push(Value::Text(query_type.clone()));
+    }
     if let Some(view_id) = &filter.view_id {
         sql.push_str(" AND view_id = ?");
         values.push(Value::Text(view_id.clone()));
@@ -1098,8 +1124,18 @@ fn filter_clause(filter: &QueryLogFilter) -> (String, Vec<Value>) {
         values.push(Value::Text(profile_id.clone()));
     }
     if let Some(status) = &filter.status {
-        sql.push_str(" AND status = ?");
-        values.push(Value::Text(status.clone()));
+        if status == "cache" {
+            // Same resolve-step test as `cache_stats_scoped`: a cache hit is not
+            // a stored status column.
+            sql.push_str(
+                " AND EXISTS (SELECT 1 FROM json_each(query_log.record, '$.steps') AS step \
+                 WHERE json_extract(step.value, '$.stage') = 'resolve' \
+                   AND json_extract(step.value, '$.source') = 'cache')",
+            );
+        } else {
+            sql.push_str(" AND status = ?");
+            values.push(Value::Text(status.clone()));
+        }
     }
     if filter.only_blocked {
         sql.push_str(" AND status = 'blocked'");
@@ -1304,6 +1340,7 @@ fn prepare_row(
         "selection": selection_json(decision.selection),
         "steps": decision.steps.iter().map(step_json).collect::<Vec<_>>(),
         "answer_source": answer_source,
+        "status": status,
         "filter": decision.filter.as_ref().map(filter_json),
         "dnssec": decision.dnssec.map(dnssec_str),
         "forward_zone": decision.forward_zone.as_ref().map(|zone| zone.as_str()),
@@ -1740,7 +1777,10 @@ mod tests {
         assert!(!ip_in_cidr("172.20.21.1", "172.20.20.0/24"));
         assert!(ip_in_cidr("10.0.0.7", "10.0.0.7"));
         assert!(ip_in_cidr("1.2.3.4", "0.0.0.0/0"));
-        assert!(ip_in_cidr("fd20:1082:556b:f13c::f2b9", "fd20:1082:556b::/48"));
+        assert!(ip_in_cidr(
+            "fd20:1082:556b:f13c::f2b9",
+            "fd20:1082:556b::/48"
+        ));
         assert!(!ip_in_cidr("fd20:1082:556b::1", "172.20.20.0/24"));
         assert!(!ip_in_cidr("garbage", "10.0.0.0/8"));
         assert!(parse_cidr("10.0.0.0/33").is_none());

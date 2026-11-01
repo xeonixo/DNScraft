@@ -1,4 +1,9 @@
-# Single-node Docker smoke configuration (documentation addresses only).
+# Dev/smoke Docker configuration (documentation addresses only).
+#
+# NOT for production: plain HTTP, wildcard bind inside the container, no TLS.
+# Compose maps the API to loopback on the host. Production: enable tls=true,
+# set a real public_domain, seed DNSCRAFT_ADMIN_PASSWORD_FILE (then remove it),
+# and follow deploy/README.md.
 #
 # Used by the default image and docker compose. Mount a host directory on
 # /var/lib/dnscraft for persistence. Secrets (TLS, OIDC, UniFi, Cloudflare,

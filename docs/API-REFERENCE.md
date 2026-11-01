@@ -179,10 +179,14 @@ Attached zone object: `id?`, `name`, `status?`, `name_servers`, `source`
 | GET | `/api/v1/query-log/export.ndjson` | NDJSON stream of the current filter. |
 | GET | `/api/v1/query-log/export.csv` | CSV export of the current filter. |
 
-Query-log query parameters: `from`, `to`, `client_id`, `client_name_substr`,
-`domain`, `domain_substr`, `protocol`, `view_id`, `profile_id`, `status`,
-`only_blocked`, `only_with_clients`, `order_by`, `order`, `limit`, `offset`.
-Malformed values → `control_api.query_log.invalid`.
+Query-log query parameters: `from`, `to`, `node_id`, `subnet`, `client_id`,
+`client_name_substr`, `device_id`, `domain`, `domain_substr`, `protocol`,
+`query_type`, `view_id`, `profile_id`, `status` (`allowed`/`blocked`/
+`dnssec_bogus`/`servfail`/`cache`), `only_blocked`, `only_with_clients`,
+`order_by`, `order`, `limit`, `offset`. Malformed values →
+`control_api.query_log.invalid`. List envelope: `{ queries, has_more,
+next_offset, total, query_log_dropped, query_log_stream_dropped }`. Stored
+records include an explicit `status` field.
 
 Record `client` object (`null` when no client applies): `{ "id", "display_name",
 "source", "macs", "vlan_id", "vlan_name", "local_domain" }`, always this field set.
@@ -198,13 +202,17 @@ the label in `decision.client` (the dry run has no directory lookup).
 
 | Method | Path | Summary |
 |---|---|---|
-| GET | `/api/v1/stats/overview` | Dashboard aggregate: totals, `by_*` breakdowns, `active_clients` (distinct attributed clients), `query_log_dropped` (sink drops since process start, node-local), `query_log_stream_dropped` (live-stream events skipped by lagging subscribers), `filter_hits` (`total`, `by_list`, `by_reason`, `top_rules` max 10). `source` is `raw`, or `rollup` when `from` lies before the raw retention horizon; rollup mode is day-granular, has no `by_view`, `by_rcode`, `dnssec`, `active_clients` or `filter_hits` (empty or `null`), and counts `blocked` from the `filter_block` answer origin. |
+| GET | `/api/v1/stats/overview` | Dashboard aggregate: totals, `by_*` breakdowns, `active_clients`, `query_log_dropped`, `query_log_stream_dropped`, `filter_hits`, `response_time_ms: { p50, p95 }` (ms from raw timings; `null` in rollup mode). `source` is `raw` or `rollup`. |
 | GET | `/api/v1/stats/top_clients` | Top clients by queries/blocked. |
 | GET | `/api/v1/stats/top_domains` | Top domains. |
+| GET | `/api/v1/stats/top_blocked_domains` | Top domains by blocked count. |
+| GET | `/api/v1/stats/timeseries` | Buckets `{ bucket_start, total, blocked }` for `bucket=hour\|day`. |
 | GET | `/api/v1/stats/cache` | Cache hit ratio. |
 | GET | `/api/v1/stats/domains/{name}?days=7\|30` | One domain over the raw query log: `counts`, `first_seen`/`last_seen` (retention bounded), `daily`, `top_clients` (max 10), `last_decision`. `control_api.not_found` when unseen, `control_api.stats.invalid_domain` for a bad name or `days`. |
+| GET | `/api/v1/filtering/pause` | Runtime pause state for a filter set (`filter_set_id`); `{ filter_set_id, paused_until }`. |
+| PUT | `/api/v1/web-access` | Opt in/out of public web UI. Enabling refuses while bootstrap auth remains (`control_api.web_access.bootstrap_auth`). |
 
-Stats query parameters: `from`, `to`, `node_id`, `profile_id` (exact filters, GM6; `overview`, `top_clients`, `top_domains`, `cache`), `limit`, `by`.
+Stats query parameters: `from`, `to`, `node_id`, `profile_id` (exact filters), `limit`, `by`, `bucket` (timeseries only).
 
 ### Resolver (viewer/admin read, admin write)
 

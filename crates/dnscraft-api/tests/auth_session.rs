@@ -258,15 +258,28 @@ async fn auth_session_stale_cookie_is_anonymous_on_login_and_cleared_elsewhere()
     let router = test_router(store(test_clock()).await);
     let stale = "dnscraft_session=deadbeef";
 
-    // Public login route: stale cookie is ignored.
+    // Public login route: stale cookie is ignored and cleared.
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/auth/local/login")
         .header(header::COOKIE, stale)
         .body(Body::empty())
         .unwrap();
-    let (status, body) = send(&router, req).await;
-    assert_eq!(status, StatusCode::OK);
+    let res = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let set = res
+        .headers()
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(set.starts_with("dnscraft_session=;") && set.contains("Max-Age=0"));
+    let body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(body["authenticated"], false);
 
     // Other routes: 401 plus a clearing Set-Cookie.

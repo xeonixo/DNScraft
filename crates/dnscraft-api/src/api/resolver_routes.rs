@@ -12,7 +12,9 @@ use axum::extract::State;
 use axum::response::IntoResponse;
 use dnscraft_filtering::DomainName;
 use dnscraft_proto::Name;
-use dnscraft_resolver::{FlushScope, Resolver, UpstreamHealth, UpstreamState};
+use dnscraft_resolver::{
+    FlushScope, HEALTH_WINDOW_SECONDS, Resolver, UpstreamHealth, UpstreamState,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -22,11 +24,6 @@ use crate::api::response::success;
 use crate::error::ControlApiError;
 use crate::mcp_backend::rfc3339;
 use crate::server::AppState;
-
-/// Passive sampling window in seconds. Mirrors the resolver's private window
-/// in `dnscraft-resolver` `health.rs`; change both together.
-// ponytail: duplicated constant, export it from dnscraft-resolver if it drifts.
-const WINDOW_SECONDS: u64 = 300;
 
 /// Stable code for a rejected flush request (bad domain or malformed body).
 const FLUSH_INVALID_DOMAIN: &str = "control_api.resolver.flush.invalid_domain";
@@ -91,7 +88,7 @@ pub(crate) async fn list_upstreams(
         .map(upstream_json)
         .collect();
     Ok(success(json!({
-        "window_seconds": WINDOW_SECONDS,
+        "window_seconds": HEALTH_WINDOW_SECONDS,
         "items": items,
     })))
 }

@@ -435,17 +435,22 @@ translated `control_api.auth.oidc` message and offering a retry.
   and to `SESSION_EXPIRED`-style codes. (The control-api documents 12 h absolute /
   60 min idle in one place and 30 min / 24 h defaults in another; the UI must not
   depend on either number.)
-- **CSRF: synchronizer token.** The server binds a random token to the session and
-  exposes it to the SPA (header, `GET /api/v1/auth/me` field, or a non-HttpOnly
-  cookie; the exact mechanism is a required addition). Every
-  `POST`/`PUT`/`PATCH`/`DELETE` sends it as `X-CSRF-Token`.
-  - On `403 control_api.auth.csrf`, the SPA refreshes the token and retries the
+- **CSRF: synchronizer token (body field only).** The server derives a token from
+  the session id and returns it as `csrf_token` on `GET /api/v1/auth/me` and on
+  successful local login. There is no `dnscraft_csrf` cookie. Every
+  `POST`/`PUT`/`PATCH`/`DELETE` from a cookie session sends it as `X-CSRF-Token`.
+  - On `403 control_api.auth.csrf`, the SPA refreshes via `auth/me` and retries the
     request exactly once; if it fails again, it forces a re-login instead of looping.
   - `GET`/`HEAD`/`OPTIONS` do not require the token.
   - Bearer-token requests (scripts, MCP) are out of scope for the UI; the SPA never
     stores or sends bearer tokens.
-- Logout calls `POST /api/v1/auth/logout` with the CSRF token, then clears all
-  in-memory state and navigates to `/login`.
+  - A stale session cookie on public auth routes (`/auth/local/login`,
+    `/auth/logout`, OIDC authorize/callback/status) is ignored and cleared
+    (`Set-Cookie` Max-Age=0); protected routes return `401 control_api.auth.session_expired`
+    and clear the cookie the same way. Logout is public so an expired session can
+    still clear the browser cookie.
+- Logout calls `POST /api/v1/auth/logout` (CSRF when a valid session is present),
+  then clears all in-memory state and navigates to `/login`.
 - The SPA never writes the session to `localStorage`/`sessionStorage`; only UI
   preferences (theme, locale, last query-log filters) may be stored there.
 
@@ -488,19 +493,19 @@ listed in [SPEC-control-api.md](SPEC-control-api.md) § Endpoint table.
 |---|---|---|---|---|
 | `/login` | Login | public | `GET /api/v1/auth/oidc/authorize-url`, `GET /api/v1/auth/oidc/callback` (browser redirect), `POST /api/v1/auth/local/login` | Centered grouped card on the grouped background; large title; OIDC as the filled primary button, break-glass in a grouped section; lockout is an inline status row |
 | `/setup` | First-run wizard | public → admin | `POST /api/v1/auth/local/login`, `GET /api/v1/status`, `GET /readyz`, `GET /api/v1/config`, `PUT /api/v1/config` | Grouped form, one section per step; toolbar with Back/Continue; progress; local-admin provisioning is a gap (Open questions) |
-| `/dashboard` | Dashboard / node status | viewer/admin | `GET /api/v1/status`, `GET /api/v1/stats/overview`, `GET /readyz` | Stat-tile row (blocked/allowed with semantic color plus text/icon), grouped module-status list, toolbar refresh; persistent self-signed warning banner |
+| `/dashboard` | Dashboard / node status (includes former `/statistics`) | viewer/admin | `GET /api/v1/status`, `GET /api/v1/stats/overview`, `GET /api/v1/stats/timeseries`, `GET /api/v1/stats/top_clients`, `GET /api/v1/stats/top_domains`, `GET /api/v1/stats/top_blocked_domains`, `GET /api/v1/stats/cache`, `GET /api/v1/filtering/pause`, `POST /api/v1/filtering/pause`, `POST /api/v1/filtering/resume`, `GET /readyz` | Stat-tile row (blocked/allowed with semantic color plus text/icon), latency tiles, requests-over-time chart, grouped module-status list, toolbar refresh; pause/resume for the active filter set; persistent self-signed warning banner |
 | `/config` | Full config editor / import-export | read: viewer; write: admin | `GET /api/v1/config`, `PUT /api/v1/config` | Grouped form sections with explanatory footers; save in the toolbar; diff presented in a sheet; `If-Match` with `config_version`; secrets never returned |
 | `/config/versions` | Config versions and rollback | list: viewer; rollback: admin | `GET /api/v1/config/versions`, `POST /api/v1/config/versions/{version}/rollback` | Inset grouped list; version rows with secondary metadata; rollback in a confirmation sheet |
 | `/zones` | **Netzbereiche** (selection scopes; nav label; the query log calls a row's selection its «Netzbereich») | read: viewer via config; write: admin | `GET /api/v1/policy/views`, `GET /api/v1/policy/views/{id}`, `PUT/POST /api/v1/policy/views/{id}`, `DELETE /api/v1/policy/views/{id}` | Create/delete ranges with their IPv4/IPv6 networks (one CIDR per line, validated before save), default flag, profile link; node validity under «Erweitert». Cards show a Standard badge and, for admins, the directory device count inside the ranges. No DNS records here — those live under `/names`. Copy always says Netzbereich, never «Zone» for views. |
 | `/names` | **Namen** (Split-DNS: Öffentlich zuerst + Abweichungen) | read: viewer; write: admin | `GET/PUT/POST/DELETE /api/v1/policy/records`, `GET /api/v1/policy/views`, `GET /api/v1/domain-zones`, `GET /api/v1/domain-zones/{zone_id}/records`, `POST/PUT/DELETE /api/v1/domain-zones/{zone_id}/records`, `POST /api/v1/domain-zones/attach`, `DELETE /api/v1/domain-zones/attach/{apex}`, `GET /api/v1/tls` (token CTA) | One global name space. Sheet order: **Öffentlich** (live Cloudflare value when a Domain-Zone is attached; missing token → CTA to `/tls`) → local default aligned on public save → **Abweichungen** as Netzbereich picker + value rows (no `id=wert` freitext; absent = inherits public/default). Secondary sheet **Öffentliche Zonen anbinden** discovers/attaches apexes (`dns_provider.zones`); detach does not delete at Cloudflare. Records A/AAAA/CNAME/TXT/SRV/MX/PTR, exact names only, CNAME exclusivity, TTL default 60 s; `proxied` warning for DoT inventory names. Viewer read-only. |
-| `/profiles` | **Profile** (behavior) | read: viewer via config; write: admin | `GET/POST/PUT/DELETE /api/v1/policy/profiles/{id}`, `GET/POST/PUT/DELETE /api/v1/policy/pause` | Grouped form for filter set, blocked services, schedules, SafeSearch, bypass; pause controls. |
+| `/profiles` | **Profile** (behavior) | read: viewer via config; write: admin | `GET/POST/PUT/DELETE /api/v1/policy/profiles/{id}`, versioned `GET/PUT/DELETE /api/v1/policy/pause` (config overlay); runtime pause via `GET/POST /api/v1/filtering/pause` and `POST /api/v1/filtering/resume` | Grouped form for filter set, blocked services, schedules, SafeSearch, bypass; runtime pause controls use the filtering endpoints (not the versioned policy pause snapshot). |
 | `/test-query` | **Test-Abfrage** (decision preview) | viewer/admin | `POST /api/v1/policy/test-query` | Renders the ordered decision steps without writing the query log. Selection is source-IP only (longest-prefix → default, DoH/DoT clients included). |
 | `/forward-zones` | Forward zones (conditional forwarding) | read: viewer via config; write: admin | resolver config (`GET/PUT /api/v1/config` forward-zones section) | Inset grouped list; each zone shows domain, upstream server, reverse zone and optional profile allow-list; add/edit in a sheet |
 | `/query-log` | Query log | viewer/admin | `GET /api/v1/query-log`, `GET /api/v1/query-log/export.ndjson`, `GET /api/v1/query-log/export.csv` | Sidebar; search field plus filter sheet; inset grouped table on wide, card list on narrow; domain/client/ID in SF Mono; status as icon + color + text; pagination footer; export in the overflow menu |
 | `/query-log/:id` | Query detail ("why blocked?") | viewer/admin | `GET /api/v1/query-log/{id}` | Grouped detail sections; ordered decision steps; rule and list in SF Mono; toolbar allow action |
 | `/query-log` (action) | One-click temporary allow | admin | `POST /api/v1/filtering/temporary-allows` (MCP-phase endpoint) | Confirmation sheet with the domain, a subdomain switch and a duration segmented control; fall back to the guided rule builder if unavailable |
-| `/statistics` | Statistics dashboard | viewer/admin | `GET /api/v1/stats/overview`, `GET /api/v1/stats/top_clients`, `GET /api/v1/stats/top_domains`, `GET /api/v1/stats/cache` | Stat-tile row, period segmented control, inset grouped tables, inline SVG sparklines; rolls up to one year |
-| `/statistics/domains/:name` | Domain detail (WX5, proposed) | viewer/admin | `GET /api/v1/stats/domains/{name}`, `GET /api/v1/query-log/{id}` (last decision link) | Stat-tile row with first/last seen (labelled as retention-limited), inset grouped blocked/allowed split and top clients, daily sparkline; reached from the palette, top-domains table and query-log domain cell; empty state when not seen in retention |
+| `/dashboard` (stats) | Statistics (merged into `/dashboard`; no separate `/statistics` route) | viewer/admin | same stats routes as `/dashboard` | Period segmented control, inset grouped tables, inline SVG sparklines / timeseries; rolls up to one year |
+| `/dashboard/domains/:name` | Domain detail (WX5) | viewer/admin | `GET /api/v1/stats/domains/{name}`, `GET /api/v1/query-log/{id}` (last decision link) | Stat-tile row with first/last seen (labelled as retention-limited), inset grouped blocked/allowed split and top clients, daily sparkline; reached from the palette, top-domains table and query-log domain cell; empty state when not seen in retention |
 | `/clients` | Clients / device directory | list: viewer/admin; edit: admin | `GET /api/v1/clients`, `GET/POST/PUT/DELETE /api/v1/clients/manual`, `POST /api/v1/clients/sync` | Search field; inset grouped table on wide, card list on narrow; source badge; IP/MAC in SF Mono; edit in a sheet; names are untrusted data |
 | `/doh-clients` | Verified DoH/DoT clients (Client IDs) | read: viewer via config; write: admin | `GET/POST /api/v1/policy/client-ids`, `PUT/DELETE /api/v1/policy/client-ids/{id}`, `GET /api/v1/tls`, `GET /api/v1/clients`, `GET /api/v1/policy/records`, `GET /api/v1/query-log?client_id=` | Cards with label, id, DoH URL and DoT hostname (copy), linked directory device, last-seen line (time, protocol, how the last query was assigned); create/edit in a sheet with a generated id; setup check (public name, trusted certificate, DoH listener, `dns.<public_domain>` record with a home-range override); "Apple-Profil laden" builds a `.mobileconfig` in the browser (optional home-Wi-Fi SSID, https/tls, bootstrap IPs); Android Private DNS hostname; unknown IDs are rejected by the listener |
 | `/filter-sets` | Filter sets | read: viewer via config; write: admin | `GET/POST/PUT/DELETE /api/v1/filter-sets`, `GET /api/v1/config` | Grouped form plus a guided rule-builder sheet and a CodeMirror raw-editor sheet; never require hard-to-type characters |
@@ -832,7 +837,7 @@ never renders a raw stack trace or a server message.
 | Code / status | UI state and action |
 |---|---|
 | `control_api.internal` (5xx) | Error panel: translated "server error", the code in a copyable line, retry button; never show internals |
-| `control_api.rate_limited` (429) | Non-blocking banner, temporarily disable the submit control, back off exponentially; honor `Retry-After` if present, otherwise use a bounded default |
+| `control_api.rate_limited` (429) | Non-blocking banner, temporarily disable the submit control, back off exponentially; prefer `error.params.retry_after` (seconds), fall back to the `Retry-After` header, otherwise use a bounded default |
 | `control_api.not_ready` (503) | Onboarding/starting state with a link to the status screen; retry when `/readyz` succeeds |
 | `control_api.not_found` (404) | Empty/removed state (for example a query-log record outside retention); not a fatal error |
 | `control_api.config.invalid` / `config.apply` / `config.version` | Form-level message with field association; `config.apply` lists the failing module code; offer rollback |
@@ -1197,15 +1202,12 @@ Deliberately not included:
 1. **Who serves the static assets?** **Resolved** (option a): `control-api` owns
    the SPA fallback via the `web-ui` feature (`rust-embed`); `/api/v1` and `/mcp`
    404s stay JSON. See § Serving the assets and `SPEC-control-api.md` § Non-goals.
-2. **CSRF token issuance.** Where does the SPA obtain the synchronizer token
-   (response header, `GET /api/v1/auth/me` field, or non-HttpOnly cookie), and what
-   are the cookie and header names? `SPEC-control-api.md` requires CSRF but does not
-   define the contract. Recommendation: a token field in `auth/me` plus a
-   non-HttpOnly `dnscraft_csrf` cookie, sent as `X-CSRF-Token`.
-3. **OIDC return path and callback redirect.** `authorize-url`/`callback` have no
-   documented `return_to` parameter or post-login redirect shape. The SPA needs to
-   restore the route after login. Recommendation: accept a same-origin `return_to`
-   and validate it server-side.
+2. **CSRF token issuance.** **Resolved:** body field only. `csrf_token` on
+   `GET /api/v1/auth/me` and local login success; SPA echoes it as `X-CSRF-Token`.
+   No `dnscraft_csrf` cookie.
+3. **OIDC return path and callback redirect.** **Resolved:** `authorize-url` and
+   callback accept a same-origin `return_to` path validated server-side; callback
+   redirects the browser back to the SPA.
 4. **OpenAPI schema source.** [SPEC.md](SPEC.md) requires generated API types, but
    `SPEC-control-api.md` publishes no OpenAPI document or endpoint. Decide whether
    the schema is a checked-in build artifact or a served document, and add it to the

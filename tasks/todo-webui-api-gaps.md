@@ -41,10 +41,10 @@
 - [x] **GA6b** `sync_clients` calls `engine.sync_now()` → `SyncReport`, mapping
       errors to `clients.*` codes; keeps `clients.sync.not_configured` when no engine.
       Tests: sync success + report, sync error mapping, no engine → `not_configured`.
-- [ ] **GA6c** Binary wiring: the assembler hands the built `ClientEngine` to
+- [x] **GA6c** Binary wiring: the assembler hands the built `ClientEngine` to
       `AppState::with_clients` (reuses the `EngineClients` already built for the query
-      log). Gate: `cargo test -p dnscraft` green; a smoke config boots with clients
-      disabled.
+      log). Done 2026-10-28: `EngineDirectory` + `control_api.rs` `with_clients`;
+      smoke asserts `/clients`.
 
 ## Checkpoints
 
@@ -59,35 +59,26 @@
 - [x] **GA-W4a** OIDC callback (`api/auth/oidc.rs`) returns a JSON envelope; it must redirect back to the SPA
       (validated same-origin `return_to`), otherwise the browser login ends on a JSON page.
 - [x] **GA-W4b** `authorize-url` accepts no `return_to`; add it (same-origin path only, validated server-side).
-- [ ] **GA-W4c** `auth_middleware` validates any cookie before public routes (`/auth/local/login`,
-      `authorize-url`): an expired cookie yields 401 `session_expired` with no `Set-Cookie` to clear it, so the
-      user cannot sign in again. Public routes must ignore/clear a stale cookie; logout must clear it too.
-- [ ] **GA-W4d** CSRF token is delivered in the `auth/me`/login body only; the `dnscraft_csrf` cookie from the
-      web-ui decision does not exist. Either add it or amend SPEC-web-ui to "body field only".
-- [ ] **GA-W4e** `Retry-After` on 429 should be exposed as `params.retry_after` so the SPA can back off.
+- [x] **GA-W4c** Public auth routes ignore + clear a stale cookie; logout is Public so expired
+      sessions still get `Max-Age=0` (2026-11-01).
+- [x] **GA-W4d** CSRF is body-field only (`auth/me` / login → `X-CSRF-Token`); SPEC-web-ui Q2 resolved.
+- [x] **GA-W4e** `429` envelopes include `params.retry_after` (header kept).
 
 ## Found while building the dashboard (W5, 2026-10-28)
 
-- [ ] **GA-W5a** `stats/overview`: add response-time percentiles (p50/p95) and a time series so the dashboard can
-      show latency tiles and sparklines (SPEC-web-ui Dashboard bullet).
-- [ ] **GA-W5b** Route a blocked-domains ranking (`top_blocked_domains` exists in the library, not routed);
-      the UI currently approximates it client-side from the top 100 domains.
-- [ ] **GA-W5c** Expose the active pause state (read endpoint) so the UI can show/resume an active pause.
-- [ ] **GA-W5d** Add `resolver.*` upstream error codes to the stable-code catalogue for translation.
-- [ ] **GA-W5e** SPEC-web-ui: the pause path is `/filtering/pause`, not `/policy/pause`; no `/statistics` route
-      exists (merged into the dashboard) — align the spec.
-- [ ] **GA-W5f** No requests-over-time endpoint: `stats/*` returns totals, top lists and the cache ratio, but no
-      time buckets (the rollup buckets in `stats.rs` are not routed). The dashboard therefore has no
-      "Anfragen im Zeitverlauf" chart (blocked highlighted). Proposal: `GET /api/v1/stats/timeseries` with the same
-      `from`/`to`/`node_id`/`profile_id` filters and a bucket size, returning `{bucket_start, total, blocked}` rows.
-      Then add an inline-SVG chart beside Antwortquellen with a table fallback. Overlaps with the sparkline part of GA-W5a.
+- [x] **GA-W5a** `stats/overview` includes `response_time_ms: { p50, p95 }` from raw timings (null on rollup).
+- [x] **GA-W5b** `GET /stats/top_blocked_domains` routed.
+- [x] **GA-W5c** `GET /filtering/pause?filter_set_id=` returns `{ filter_set_id, paused_until }`.
+- [x] **GA-W5d** `resolver.*` / `upstream.*` codes added to web error catalogue + en/de messages.
+- [x] **GA-W5e** SPEC-web-ui: dashboard owns stats; runtime pause via `/filtering/pause`; `/statistics` retired.
+- [x] **GA-W5f** `GET /stats/timeseries?bucket=hour|day` returns `{ bucket_start, total, blocked }` rows.
 
 ## Found while building the query log (W6, 2026-10-28)
 
-- [ ] **GA-W6a** Query-log records carry no `status`; the UI derives it. Add an explicit status and a `cache` filter value.
-- [ ] **GA-W6b** `query_log_dropped` is only available via `GET /stats/overview`; expose it on the query-log response.
-- [ ] **GA-W6c** Add a total count (or a cheap estimate) and a qtype/IP filter to `GET /query-log`.
-- [ ] **GA-W6d** `mcp.*` error codes (e.g. protected domain) need translations in the code catalogue.
+- [x] **GA-W6a** Records include `status`; filter accepts `cache` (resolve step source).
+- [x] **GA-W6b** List response includes `query_log_dropped` and `query_log_stream_dropped`.
+- [x] **GA-W6c** List response includes `total`; filter accepts `query_type` (subnet already existed).
+- [x] **GA-W6d** `mcp.*` write/validation codes in web error catalogue + en/de messages.
 - [ ] **OWNER** "Dauerhaft blockieren" from the log: custom rules expire at `max_block_rule_lifetime`; decide whether a
       permanent block belongs in the UI (not built).
 

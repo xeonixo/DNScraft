@@ -32,6 +32,7 @@ export const CONTROL_API_ERROR_CODES = [
 	'control_api.auth.csrf',
 	'control_api.audit.read',
 	'control_api.not_ready',
+	'control_api.web_access.bootstrap_auth',
 ] as const;
 
 /** Raised by the client when no valid envelope arrived (`status` is 0 for failed fetches). */
@@ -64,7 +65,25 @@ export const MODULE_ERROR_CODES = [
 	'filter_id.invalid_char',
 	'filter_list.url_invalid',
 	'mcp.invalid_input',
+	'mcp.protected_domain',
+	'mcp.domain_too_broad',
+	'mcp.duration_exceeds_maximum',
+	'mcp.rule_limit_exceeded',
+	'mcp.write_tools_disabled',
 	'resolver.config.invalid',
+	'resolver.unreachable',
+	'resolver.query_budget',
+	'resolver.referral_depth',
+	'resolver.cname_limit',
+	'resolver.forward_loop',
+	'resolver.overloaded',
+	'resolver.encode',
+	'upstream.timeout',
+	'upstream.network',
+	'upstream.malformed',
+	'upstream.servfail',
+	'upstream.refused',
+	'upstream.rcode',
 ] as const;
 
 /** Listener module codes forwarded by the control-api. */

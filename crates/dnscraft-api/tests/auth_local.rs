@@ -236,6 +236,21 @@ async fn logout_revokes_the_session_and_clears_the_cookie() {
 }
 
 #[tokio::test]
+async fn logout_with_stale_cookie_clears_it() {
+    let (router, _, _, _) = setup(clock()).await;
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/logout")
+        .header(header::COOKIE, "dnscraft_session=deadbeef")
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, _) = send(router, req).await;
+    assert_eq!(status, StatusCode::OK);
+    let set_cookie = headers.get(header::SET_COOKIE).unwrap().to_str().unwrap();
+    assert!(set_cookie.contains("Max-Age=0"), "{set_cookie}");
+}
+
+#[tokio::test]
 async fn wrong_password_fails_with_auth_local() {
     let (router, _, _, _) = setup(clock()).await;
 

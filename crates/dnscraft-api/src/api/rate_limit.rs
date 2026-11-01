@@ -16,10 +16,9 @@ use axum::extract::{ConnectInfo, Request, State};
 use axum::http::header::{HeaderName, HeaderValue};
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 
 use crate::config::RateLimitConfig;
-use crate::error::ControlApiError;
 use crate::server::AppState;
 use dnscraft_common::clock::Clock;
 use dnscraft_common::clock::unix_seconds;
@@ -317,9 +316,13 @@ pub(crate) fn check_principal(
         .check(&format!("principal:{actor_id}"), classify(method, path))
 }
 
-/// The `429` envelope with `Retry-After` in seconds.
+/// The `429` envelope with `Retry-After` header and `params.retry_after`.
 pub(crate) fn rate_limited_response(seconds: u64) -> Response {
-    let mut res = ControlApiError::RateLimited.into_response();
+    let mut res = crate::api::response::error_response(
+        "control_api.rate_limited",
+        Some(serde_json::json!({ "retry_after": seconds })),
+        axum::http::StatusCode::TOO_MANY_REQUESTS,
+    );
     if let Ok(value) = HeaderValue::from_str(&seconds.to_string()) {
         res.headers_mut()
             .insert(HeaderName::from_static("retry-after"), value);
@@ -331,6 +334,7 @@ pub(crate) fn rate_limited_response(seconds: u64) -> Response {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use axum::response::IntoResponse;
     use dnscraft_common::clock::ManualClock;
     use std::time::{Duration, SystemTime};
 

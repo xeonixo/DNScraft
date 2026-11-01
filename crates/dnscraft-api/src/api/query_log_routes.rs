@@ -40,6 +40,7 @@ pub(crate) struct RawQueryLogParams {
     domain: Option<String>,
     domain_substr: Option<String>,
     protocol: Option<String>,
+    query_type: Option<String>,
     view_id: Option<String>,
     profile_id: Option<String>,
     status: Option<String>,
@@ -82,6 +83,7 @@ impl RawQueryLogParams {
             domain: non_empty(self.domain),
             domain_substr: non_empty(self.domain_substr),
             protocol: enum_value(self.protocol, "protocol", &PROTOCOLS)?,
+            query_type: non_empty(self.query_type),
             view_id: non_empty(self.view_id),
             profile_id: non_empty(self.profile_id),
             status: enum_value(self.status, "status", &STATUSES)?,
@@ -97,8 +99,9 @@ impl RawQueryLogParams {
 
 /// Wire values of the record `protocol` field (SPEC-control-api § Record schema).
 const PROTOCOLS: [&str; 5] = ["udp53", "tcp53", "dot", "doh", "doq"];
-/// Wire values of the record `status` field (SPEC-control-api § Record schema).
-const STATUSES: [&str; 4] = ["allowed", "blocked", "dnssec_bogus", "servfail"];
+/// Wire values of the record `status` filter. `cache` matches a resolve step
+/// answered from cache; the others are the stored outcome column.
+const STATUSES: [&str; 5] = ["allowed", "blocked", "dnssec_bogus", "servfail", "cache"];
 
 /// An optional filter value that must be one of `allowed` (GA23). Empty means
 /// no filter.
@@ -195,6 +198,9 @@ pub(crate) async fn list_query_log(
         "queries": page.records,
         "has_more": page.has_more,
         "next_offset": page.next_offset,
+        "total": page.total,
+        "query_log_dropped": log.sink_dropped(),
+        "query_log_stream_dropped": log.stream_dropped(),
     })))
 }
 
@@ -410,6 +416,10 @@ mod tests {
         assert_eq!(
             enum_value(Some(String::new()), "status", &STATUSES).unwrap(),
             None
+        );
+        assert_eq!(
+            enum_value(Some("cache".into()), "status", &STATUSES).unwrap(),
+            Some("cache".to_owned())
         );
         for bad in ["DoH", "udp", "blocked;DROP"] {
             let err = enum_value(Some(bad.into()), "protocol", &PROTOCOLS).unwrap_err();

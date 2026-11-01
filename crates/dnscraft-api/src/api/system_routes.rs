@@ -128,6 +128,9 @@ pub(crate) async fn put_web_access(
     body: Result<Json<WebAccessBody>, JsonRejection>,
 ) -> Result<impl IntoResponse, ControlApiError> {
     let body = json_body(body, "control_api.web_access.invalid")?;
+    if body.public_enabled {
+        refuse_public_with_bootstrap_auth(&state).await?;
+    }
     let service = service(&state)?;
     let mut snapshot = stored_snapshot(service).await?;
     snapshot
@@ -152,6 +155,29 @@ pub(crate) async fn put_web_access(
         "version": version,
         "public_enabled": body.public_enabled,
     })))
+}
+
+/// Refuse public UI while bootstrap auth is still the only protection.
+///
+/// Enabling public access with `DNSCRAFT_ADMIN_PASSWORD_FILE` still set, or
+/// with neither OIDC nor any local account, would expose the control plane
+/// behind a throwaway seed password (or no password at all).
+async fn refuse_public_with_bootstrap_auth(state: &AppState) -> Result<(), ControlApiError> {
+    let bootstrap = |reason: &'static str| ControlApiError::Module {
+        code: "control_api.web_access.bootstrap_auth",
+        params: Some(json!({ "reason": reason })),
+    };
+    if std::env::var_os("DNSCRAFT_ADMIN_PASSWORD_FILE").is_some() {
+        return Err(bootstrap("admin_password_file"));
+    }
+    let Some(auth) = state.auth_state() else {
+        return Err(bootstrap("no_auth"));
+    };
+    let snap = auth.auth_snapshot().await?;
+    if snap.oidc.is_none() && snap.local_accounts.is_empty() {
+        return Err(bootstrap("no_auth"));
+    }
+    Ok(())
 }
 
 /// `GET /api/v1/web-bans` — sources currently banned, soonest expiry first (admin).

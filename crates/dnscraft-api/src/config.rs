@@ -276,7 +276,8 @@ impl Default for ControlApiConfig {
 impl ControlApiConfig {
     /// Validates the bind address, port and each sub-section against the spec limits.
     pub fn validate(&self) -> Result<(), ControlApiError> {
-        if !is_internal_bind(self.bind) && !(self.allow_wildcard_bind && self.bind.is_unspecified()) {
+        if !is_internal_bind(self.bind) && !(self.allow_wildcard_bind && self.bind.is_unspecified())
+        {
             return Err(ControlApiError::config(format!(
                 "bind address {} is not loopback/private/ULA (wildcard needs allow_wildcard_bind)",
                 self.bind

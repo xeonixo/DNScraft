@@ -127,6 +127,15 @@ pub struct RuleHits {
     pub hits: i64,
 }
 
+/// Nearest-rank response-time percentiles, in milliseconds.
+#[derive(Clone, Debug, Serialize)]
+pub struct ResponseTimeMs {
+    /// 50th percentile.
+    pub p50: f64,
+    /// 95th percentile.
+    pub p95: f64,
+}
+
 /// Filter hits (blocked queries) broken down by source for one window.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct FilterHits {
@@ -146,8 +155,9 @@ pub struct FilterHits {
 /// (open-hour windows, or before rollups are seeded) and `rollup` when
 /// completed hours came from `stats_hourly` / `stats_daily`. Rollups keep only
 /// protocol, profile, answer origin and node, so in `rollup` mode `by_view`,
-/// `by_rcode` and `dnssec` are empty, `active_clients` and `filter_hits` are
-/// `null`, and `blocked` counts the `filter_block` answer origin.
+/// `by_rcode` and `dnssec` are empty, `active_clients`, `filter_hits` and
+/// `response_time_ms` are `null`, and `blocked` counts the `filter_block`
+/// answer origin.
 #[derive(Clone, Debug, Serialize)]
 pub struct StatsOverview {
     /// `raw` or `rollup`: which storage answered the request.
@@ -172,6 +182,8 @@ pub struct StatsOverview {
     pub query_log_stream_dropped: u64,
     /// Filter-hit breakdown (`null` in rollup mode).
     pub filter_hits: Option<FilterHits>,
+    /// Response-time percentiles (`null` in rollup mode).
+    pub response_time_ms: Option<ResponseTimeMs>,
     /// Query counts by transport.
     pub by_protocol: BTreeMap<String, i64>,
     /// Query counts by policy view.
@@ -245,6 +257,30 @@ pub struct CacheStats {
     pub misses: i64,
     /// `hits / (hits + misses)` (`0.0` when nothing resolved).
     pub hit_ratio: f64,
+}
+
+/// One bucket of [`TimeSeries`].
+#[derive(Clone, Debug, Serialize)]
+pub struct TimeSeriesBucket {
+    /// Start of the bucket (RFC 3339).
+    pub bucket_start: String,
+    /// Queries in the bucket.
+    pub total: i64,
+    /// Queries of those that were blocked.
+    pub blocked: i64,
+}
+
+/// Query counts over time for one window.
+#[derive(Clone, Debug, Serialize)]
+pub struct TimeSeries {
+    /// Window start (RFC 3339).
+    pub from: String,
+    /// Window end (RFC 3339).
+    pub to: String,
+    /// `hour` or `day`.
+    pub bucket: String,
+    /// Non-empty buckets in the window, oldest first.
+    pub buckets: Vec<TimeSeriesBucket>,
 }
 
 /// How to order `top_clients`.
@@ -704,6 +740,63 @@ impl QueryLog {
             hit_ratio: ratio(hits, hits.saturating_add(misses)),
         })
     }
+
+    /// Query counts grouped by hour or day over the raw log for `[from_us, to_us]`.
+    ///
+    /// `bucket` is `hour` or `day`; any other value is read as `hour` (the HTTP
+    /// route rejects those before calling this).
+    pub async fn timeseries_scoped(
+        &self,
+        from_us: Option<i64>,
+        to_us: Option<i64>,
+        scope: StatsScope<'_>,
+        bucket: &str,
+    ) -> Result<TimeSeries, ControlApiError> {
+        let db = self.db();
+        let (from, to) = resolve_window(db, from_us, to_us)?;
+        let scope = Scope::from(scope);
+        let (label, width) = if bucket == "day" {
+            ("day", MICROS_PER_DAY)
+        } else {
+            ("hour", MICROS_PER_HOUR)
+        };
+        let buckets = db
+            .with_read_conn(move |conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT (time / ?5) * ?5,
+                                COUNT(*),
+                                COALESCE(SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END), 0)
+                         FROM query_log
+                         WHERE time >= ?1 AND time <= ?2
+                           AND (?3 IS NULL OR node_id = ?3)
+                           AND (?4 IS NULL OR profile_id = ?4)
+                         GROUP BY time / ?5
+                         ORDER BY 1",
+                    )
+                    .map_err(db_err)?;
+                let rows = stmt
+                    .query_map(
+                        params![from, to, scope.node_id, scope.profile_id, width],
+                        |row| {
+                            Ok(TimeSeriesBucket {
+                                bucket_start: format_micros(row.get(0)?),
+                                total: row.get(1)?,
+                                blocked: row.get(2)?,
+                            })
+                        },
+                    )
+                    .map_err(db_err)?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+            })
+            .await?;
+        Ok(TimeSeries {
+            from: format_micros(from),
+            to: format_micros(to),
+            bucket: label.to_owned(),
+            buckets,
+        })
+    }
 }
 
 /// Optional node and profile filters shared by the dashboard aggregations
@@ -941,6 +1034,7 @@ async fn overview_from_raw(
     } = counts;
     let active_clients = active_client_count(db, from, to, scope).await?;
     let hits = filter_hits(db, from, to, scope, by_list, by_reason).await?;
+    let response_time_ms = response_time_ms(db, from, to, scope).await?;
     Ok(StatsOverview {
         source: "raw",
         from: format_micros(from),
@@ -953,6 +1047,7 @@ async fn overview_from_raw(
         query_log_dropped: dropped,
         query_log_stream_dropped: stream_dropped,
         filter_hits: Some(hits),
+        response_time_ms: Some(response_time_ms),
         by_protocol,
         by_view,
         by_profile,
@@ -996,7 +1091,7 @@ async fn overview_hourly_with_tail(
 
     let tail_from = (open_hour.saturating_mul(MICROS_PER_HOUR)).max(from);
     let whole_window_is_open_hour = from_hour == open_hour;
-    let (tail, active_clients, hits, source) = if tail_from <= to {
+    let (tail, active_clients, hits, response_time_ms, source) = if tail_from <= to {
         let counts = raw_counts(db, tail_from, to, &scope).await?;
         if whole_window_is_open_hour {
             let clients = active_client_count(db, from, to, &scope).await?;
@@ -1009,12 +1104,13 @@ async fn overview_hourly_with_tail(
                 counts.by_reason.clone(),
             )
             .await?;
-            (counts, Some(clients), Some(hits), "raw")
+            let latency = response_time_ms(db, from, to, &scope).await?;
+            (counts, Some(clients), Some(hits), Some(latency), "raw")
         } else {
-            (counts, None, None, "rollup")
+            (counts, None, None, None, "rollup")
         }
     } else {
-        (RawCounts::default(), None, None, "rollup")
+        (RawCounts::default(), None, None, None, "rollup")
     };
 
     let total = closed.total + tail.total;
@@ -1040,6 +1136,7 @@ async fn overview_hourly_with_tail(
         query_log_dropped: dropped,
         query_log_stream_dropped: stream_dropped,
         filter_hits: hits,
+        response_time_ms,
         by_protocol: merge_counts(closed.by_protocol, tail.by_protocol),
         by_view,
         by_profile: merge_counts(closed.by_profile, tail.by_profile),
@@ -1157,12 +1254,7 @@ async fn active_client_count(
 }
 
 /// Indexed `COUNT(*)` — used to compare rollup coverage without a wide scan.
-async fn raw_row_count(
-    db: &Db,
-    from: i64,
-    to: i64,
-    scope: &Scope,
-) -> Result<i64, ControlApiError> {
+async fn raw_row_count(db: &Db, from: i64, to: i64, scope: &Scope) -> Result<i64, ControlApiError> {
     let scope = scope.clone();
     db.with_read_conn(move |conn| {
         conn.query_row(
@@ -1223,6 +1315,7 @@ async fn rollup_overview(
         query_log_dropped: dropped,
         query_log_stream_dropped: stream_dropped,
         filter_hits: None,
+        response_time_ms: None,
         by_protocol,
         by_view: BTreeMap::new(),
         by_profile,
@@ -1433,6 +1526,53 @@ fn format_micros(micros: i64) -> String {
         .unwrap_or_else(|| format!("{micros}us"))
 }
 
+/// Nearest-rank percentile of `sorted` ascending values (`0.0` when empty).
+///
+/// Rank is `ceil(percentile * len)`, 1-based, then clamped to the sample.
+fn nearest_rank(sorted: &[f64], percentile: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let rank = (percentile * sorted.len() as f64).ceil() as usize;
+    sorted[rank.saturating_sub(1).min(sorted.len() - 1)]
+}
+
+/// Response-time percentiles (milliseconds) from raw `timings.total_us`.
+async fn response_time_ms(
+    db: &Db,
+    from: i64,
+    to: i64,
+    scope: &Scope,
+) -> Result<ResponseTimeMs, ControlApiError> {
+    let scope = scope.clone();
+    let samples = db
+        .with_read_conn(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT json_extract(record, '$.timings.total_us')
+                     FROM query_log
+                     WHERE time >= ?1 AND time <= ?2
+                       AND (?3 IS NULL OR node_id = ?3)
+                       AND (?4 IS NULL OR profile_id = ?4)
+                       AND json_extract(record, '$.timings.total_us') IS NOT NULL
+                     ORDER BY 1",
+                )
+                .map_err(db_err)?;
+            let rows = stmt
+                .query_map(params![from, to, scope.node_id, scope.profile_id], |row| {
+                    row.get::<_, f64>(0)
+                })
+                .map_err(db_err)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+        })
+        .await?;
+    let ms: Vec<f64> = samples.into_iter().map(|us| us / 1_000.0).collect();
+    Ok(ResponseTimeMs {
+        p50: nearest_rank(&ms, 0.50),
+        p95: nearest_rank(&ms, 0.95),
+    })
+}
+
 /// `part / whole`, or `0.0` when `whole` is not positive.
 fn ratio(part: i64, whole: i64) -> f64 {
     if whole <= 0 {
@@ -1598,6 +1738,14 @@ fn format_day(day: i64) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nearest_rank_uses_ceil_of_percentile_times_len() {
+        let samples = [1.0, 2.0, 3.0, 4.0];
+        assert_eq!(nearest_rank(&samples, 0.50), 2.0);
+        assert_eq!(nearest_rank(&samples, 0.95), 4.0);
+        assert_eq!(nearest_rank(&[], 0.50), 0.0);
+    }
 
     #[test]
     fn csv_escape_quotes_only_when_needed() {

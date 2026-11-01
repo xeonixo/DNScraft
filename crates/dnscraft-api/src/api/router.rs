@@ -39,9 +39,9 @@ use super::filter_routes::{
 };
 use super::listener_routes::{delete_listener, list_listeners, put_listener};
 use super::mcp_endpoints::{
-    add_custom_rule, allow_temporarily, confirm_mcp_proposal, explain_block, list_mcp_proposals,
-    list_mcp_rules, pause_filter_set, reject_mcp_proposal, remove_custom_rule, resume_filter_set,
-    test_query,
+    add_custom_rule, allow_temporarily, confirm_mcp_proposal, explain_block, get_filter_pause,
+    list_mcp_proposals, list_mcp_rules, pause_filter_set, reject_mcp_proposal, remove_custom_rule,
+    resume_filter_set, test_query,
 };
 use super::notifications_routes::{get_notifications, post_notification_test, put_notifications};
 use super::oauth;
@@ -54,8 +54,8 @@ use super::rate_limit::rate_limit;
 use super::resolver_routes::{flush_cache, list_upstreams};
 use super::response::{BODY_LIMIT_BYTES, error_response, success};
 use super::stats_routes::{
-    export_csv, export_ndjson, stats_cache, stats_domain, stats_overview, stats_top_clients,
-    stats_top_domains,
+    export_csv, export_ndjson, stats_cache, stats_domain, stats_overview, stats_timeseries,
+    stats_top_blocked_domains, stats_top_clients, stats_top_domains,
 };
 use super::system_routes::{
     delete_web_ban, get_backups, get_update_check, get_web_access, get_web_bans,
@@ -99,7 +99,10 @@ pub(crate) fn build_router(state: AppState) -> Router {
             post(add_custom_rule).delete(remove_custom_rule),
         )
         .route("/filtering/temporary-allows", post(allow_temporarily))
-        .route("/filtering/pause", post(pause_filter_set))
+        .route(
+            "/filtering/pause",
+            get(get_filter_pause).post(pause_filter_set),
+        )
         .route("/filtering/resume", post(resume_filter_set))
         .route("/policy/test-query", post(test_query))
         // Resolver admin: upstream health (viewer) and cache flush (admin).
@@ -253,6 +256,8 @@ pub(crate) fn build_router(state: AppState) -> Router {
             .route("/stats/overview", get(stats_overview))
             .route("/stats/top_clients", get(stats_top_clients))
             .route("/stats/top_domains", get(stats_top_domains))
+            .route("/stats/top_blocked_domains", get(stats_top_blocked_domains))
+            .route("/stats/timeseries", get(stats_timeseries))
             .route("/stats/cache", get(stats_cache))
             .route("/stats/domains/{name}", get(stats_domain));
     }

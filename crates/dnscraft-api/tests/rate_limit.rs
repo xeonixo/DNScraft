@@ -96,7 +96,14 @@ async fn rate_limited_response_carries_retry_after_header() {
         .get("retry-after")
         .and_then(|v| v.to_str().ok())
         .expect("retry-after header");
-    assert!(retry_after.parse::<u64>().is_ok(), "seconds: {retry_after}");
+    let seconds = retry_after.parse::<u64>().expect("seconds");
+    let body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body["error"]["params"]["retry_after"], seconds);
 }
 
 #[tokio::test]

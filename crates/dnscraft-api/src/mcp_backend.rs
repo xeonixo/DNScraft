@@ -1520,6 +1520,7 @@ impl McpBackend for ControlMcpBackend {
             domain: non_empty(params.domain),
             domain_substr: non_empty(params.domain_substr),
             protocol: non_empty(params.protocol),
+            query_type: None,
             view_id: non_empty(params.view_id),
             profile_id: non_empty(params.profile_id),
             status: non_empty(params.status),

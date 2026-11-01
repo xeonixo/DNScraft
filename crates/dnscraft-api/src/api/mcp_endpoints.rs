@@ -463,6 +463,29 @@ pub(crate) async fn allow_temporarily(
     })))
 }
 
+/// Query of `GET /api/v1/filtering/pause`.
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct PauseQuery {
+    filter_set_id: Option<String>,
+}
+
+/// `GET /api/v1/filtering/pause` — active pause of one filter set.
+pub(crate) async fn get_filter_pause(
+    State(state): State<AppState>,
+    Query(query): Query<PauseQuery>,
+) -> Result<impl IntoResponse, ControlApiError> {
+    let filter = state
+        .filter_engine()
+        .ok_or_else(|| ControlApiError::Internal {
+            message: "filter engine is not configured".to_owned(),
+        })?;
+    let set = parse_set(query.filter_set_id.as_deref())?;
+    Ok(success(json!({
+        "filter_set_id": set.as_str(),
+        "paused_until": filter.paused_until(&set).map(rfc3339),
+    })))
+}
+
 /// `POST /api/v1/filtering/pause`.
 pub(crate) async fn pause_filter_set(
     State(state): State<AppState>,

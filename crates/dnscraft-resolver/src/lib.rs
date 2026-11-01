@@ -55,7 +55,7 @@ use tokio::sync::{Notify, Semaphore};
 pub use config::{ForwardZone, ForwardZoneId, ResolverConfig};
 pub use dnscraft_common::clock::{Clock, ManualClock, SystemClock};
 pub use error::{ForwardZoneIdError, ResolveError, ResolverError};
-pub use health::{UpstreamHealth, UpstreamState};
+pub use health::{HEALTH_WINDOW_SECONDS, UpstreamHealth, UpstreamState};
 pub use hints::default_root_hints;
 pub use stats::ResolverStats;
 pub use types::{

@@ -491,6 +491,27 @@ async fn stats_export_overview_cache_and_schema() {
     assert_eq!(overview["by_view"]["lan"], 10);
     assert_eq!(overview["dnssec"]["secure"], 10);
     assert!(overview["from"].is_string() && overview["to"].is_string());
+    let latency = &overview["response_time_ms"];
+    assert!((latency["p50"].as_f64().unwrap() - 0.95).abs() < 1e-9);
+    assert!((latency["p95"].as_f64().unwrap() - 0.95).abs() < 1e-9);
+
+    let (status, _, body) = request(&log, "/api/v1/stats/top_blocked_domains?limit=1").await;
+    assert_eq!(status, StatusCode::OK);
+    let top_blocked = &json(&body)["data"]["domains"];
+    assert_eq!(top_blocked[0]["domain"], "host0.example.com");
+    assert_eq!(top_blocked[0]["blocked"], 1);
+
+    let (status, _, body) = request(&log, "/api/v1/stats/timeseries?bucket=hour").await;
+    assert_eq!(status, StatusCode::OK);
+    let series = &json(&body)["data"];
+    assert_eq!(series["bucket"], "hour");
+    assert_eq!(series["buckets"][0]["total"], 10);
+    assert_eq!(series["buckets"][0]["blocked"], 2);
+    assert!(series["buckets"][0]["bucket_start"].is_string());
+
+    let (status, _, body) = request(&log, "/api/v1/query-log?status=cache").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json(&body)["data"]["total"], 4);
 
     // Four allowed even-index events resolved from cache; four allowed odd
     // events recursed.
@@ -529,6 +550,7 @@ async fn stats_export_overview_cache_and_schema() {
         "answer_size",
         "timings",
         "time",
+        "status",
     ];
     for key in record.as_object().unwrap().keys() {
         assert!(
@@ -575,6 +597,13 @@ async fn stats_export_rejects_malformed_parameters() {
         "/api/v1/stats/cache?from=2026-01-02T00:00:00Z&to=2026-01-01T00:00:00Z",
     )
     .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        json(&body)["error"]["code"],
+        "control_api.query_log.invalid"
+    );
+
+    let (status, _, body) = request(&log, "/api/v1/stats/timeseries?bucket=minute").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(
         json(&body)["error"]["code"],
@@ -648,6 +677,7 @@ async fn stats_overview_uses_hourly_rollups_inside_retention() {
     assert_eq!(overview["allowed"], 2);
     assert!(overview["active_clients"].is_null());
     assert!(overview["filter_hits"].is_null());
+    assert!(overview["response_time_ms"].is_null());
     assert_eq!(overview["by_protocol"]["udp53"], 3);
 }
 
@@ -676,6 +706,7 @@ async fn stats_overview_long_range_is_answered_from_rollups() {
     assert_eq!(overview["by_protocol"]["udp53"], 2);
     assert!(overview["active_clients"].is_null());
     assert!(overview["filter_hits"].is_null());
+    assert!(overview["response_time_ms"].is_null());
     assert_eq!(overview["by_view"].as_object().unwrap().len(), 0);
 }
 

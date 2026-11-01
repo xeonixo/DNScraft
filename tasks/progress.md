@@ -2,6 +2,25 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-11-01 — improvement pass (web API gaps, CI, public-web, hygiene)
+
+- **GA-W4:** Stale session cookie cleared on public auth routes; logout is
+  `Requirement::Public`; `429` envelopes include `params.retry_after`; CSRF
+  documented as body-field only in SPEC-web-ui (no `dnscraft_csrf` cookie).
+- **GA-W5/W6:** `stats/top_blocked_domains`, `stats/timeseries`, overview
+  `response_time_ms`, `GET /filtering/pause`, query-log `status`/`cache`/
+  `query_type`/`total`/drop counters; web error catalogue for `mcp.*`,
+  `resolver.*`, `upstream.*`.
+- **GA6c:** Already wired (`EngineDirectory` + `with_clients`); todo checkbox
+  updated.
+- **P1:** CI web job (`pnpm check/lint/test`); fuzz matrix adds
+  `control_api_config`.
+- **P2:** `PUT /web-access` refuses public while bootstrap auth
+  (`DNSCRAFT_ADMIN_PASSWORD_FILE` or no OIDC/local accounts); compose/sample
+  marked as smoke/dev (no published 443).
+- **P3:** progress Current-state table aligned with CAPABILITY-MAP; shared
+  `HEALTH_WINDOW_SECONDS` from resolver.
+
 ## 2026-10-28 — system log levels and lifecycle events
 
 - **Config:** `[log] level` (`error|warn|info|debug|trace`, default `info`) in
@@ -434,10 +453,10 @@ success-criteria tables, measurements and review findings of resolver, filtering
 | `tls` | COMPLETE (Checkpoint C, 2026-10-25, LE staging accepted) | [plan](archive/tls-plan.md) · [tasks](archive/tls-todo.md) | archived log, coverage 80.3 % |
 | `policy` | COMPLETE (Checkpoint C, 2026-10-25; P13 SafeSearch, P14 schedules) | [plan](archive/policy-plan.md) · [tasks](archive/policy-todo.md) | archived log, coverage 92.9 % |
 | `listeners` | COMPLETE (Checkpoint D, 2026-10-26) | [plan](archive/listeners-plan.md) · [tasks](archive/listeners-todo.md) | [SPEC-listeners.md](../SPEC-listeners.md); crates `dnscraft-listeners` + `dnscraft` |
-| `control-api` | A0–A14 done (Checkpoint F, 2026-10-26); **owner approved** | [plan](archive/plan-control-api.md) · [tasks](archive/todo-control-api.md) | [SPEC-control-api.md](../SPEC-control-api.md); crate `dnscraft-api` |
+| `control-api` | COMPLETE and wired into `dnscraft` (assembler + GA-W4/W5/W6 API gaps 2026-11-01) | [plan](archive/plan-control-api.md) · [tasks](archive/todo-control-api.md) · [webui gaps](todo-webui-api-gaps.md) | [SPEC-control-api.md](../SPEC-control-api.md); crate `dnscraft-api` |
 | `mcp` | COMPLETE (Checkpoint F, 2026-10-27; owner approved) | [plan](archive/mcp-plan.md) · [tasks](archive/mcp-todo.md) | [SPEC-mcp.md](../SPEC-mcp.md); crates `dnscraft-mcp` + `dnscraft-api`; coverage 94.84 % |
-| `web-ui` | spec drafted (DRAFT, owner review pending; Apple-design revision in progress) | [SPEC-web-ui.md](../SPEC-web-ui.md) | – |
-| `cluster` | COMPLETE (Checkpoint F, 2026-10-27; owner approved) | [plan](archive/plan-cluster.md) · [tasks](archive/todo-cluster.md) | [SPEC-cluster.md](../SPEC-cluster.md); crates `dnscraft-cluster` + `dnscraft-api`; loopback + fuzz + security suites |
+| `web-ui` | in progress (SPA + mock + rust-embed; release still copies `web/build` → `embed-web-ui/`) | [SPEC-web-ui.md](../SPEC-web-ui.md) · [web/](../web/) | matches CAPABILITY-MAP / README |
+| `cluster` | COMPLETE (Checkpoint F, 2026-10-27; owner approved) and wired into `dnscraft` | [plan](archive/plan-cluster.md) · [tasks](archive/todo-cluster.md) | [SPEC-cluster.md](../SPEC-cluster.md); crates `dnscraft-cluster` + `dnscraft-api`; loopback + fuzz + security suites |
 
 - Toolchain: MSRV **1.88**, toolchain `stable`; all dependencies on their latest stable versions
   (2026-10-25); ring-only TLS enforced by `cargo deny` bans; `cargo deny check` runs in CI.

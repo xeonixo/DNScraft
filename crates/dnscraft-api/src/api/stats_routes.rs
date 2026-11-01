@@ -31,6 +31,7 @@ pub(crate) struct RawStatsParams {
     limit: Option<String>,
     by: Option<String>,
     profile_id: Option<String>,
+    bucket: Option<String>,
 }
 
 impl RawStatsParams {
@@ -101,6 +102,17 @@ fn parse_limit(raw: Option<&str>, cap: u32, default: u32) -> Result<u32, Control
             }
             Ok(value.min(cap))
         }
+    }
+}
+
+/// Parses `bucket=hour|day` (default `hour`).
+fn parse_bucket(raw: Option<&str>) -> Result<&'static str, ControlApiError> {
+    match raw.map(str::trim) {
+        None | Some("") | Some("hour") => Ok("hour"),
+        Some("day") => Ok("day"),
+        Some(_) => Err(ControlApiError::QueryLogInvalid {
+            reason: "`bucket` must be hour or day".to_owned(),
+        }),
     }
 }
 
@@ -192,6 +204,44 @@ pub(crate) async fn stats_domain(
             what: format!("domain {}", domain.as_str()),
         }),
     }
+}
+
+/// `GET /api/v1/stats/top_blocked_domains` — top N domains by blocked count.
+pub(crate) async fn stats_top_blocked_domains(
+    State(state): State<AppState>,
+    Query(params): Query<RawStatsParams>,
+) -> Result<impl IntoResponse, ControlApiError> {
+    let log = query_log(&state)?;
+    let (from, to) = params.window()?;
+    let limit = parse_limit(params.limit.as_deref(), TOP_DOMAINS_MAX, 10)?;
+    let (key, ttl) = params.memo("top_blocked_domains", from, to);
+    Ok(success(
+        log.memoized(
+            key,
+            ttl,
+            log.top_blocked_domains_scoped(from, to, params.scope(), limit),
+        )
+        .await?,
+    ))
+}
+
+/// `GET /api/v1/stats/timeseries` — query counts grouped by hour or day.
+pub(crate) async fn stats_timeseries(
+    State(state): State<AppState>,
+    Query(params): Query<RawStatsParams>,
+) -> Result<impl IntoResponse, ControlApiError> {
+    let log = query_log(&state)?;
+    let (from, to) = params.window()?;
+    let bucket = parse_bucket(params.bucket.as_deref())?;
+    let (key, ttl) = params.memo(&format!("timeseries:{bucket}"), from, to);
+    Ok(success(
+        log.memoized(
+            key,
+            ttl,
+            log.timeseries_scoped(from, to, params.scope(), bucket),
+        )
+        .await?,
+    ))
 }
 
 /// `GET /api/v1/stats/top_domains` — top N queried domains.

@@ -187,9 +187,11 @@ async fn query_log_filters_order_and_pagination_over_ten_thousand_rows() {
     // Default page: newest first, one-row probe for `has_more`.
     let page = log.list(&default_filter()).await.unwrap();
     assert_eq!(page.records.len(), 50);
+    assert_eq!(page.total, 10_000);
     assert!(page.has_more);
     assert_eq!(page.next_offset, Some(50));
     assert_eq!(page.records[0]["answer_size"], 100 + 9_999);
+    assert_eq!(page.records[0]["status"], "allowed");
 
     // Subnet filter: every sample client sits in 192.0.2.0/24.
     for (subnet, expect_rows) in [("192.0.2.0/24", true), ("198.51.100.0/24", false)] {
@@ -892,6 +894,7 @@ async fn query_log_why_blocked_returns_the_full_decision_record() {
     assert_eq!(record["dnssec"], "secure");
     assert_eq!(record["timings"]["filter_us"], 8);
     assert_eq!(record["timings"]["total_us"], 950);
+    assert_eq!(record["status"], "blocked");
     let stages: Vec<&str> = record["steps"]
         .as_array()
         .unwrap()
@@ -923,9 +926,20 @@ async fn query_log_http_list_applies_filters_and_pagination() {
     assert_eq!(status, StatusCode::OK);
     let queries = body["data"]["queries"].as_array().unwrap();
     assert_eq!(queries.len(), 2);
+    assert_eq!(body["data"]["total"], 3);
+    assert_eq!(body["data"]["query_log_dropped"], 0);
+    assert_eq!(body["data"]["query_log_stream_dropped"], 0);
     assert_eq!(body["data"]["has_more"], true);
     assert_eq!(body["data"]["next_offset"], 2);
     assert_eq!(queries[0]["filter"]["block_mode"], "nxdomain");
+    assert_eq!(queries[0]["status"], "blocked");
+
+    let (status, body) = get(&log, "/api/v1/query-log?query_type=AAAA").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["total"], 0);
+    let (status, body) = get(&log, "/api/v1/query-log?query_type=A&limit=1").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["total"], 30);
 
     // Malformed filter values are client errors (400 `query_log.invalid`),
     // never server errors.

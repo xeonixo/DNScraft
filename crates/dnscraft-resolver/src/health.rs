@@ -8,8 +8,10 @@ use std::time::{Duration, Instant, SystemTime};
 use dnscraft_proto::Name;
 use serde::Serialize;
 
+/// Samples older than this are not counted (seconds).
+pub const HEALTH_WINDOW_SECONDS: u64 = 300;
 /// Samples older than this are not counted.
-const WINDOW: Duration = Duration::from_secs(300);
+const WINDOW: Duration = Duration::from_secs(HEALTH_WINDOW_SECONDS);
 /// Most samples kept per target.
 const RING: usize = 256;
 /// Fewer samples than this is `unknown`.

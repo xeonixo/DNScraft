@@ -113,7 +113,8 @@ async fn apply_stored_current_does_not_fetch_remote_catalog() {
 
     FETCHES.store(0, Ordering::SeqCst);
     let mut rule_only = body;
-    rule_only["filtering"]["sets"][0]["custom_rules"] = json!("||offline.example^\n||extra.example^");
+    rule_only["filtering"]["sets"][0]["custom_rules"] =
+        json!("||offline.example^\n||extra.example^");
     service
         .replace(rule_only, &ConfigActor::local(), None)
         .await

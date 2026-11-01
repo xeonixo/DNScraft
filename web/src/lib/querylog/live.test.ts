@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { QueryPage, QueryRecord } from '$lib/api/query-log';
 import { emptyDraft } from './filters';
-import { isLiveHead, LIVE_CAP, mergeLivePage, streamHref, streamParams } from './live';
+import {
+	appendQueryPage,
+	isLiveHead,
+	LIVE_CAP,
+	mergeLivePage,
+	streamHref,
+	streamParams,
+} from './live';
 
 function row(id: string): QueryRecord {
 	return {
@@ -71,5 +78,26 @@ describe('mergeLivePage', () => {
 		expect(next.queries).toHaveLength(LIVE_CAP);
 		expect(next.queries[0]?.id).toBe('new');
 		expect(next.queries.at(-1)?.id).toBe(`old-${LIVE_CAP - 2}`);
+		expect(next.has_more).toBe(true);
+	});
+
+	it('caps at the page limit and marks has_more when older rows drop', () => {
+		const existing = page(['a', 'b', 'c']);
+		const next = mergeLivePage(existing, [row('d'), row('e')], 3);
+		expect(next.queries.map((q) => q.id)).toEqual(['e', 'd', 'a']);
+		expect(next.has_more).toBe(true);
+	});
+});
+
+describe('appendQueryPage', () => {
+	it('appends and skips duplicates', () => {
+		const next = appendQueryPage(page(['a', 'b']), {
+			queries: [row('b'), row('c')],
+			has_more: true,
+			next_offset: 4,
+		});
+		expect(next.queries.map((q) => q.id)).toEqual(['a', 'b', 'c']);
+		expect(next.has_more).toBe(true);
+		expect(next.next_offset).toBe(4);
 	});
 });

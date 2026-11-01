@@ -43,6 +43,36 @@ class FakeEventSource {
 	}
 }
 
+/** Minimal IntersectionObserver so infinite scroll can be triggered in tests. */
+class FakeIntersectionObserver {
+	static instances: FakeIntersectionObserver[] = [];
+	readonly callback: IntersectionObserverCallback;
+	private target: Element | null = null;
+
+	constructor(callback: IntersectionObserverCallback) {
+		this.callback = callback;
+		FakeIntersectionObserver.instances.push(this);
+	}
+
+	observe(target: Element): void {
+		this.target = target;
+	}
+
+	unobserve(): void {
+		/* noop */
+	}
+
+	disconnect(): void {
+		this.target = null;
+	}
+
+	trigger(isIntersecting: boolean): void {
+		if (!this.target) return;
+		const entry = { isIntersecting, target: this.target } as IntersectionObserverEntry;
+		this.callback([entry], this as unknown as IntersectionObserver);
+	}
+}
+
 const json = (status: number, body: unknown): Response =>
 	new Response(JSON.stringify(body), {
 		status,
@@ -150,6 +180,8 @@ beforeEach(() => {
 	vi.stubGlobal('fetch', fetchMock);
 	FakeEventSource.instances = [];
 	vi.stubGlobal('EventSource', FakeEventSource);
+	FakeIntersectionObserver.instances = [];
+	vi.stubGlobal('IntersectionObserver', FakeIntersectionObserver);
 	nav.goto.mockReset();
 	endSession();
 	setPrincipal({ role: 'admin', actorId: 'alice', actorType: 'user', csrfToken: 'tok' });
@@ -406,7 +438,7 @@ describe('wide and compact layouts', () => {
 
 		expect(await screen.findByText('ads.example.com')).toBeInTheDocument();
 		expect(container.querySelector('table')).toBeNull();
-		expect(container.querySelector('.card .mark')?.textContent).toContain(
+		expect(container.querySelector('.card .mark')?.getAttribute('aria-label')).toBe(
 			m.querylog_status_blocked(),
 		);
 		const meta = container.querySelector('.card .meta')?.textContent ?? '';
@@ -473,23 +505,32 @@ describe('wide and compact layouts', () => {
 	});
 });
 
-describe('pagination and export', () => {
-	it('moves to the next page with offset from has_more and next_offset', async () => {
+describe('infinite scroll and export', () => {
+	it('appends the next chunk when the bottom sentinel intersects', async () => {
+		let calls = 0;
 		serve({
-			'/api/v1/query-log': () => pageOf([record('a')], { has_more: true, next_offset: 50 }),
+			'/api/v1/query-log': (url) => {
+				calls += 1;
+				if (url.searchParams.get('offset') === '50') {
+					return pageOf(
+						[record('b', { query: { name: 'next.example.com', type: 'A', class: 'IN' } })],
+						{ has_more: false, next_offset: null },
+					);
+				}
+				return pageOf([record('a')], { has_more: true, next_offset: 50 });
+			},
 		});
-		const user = userEvent.setup();
 		render(Page);
 
-		await user.click(await screen.findByRole('button', { name: m.querylog_next() }));
-		expect(nav.goto).toHaveBeenCalledWith(expect.stringContaining('offset=50'), expect.anything());
-	});
+		expect(await screen.findByText('ads.example.com')).toBeInTheDocument();
+		expect(screen.queryByText('next.example.com')).toBeNull();
+		expect(screen.queryByRole('button', { name: m.querylog_next() })).toBeNull();
 
-	it('disables Next when no further page exists', async () => {
-		serve({ '/api/v1/query-log': () => pageOf([record('a')]) });
-		render(Page);
-
-		expect(await screen.findByRole('button', { name: m.querylog_next() })).toBeDisabled();
+		await waitFor(() => expect(FakeIntersectionObserver.instances.length).toBeGreaterThan(0));
+		FakeIntersectionObserver.instances.at(-1)!.trigger(true);
+		expect(await screen.findByText('next.example.com')).toBeInTheDocument();
+		expect(calls).toBeGreaterThanOrEqual(2);
+		expect(screen.getByText(m.querylog_page_range({ from: '1', to: '2' }))).toBeInTheDocument();
 	});
 
 	it('exports carry the current filters and no paging', async () => {
@@ -633,7 +674,8 @@ describe('resolved answers in the rows', () => {
 	];
 	const allowed = { filter: null, rcode: 'NOERROR' } as const;
 
-	it('shows up to two values and a count for the rest on a card', async () => {
+	it('hides answers on cards unless technical columns are on', async () => {
+		localStorage.setItem(TECHNICAL_KEY, 'on');
 		serve({
 			'/api/v1/query-log': () =>
 				pageOf([record('a', { ...allowed, answers: threeA }), record('b', allowed)]),
@@ -646,8 +688,9 @@ describe('resolved answers in the rows', () => {
 		expect(cards[1]?.querySelector('.answers')).toBeNull();
 	});
 
-	it('shows the same summary under the domain in the table', async () => {
+	it('shows the answer summary under the domain when technical columns are on', async () => {
 		setWide(true);
+		localStorage.setItem(TECHNICAL_KEY, 'on');
 		serve({
 			'/api/v1/query-log': () =>
 				pageOf([

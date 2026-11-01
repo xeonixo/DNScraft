@@ -7,14 +7,16 @@
 		tone: StatusTone;
 		/** Translated verdict word; the icon and the word carry the state, not the colour alone. */
 		label: string;
+		/** Icon only; the label stays as the accessible name. */
+		compact?: boolean;
 	}
 
-	let { icon, tone, label }: Props = $props();
+	let { icon, tone, label, compact = false }: Props = $props();
 </script>
 
-<span class="mark {tone}">
+<span class="mark {tone}" class:compact title={label} aria-label={label}>
 	<Icon name={icon} size="1rem" strokeWidth={1.7} />
-	<span>{label}</span>
+	{#if !compact}<span>{label}</span>{/if}
 </span>
 
 <style>
@@ -25,6 +27,10 @@
 		font-size: 0.8125rem;
 		font-weight: 500;
 		white-space: nowrap;
+	}
+
+	.compact {
+		gap: 0;
 	}
 
 	.ok {

@@ -36,7 +36,7 @@ export function isLiveHead(draft: Pick<Draft, 'offset' | 'order_by' | 'order'>):
 
 /**
  * Prepends newly streamed rows (oldest→newest in `rows`) onto the page, de-duplicated by id,
- * capped at `cap`. Newest stay at the front.
+ * capped at `cap`. Newest stay at the front. Dropping older rows sets `has_more`.
  */
 export function mergeLivePage(
 	page: QueryPage,
@@ -53,8 +53,22 @@ export function mergeLivePage(
 		added.push(row);
 	}
 	if (added.length === 0) return page;
+	const merged = [...added, ...page.queries];
+	const queries = merged.slice(0, cap);
 	return {
 		...page,
-		queries: [...added, ...page.queries].slice(0, cap),
+		queries,
+		has_more: page.has_more || queries.length < merged.length,
+	};
+}
+
+/** Appends the next fetched page for infinite scroll; de-duplicates by id. */
+export function appendQueryPage(page: QueryPage, more: QueryPage): QueryPage {
+	const seen = new Set(page.queries.map((row) => row.id));
+	const added = more.queries.filter((row) => !seen.has(row.id));
+	return {
+		queries: [...page.queries, ...added],
+		has_more: more.has_more,
+		next_offset: more.next_offset,
 	};
 }

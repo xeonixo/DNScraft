@@ -11,7 +11,7 @@
 	import Segmented from '$lib/components/Segmented.svelte';
 	import Sheet from '$lib/components/Sheet.svelte';
 	import Switch from '$lib/components/Switch.svelte';
-	import { exportHref, listQueryLog, type QueryPage } from '$lib/api/query-log';
+	import { exportHref, listQueryLog, type QueryPage, type QueryRecord } from '$lib/api/query-log';
 	import { openQueryLogStream } from '$lib/api/query-log-stream';
 	import { settle, type Result } from '$lib/api/result';
 	import { getOverview, type StatsOverview } from '$lib/api/stats';
@@ -34,7 +34,13 @@
 		type FieldErrors,
 		type FilterKey,
 	} from '$lib/querylog/filters';
-	import { isLiveHead, mergeLivePage, streamHref } from '$lib/querylog/live';
+	import {
+		appendQueryPage,
+		isLiveHead,
+		LIVE_CAP,
+		mergeLivePage,
+		streamHref,
+	} from '$lib/querylog/live';
 	import { mediaMatches, WIDE_QUERY } from '$lib/querylog/media';
 	import {
 		readDensity,
@@ -78,8 +84,8 @@
 		{ value: 'custom', label: m.querylog_range_custom() },
 	]);
 
-	// The URL is the source of truth for every filter; everything below derives from it.
-	const draft = $derived(draftFromSearch(page.url.searchParams));
+	// The URL is the source of truth for every filter; paging is client-side (infinite scroll).
+	const draft = $derived({ ...draftFromSearch(page.url.searchParams), offset: '' });
 	const urlErrors = $derived(validateDraft(draft));
 	const invalid = $derived(Object.keys(urlErrors).length > 0);
 	const query = $derived(toApiParams(draft));
@@ -101,6 +107,8 @@
 	let attempt = $state(0);
 	/** Extra drops reported by the live SSE `lagged` event (WX2). */
 	let streamDropped = $state(0);
+	let loadingMore = $state(false);
+	let sentinel = $state<HTMLElement | null>(null);
 	const loaded = $derived(result.kind === 'ok' ? result.data : null);
 
 	/** A server-rejected filter or page value, mapped back to the field that caused it. */
@@ -119,34 +127,82 @@
 		(overview.kind === 'ok' ? overview.data.query_log_dropped : 0) + streamDropped,
 	);
 
-	// Loads the list for the current URL. A newer run makes an older response obsolete.
+	// Loads the first page for the current filters. A newer run makes an older response obsolete.
 	$effect(() => {
 		const params = query;
 		void attempt;
 		if (invalid) return;
 		const run = ++runs;
+		loadingMore = false;
 		void settle(listQueryLog(params)).then((next) => {
 			if (run === runs) result = next;
 		});
 	});
 
-	// Always-on live tail (WX2): no toggle. Prepends onto the first page when sorted newest-first.
+	async function loadMore(): Promise<void> {
+		if (loadingMore || result.kind !== 'ok') return;
+		const current = result.data;
+		if (!current.has_more || current.next_offset == null) return;
+		loadingMore = true;
+		const run = runs;
+		const params = new URLSearchParams(query);
+		params.set('offset', String(current.next_offset));
+		const next = await settle(listQueryLog(params));
+		if (run !== runs) return;
+		loadingMore = false;
+		if (next.kind !== 'ok' || result.kind !== 'ok') return;
+		result = { kind: 'ok', data: appendQueryPage(result.data, next.data) };
+	}
+
+	// Fetch the next chunk when the bottom sentinel enters the viewport.
+	// Re-binds after each append so a still-visible sentinel keeps loading until the page fills.
+	$effect(() => {
+		const el = sentinel;
+		const more = loaded?.has_more;
+		void loaded?.queries.length;
+		if (!el || !more || loadingMore) return;
+		const io = new IntersectionObserver(
+			(entries) => {
+				if (entries.some((entry) => entry.isIntersecting)) void loadMore();
+			},
+			{ rootMargin: '240px' },
+		);
+		io.observe(el);
+		return () => io.disconnect();
+	});
+
+	// Always-on live tail (WX2): no toggle. Prepends when sorted newest-first.
+	// Batches SSE rows into one paint; never shrinks an already-scrolled list.
 	$effect(() => {
 		if (invalid) return;
 		const href = streamHref(query);
 		const merge = isLiveHead(draft);
+		const pageLimit = pager.limit;
 		streamDropped = 0;
+		let pending: QueryRecord[] = [];
+		let raf = 0;
+		const flush = (): void => {
+			raf = 0;
+			const batch = pending;
+			pending = [];
+			if (!merge || batch.length === 0 || result.kind !== 'ok') return;
+			const cap = Math.min(LIVE_CAP, Math.max(pageLimit, result.data.queries.length));
+			result = { kind: 'ok', data: mergeLivePage(result.data, batch, cap) };
+		};
 		const stream = openQueryLogStream(href, {
 			onRow(row) {
 				if (!merge) return;
-				if (result.kind !== 'ok') return;
-				result = { kind: 'ok', data: mergeLivePage(result.data, [row]) };
+				pending.push(row);
+				if (raf === 0) raf = requestAnimationFrame(flush);
 			},
 			onLagged(count) {
 				streamDropped += count;
 			},
 		});
-		return () => stream.stop();
+		return () => {
+			if (raf !== 0) cancelAnimationFrame(raf);
+			stream.stop();
+		};
 	});
 
 	// Keeps the search box in step with the URL, but not while the user is typing.
@@ -237,10 +293,6 @@
 	function clearAll(): void {
 		filterOpen = false;
 		writeUrl(emptyDraft());
-	}
-
-	function goToOffset(offset: number): void {
-		writeUrl({ ...draft, offset: offset > 0 ? String(offset) : '' });
 	}
 
 	function chooseDensity(next: Density): void {
@@ -377,12 +429,20 @@
 		{#if loaded.queries.length > 0}
 			<span>
 				{m.querylog_page_range({
-					from: formatNumber(pager.offset + 1, locale),
-					to: formatNumber(pager.offset + loaded.queries.length, locale),
+					from: formatNumber(1, locale),
+					to: formatNumber(loaded.queries.length, locale),
 				})}
 			</span>
 		{/if}
-		<span>{loaded.has_more ? m.querylog_page_more() : m.querylog_page_end()}</span>
+		<span>
+			{#if loadingMore}
+				{m.state_loading()}
+			{:else if loaded.has_more}
+				{m.querylog_page_more()}
+			{:else}
+				{m.querylog_page_end()}
+			{/if}
+		</span>
 	</p>
 	{#if loaded.queries.length === 0}
 		<GroupedList>
@@ -398,18 +458,9 @@
 	{:else}
 		<QueryCards rows={loaded.queries} {technical} />
 	{/if}
-
-	<nav class="pager" aria-label={m.querylog_pager_label()}>
-		<Button disabled={pager.offset === 0} onclick={() => goToOffset(pager.offset - pager.limit)}>
-			{m.querylog_prev()}
-		</Button>
-		<Button
-			disabled={!loaded.has_more}
-			onclick={() => goToOffset(loaded.next_offset ?? pager.offset + pager.limit)}
-		>
-			{m.querylog_next()}
-		</Button>
-	</nav>
+	{#if loaded.has_more}
+		<div class="sentinel" bind:this={sentinel} aria-hidden="true"></div>
+	{/if}
 	<p class="note">{m.querylog_ip_note()}</p>
 {:else if unmappedError}
 	<ResultNotice result={unmappedError} onretry={() => attempt++} />
@@ -621,10 +672,7 @@
 		font-variant-numeric: tabular-nums;
 	}
 
-	.pager {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 0.75rem;
+	.sentinel {
+		height: 1px;
 	}
 </style>

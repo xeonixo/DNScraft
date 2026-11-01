@@ -82,7 +82,7 @@
 				{@const style = statusStyle(status)}
 				{@const unicode = unicodeName(record.query.name)}
 				{@const clientName = record.client?.display_name ?? record.client_id ?? record.source_ip}
-				{@const answers = answerSummary(answersOf(record))}
+				{@const answers = technical ? answerSummary(answersOf(record)) : ''}
 				{@const tracker = trackerOf(record.tracker)}
 				{#if i === 0 || day(record.time) !== day(rows[i - 1].time)}
 					<tr class="day">
@@ -107,17 +107,16 @@
 							onblur={hideTip}
 						>
 							<Value value={unicode} mono />
+							<span class="qtype mono">{record.query.type}</span>
 						</a>
-						<span class="sub mono"
-							>{record.query.type}{#if unicode !== record.query.name}<span class="alias"
-									><Value value={record.query.name} mono /></span
-								>{/if}</span
-						>
 						{#if tracker}
 							<span class="sub"><TrackerBadge {tracker} /></span>
 						{/if}
 						{#if answers !== ''}
 							<span class="sub answers mono">{displayText(answers, 80).text}</span>
+						{/if}
+						{#if unicode !== record.query.name}
+							<span class="sub mono alias"><Value value={record.query.name} mono /></span>
 						{/if}
 					</td>
 					<td class="client">
@@ -141,13 +140,18 @@
 							{/if}
 						</span>
 						<span class="sub mono"
-							><Value value={record.source_ip} mono /> · {record.protocol}{#if record.node_id}
+							>{record.protocol}{#if record.node_id}
 								· <Value value={record.node_id} mono />{/if}</span
 						>
 					</td>
 					<td>
-						<StatusMark icon={style.icon} tone={style.tone} label={style.label} />
-						{#if record.filter}
+						<StatusMark
+							icon={style.icon}
+							tone={style.tone}
+							label={style.label}
+							compact={compact}
+						/>
+						{#if !compact && record.filter}
 							<span class="sub">{provenanceLabel(record.filter.reason)}</span>
 						{/if}
 					</td>
@@ -225,7 +229,7 @@
 
 	th,
 	td {
-		padding: 0.5rem 0.75rem;
+		padding: 0.375rem 0.75rem;
 		text-align: start;
 		vertical-align: top;
 		min-width: 0;
@@ -248,13 +252,17 @@
 	}
 
 	td {
-		min-height: 2.75rem;
+		min-height: 2.25rem;
 		color: var(--label);
 	}
 
 	.compact td {
-		padding-top: 0.25rem;
-		padding-bottom: 0.25rem;
+		padding-top: 0.1875rem;
+		padding-bottom: 0.1875rem;
+	}
+
+	.compact .sub {
+		display: none;
 	}
 
 	.time {
@@ -304,7 +312,10 @@
 	}
 
 	.name {
-		display: inline-block;
+		display: inline-flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: 0.375rem;
 		padding-block: 0.125rem;
 		color: var(--label);
 		text-decoration: none;
@@ -314,16 +325,17 @@
 		text-decoration: underline;
 	}
 
-	/* Query type as a muted tag on the domain's line. */
-	/* The resolved answer under the query type, one line; the full set is on the detail page. */
+	.qtype {
+		font-size: 0.75rem;
+		color: var(--label-3);
+		font-weight: 500;
+	}
+
+	/* Resolved answer under the domain when technical columns are on; full set on the detail page. */
 	.answers {
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-	}
-
-	.alias::before {
-		content: '\00a0·\00a0';
 	}
 
 	.sub {

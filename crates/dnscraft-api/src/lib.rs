@@ -79,7 +79,7 @@ pub use mcp_backend::{
 };
 pub use modules::{
     ApplyClients, ApplyFiltering, ApplyListeners, ApplyPolicy, ApplyResolver, ApplyTls,
-    ModuleAppliers, ModuleFuture,
+    ModuleAppliers, ModuleFuture, StdoutQueriesGate,
 };
 pub use oidc_runtime::OidcRuntime;
 pub use protected_list::{derive_protected_domains, populate_mcp_protected_domains};

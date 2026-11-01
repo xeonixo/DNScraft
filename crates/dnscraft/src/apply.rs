@@ -231,7 +231,7 @@ impl ApplyTls for TlsApplier {
 }
 
 /// Wires the five adapters around the assembled engines and listener set, plus
-/// the query log's runtime settings.
+/// the query log's runtime settings and the stdout debug gate.
 ///
 /// A TLS section is only applied when a TLS engine exists; an unconfigured
 /// `[tls]` section leaves the slot empty, so the service treats it as a no-op.
@@ -239,6 +239,7 @@ pub(crate) fn appliers(
     engines: &Engines,
     listeners: &Arc<ListenerSet<PolicyEngine>>,
     query_log: &Arc<QueryLog>,
+    stdout_queries: Arc<dnscraft_api::StdoutQueriesGate>,
     db: &Db,
     node_id: &str,
     oidc: Option<Arc<dnscraft_api::OidcRuntime>>,
@@ -268,6 +269,7 @@ pub(crate) fn appliers(
         }),
         filtering_engine: Some(Arc::clone(&engines.filtering)),
         query_log: Some(Arc::clone(query_log)),
+        stdout_queries: Some(stdout_queries),
         oidc,
         web: Some(listeners.web_slot()),
     }

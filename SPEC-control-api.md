@@ -513,13 +513,15 @@ category such as `adblock` (decision recorded with GA24).
 - Privacy implications: full IPs allow per-device log filtering but increase
   identifiability. The UI explains this during setup. Default for new installs
   is `none`; the owner may choose `last_octet` or `last_group`.
-- Both `ip_truncate` and `retention_days` are runtime-editable through the
-  versioned config as `control_api_settings.query_log.{ip_truncate, retention_days}`
+- `ip_truncate`, `retention_days` and `stdout_queries` are runtime-editable through the
+  versioned config as `control_api_settings.query_log.{ip_truncate, retention_days, stdout_queries}`
   (optional keys, at least one required; unknown keys are rejected with
   `control_api.config.invalid`). The live query log takes the value of every applied
   version (boot, `PUT /config`, rollback, cluster sync). A version without a key falls
-  back to the bootstrap `[control_api.query_log]` value. The change affects rows written
-  from then on; stored rows keep the truncation they were written with.
+  back to the bootstrap `[control_api.query_log]` value (`stdout_queries` falls back to
+  `[log] queries`). The change affects rows written from then on; stored rows keep the
+  truncation they were written with. `stdout_queries` gates the JSON-lines stdout debug
+  stream only; the SQLite query log is always written.
 - Query-log records are written through a bounded channel and dropped with
   `query_log.dropped` counter when the sink is full; DNS answering is never
   blocked.

@@ -73,9 +73,10 @@ are viewer-readable (public Split-DNS side; no config secrets).
 The snapshot section `control_api_settings` holds runtime keys written through
 `PUT /api/v1/config` (validated; unknown keys → `control_api.config.invalid`):
 `update_check` (bool), `backups` (`enabled`, `retention_count`),
-`query_log.retention_days` (1..=3650) and `oidc` (`admin_group`, `groups_claim`,
-`token_skew_seconds` 5..=300). Secrets, accounts and bind settings are never in
-the snapshot. `notifications` is the webhook section described below.
+`query_log` (`retention_days` 1..=3650, `ip_truncate`, `stdout_queries` bool)
+and `oidc` (`admin_group`, `groups_claim`, `token_skew_seconds` 5..=300).
+Secrets, accounts and bind settings are never in the snapshot.
+`notifications` is the webhook section described below.
 
 | Method | Path | Summary |
 |---|---|---|

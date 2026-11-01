@@ -896,24 +896,29 @@ impl ConfigService {
         Err(error)
     }
 
-    /// Pushes `control_api_settings.query_log` into the live query log. Runs
-    /// only once every module of the version applied, so a failed version
-    /// leaves the query log on its previous settings.
+    /// Pushes `control_api_settings.query_log` into the live query log and the
+    /// stdout debug gate. Runs only once every module of the version applied,
+    /// so a failed version leaves both on their previous settings.
     fn apply_query_log_settings(&self, snapshot: &Value) {
-        let Some(query_log) = self.modules.query_log.as_ref() else {
-            return;
-        };
         let settings = snapshot.pointer("/control_api_settings/query_log");
-        let retention_days = settings
-            .and_then(|s| s.get("retention_days"))
-            .and_then(Value::as_u64)
-            .and_then(|days| u32::try_from(days).ok())
-            .filter(|days| (1..=3650).contains(days));
-        let ip_truncate = settings
-            .and_then(|s| s.get("ip_truncate"))
-            .and_then(Value::as_str)
-            .and_then(|name| IpTruncate::parse(name).ok());
-        query_log.apply_settings(retention_days, ip_truncate);
+        if let Some(query_log) = self.modules.query_log.as_ref() {
+            let retention_days = settings
+                .and_then(|s| s.get("retention_days"))
+                .and_then(Value::as_u64)
+                .and_then(|days| u32::try_from(days).ok())
+                .filter(|days| (1..=3650).contains(days));
+            let ip_truncate = settings
+                .and_then(|s| s.get("ip_truncate"))
+                .and_then(Value::as_str)
+                .and_then(|name| IpTruncate::parse(name).ok());
+            query_log.apply_settings(retention_days, ip_truncate);
+        }
+        if let Some(gate) = self.modules.stdout_queries.as_ref() {
+            let stdout_queries = settings
+                .and_then(|s| s.get("stdout_queries"))
+                .and_then(Value::as_bool);
+            gate.apply(stdout_queries);
+        }
     }
 
     /// Pushes `control_api_settings.web_access` into the listeners' web hand-off.
@@ -1275,9 +1280,10 @@ pub const MCP_SETTING_KEYS: [&str; 3] = ["enabled", "write_tools_enabled", "lega
 /// Validates the non-secret runtime keys of `control_api_settings` (GA15).
 ///
 /// Accepted: `update_check` (bool), `web_access` (`public_enabled`), `backups` (`enabled`,
-/// `retention_count`), `query_log.retention_days` (1..=3650), `mcp` (boolean `enabled`,
-/// `write_tools_enabled`, `legacy_session_mode`) and `oidc` (`enabled`, `issuer`,
-/// `client_id`, `admin_group`, `groups_claim`, `token_skew_seconds` 5..=300).
+/// `retention_count`), `query_log` (`retention_days` 1..=3650, `ip_truncate`,
+/// `stdout_queries`), `mcp` (boolean `enabled`, `write_tools_enabled`,
+/// `legacy_session_mode`) and `oidc` (`enabled`, `issuer`, `client_id`,
+/// `admin_group`, `groups_claim`, `token_skew_seconds` 5..=300).
 /// Secrets stay out of the snapshot (write-only `PUT /auth/oidc/client-secret`).
 fn validate_control_api_settings(settings: &Value) -> Result<(), ControlApiError> {
     let Some(map) = settings.as_object() else {
@@ -1320,7 +1326,7 @@ fn validate_control_api_settings(settings: &Value) -> Result<(), ControlApiError
                 })?;
                 if object.is_empty() {
                     return Err(config_invalid(
-                        "control_api_settings.query_log must set retention_days or ip_truncate",
+                        "control_api_settings.query_log must set retention_days, ip_truncate or stdout_queries",
                     ));
                 }
                 for (field, field_value) in object {
@@ -1346,6 +1352,13 @@ fn validate_control_api_settings(settings: &Value) -> Result<(), ControlApiError
                                     "control_api_settings.query_log.ip_truncate must be `none`, `last_octet` or `last_group`",
                                 )
                             })?;
+                        }
+                        "stdout_queries" => {
+                            if !field_value.is_boolean() {
+                                return Err(config_invalid(
+                                    "control_api_settings.query_log.stdout_queries must be a boolean",
+                                ));
+                            }
                         }
                         other => {
                             return Err(config_invalid(format!(

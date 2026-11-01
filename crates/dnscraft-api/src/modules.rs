@@ -8,6 +8,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use dnscraft_filtering::FilterEngine;
 use serde_json::Value;
@@ -15,6 +16,38 @@ use serde_json::Value;
 use crate::error::ControlApiError;
 use crate::oidc_runtime::OidcRuntime;
 use crate::query_log::QueryLog;
+
+/// Runtime gate for the opt-in JSON-lines stdout query debug stream.
+///
+/// Bootstrap `[log] queries` sets the initial value; each applied
+/// `control_api_settings.query_log.stdout_queries` overrides it, and a version
+/// without that key falls back to the bootstrap value.
+#[derive(Debug)]
+pub struct StdoutQueriesGate {
+    enabled: AtomicBool,
+    bootstrap: bool,
+}
+
+impl StdoutQueriesGate {
+    /// Creates a gate whose initial (and fallback) value is `bootstrap`.
+    pub fn new(bootstrap: bool) -> Self {
+        Self {
+            enabled: AtomicBool::new(bootstrap),
+            bootstrap,
+        }
+    }
+
+    /// Applies a runtime override, or the bootstrap value when `value` is `None`.
+    pub fn apply(&self, value: Option<bool>) {
+        self.enabled
+            .store(value.unwrap_or(self.bootstrap), Ordering::Relaxed);
+    }
+
+    /// Whether the stdout debug stream is currently accepting events.
+    pub fn enabled(&self) -> bool {
+        self.enabled.load(Ordering::Relaxed)
+    }
+}
 
 /// A boxed, `Send` apply future (avoids an `async-trait` dependency).
 pub type ModuleFuture<'a> = Pin<Box<dyn Future<Output = Result<(), ControlApiError>> + Send + 'a>>;
@@ -75,6 +108,8 @@ pub struct ModuleAppliers {
     /// pushed after every applied config version. Not a module section: it is
     /// updated only when the whole version applied.
     pub query_log: Option<Arc<QueryLog>>,
+    /// Stdout JSON-lines gate (`control_api_settings.query_log.stdout_queries`).
+    pub stdout_queries: Option<Arc<StdoutQueriesGate>>,
     /// OIDC runtime rebuilt from `control_api_settings.oidc` after every
     /// successful apply (and when the client secret changes).
     pub oidc: Option<Arc<OidcRuntime>>,

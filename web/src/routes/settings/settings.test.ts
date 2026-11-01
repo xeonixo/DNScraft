@@ -247,6 +247,38 @@ describe('Einstellungen general tab', () => {
 		expect(within(row).queryByRole('button', { name: m.action_save() })).toBeNull();
 	});
 
+	it('loads and saves the stdout query logging toggle', async () => {
+		storedQueryLog = { retention_days: 30, ip_truncate: 'none', stdout_queries: false };
+		const user = userEvent.setup();
+		render(GeneralPage);
+		const toggle = await screen.findByRole('switch', { name: m.settings_stdout_queries_label() });
+		expect(toggle).not.toBeChecked();
+		// The native input is visually hidden (pointer-events: none); click the label.
+		await user.click(toggle.closest('label') as HTMLElement);
+
+		await waitFor(() => {
+			const puts = vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === 'PUT');
+			expect(puts).toHaveLength(1);
+			const body = JSON.parse(String(puts[0]![1]?.body));
+			expect(body.control_api_settings.query_log).toEqual({
+				retention_days: 30,
+				ip_truncate: 'none',
+				stdout_queries: true,
+			});
+		});
+		expect(toggle).toBeChecked();
+	});
+
+	it('hides the stdout query logging toggle for non-admins', async () => {
+		setPrincipal({ role: 'viewer', actorId: 'viewer', actorType: 'user', csrfToken: 'tok' });
+		storedQueryLog = { retention_days: 30, ip_truncate: 'none', stdout_queries: true };
+		render(GeneralPage);
+		await screen.findByLabelText(m.settings_ip_truncation_label());
+		expect(
+			screen.queryByRole('switch', { name: m.settings_stdout_queries_label() }),
+		).toBeNull();
+	});
+
 	it('asks before enabling UniFi skip-verify', async () => {
 		const user = userEvent.setup();
 		render(GeneralPage);

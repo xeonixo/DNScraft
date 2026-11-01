@@ -3,6 +3,7 @@
 	import GroupedList from '$lib/components/GroupedList.svelte';
 	import GroupedRow from '$lib/components/GroupedRow.svelte';
 	import Segmented from '$lib/components/Segmented.svelte';
+	import Switch from '$lib/components/Switch.svelte';
 	import ErrorNotice from '$lib/components/ErrorNotice.svelte';
 	import LocaleSwitcher from '$lib/i18n/LocaleSwitcher.svelte';
 	import AuditPanel from '$lib/settings/AuditPanel.svelte';
@@ -15,6 +16,7 @@
 	import { getStatus } from '$lib/api/stats';
 	import { failureOf, settle, type Result } from '$lib/api/result';
 	import { auth } from '$lib/auth/state.svelte';
+	import { announce } from '$lib/live.svelte';
 	import { patchConfigSection } from '$lib/settings/config-patch';
 	import { m } from '$lib/paraglide/messages';
 	import { setTheme, theme, type ThemeChoice } from '$lib/theme';
@@ -40,6 +42,9 @@
 	let ipTruncate = $state<IpTruncate>('none');
 	let ipTruncateBusy = $state(false);
 	let ipTruncateFailure = $state<{ code: string; params: Record<string, unknown> } | null>(null);
+	let stdoutQueries = $state(false);
+	let stdoutBusy = $state(false);
+	let stdoutFailure = $state<{ code: string; params: Record<string, unknown> } | null>(null);
 	// The stored query_log object as loaded. Saves send it back with the changed key, because the
 	// section patch replaces `query_log` as a whole and would otherwise drop the other key.
 	let queryLog = $state<Record<string, unknown> | null>(null);
@@ -68,6 +73,7 @@
 			retentionDays = typeof days === 'number' ? days : null;
 			const truncate = stored?.ip_truncate;
 			ipTruncate = truncate === 'last_octet' || truncate === 'last_group' ? truncate : 'none';
+			stdoutQueries = stored?.stdout_queries === true;
 			queryLog = stored ? { ...stored } : {};
 		} catch {
 			retentionDays = null;
@@ -84,9 +90,9 @@
 		retentionBusy = true;
 		retentionFailure = null;
 		try {
-			await patchConfigSection('control_api_settings', {
-				query_log: { ...queryLog, retention_days: retentionDays },
-			});
+			const next = { ...queryLog, retention_days: retentionDays };
+			await patchConfigSection('control_api_settings', { query_log: next });
+			queryLog = next;
 		} catch (cause) {
 			retentionFailure = failureOf(cause);
 		} finally {
@@ -99,13 +105,33 @@
 		ipTruncateBusy = true;
 		ipTruncateFailure = null;
 		try {
-			await patchConfigSection('control_api_settings', {
-				query_log: { ...queryLog, ip_truncate: ipTruncate },
-			});
+			const next = { ...queryLog, ip_truncate: ipTruncate };
+			await patchConfigSection('control_api_settings', { query_log: next });
+			queryLog = next;
 		} catch (cause) {
 			ipTruncateFailure = failureOf(cause);
 		} finally {
 			ipTruncateBusy = false;
+		}
+	}
+
+	async function saveStdoutQueries(next: boolean): Promise<void> {
+		if (!isAdmin || queryLog === null) return;
+		stdoutBusy = true;
+		stdoutFailure = null;
+		const previous = stdoutQueries;
+		stdoutQueries = next;
+		try {
+			await patchConfigSection('control_api_settings', {
+				query_log: { ...queryLog, stdout_queries: next },
+			});
+			queryLog = { ...queryLog, stdout_queries: next };
+			announce(next ? m.settings_stdout_queries_on() : m.settings_stdout_queries_off());
+		} catch (cause) {
+			stdoutQueries = previous;
+			stdoutFailure = failureOf(cause);
+		} finally {
+			stdoutBusy = false;
 		}
 	}
 </script>
@@ -193,6 +219,27 @@
 		</div>
 	{/if}
 	<GroupedRow label={m.settings_ip_truncation_note()} />
+	{#if isAdmin}
+		<GroupedRow
+			label={m.settings_stdout_queries_label()}
+			detail={stdoutQueries ? m.settings_stdout_queries_on() : m.settings_stdout_queries_off()}
+		>
+			{#snippet trailing()}
+				<Switch
+					checked={stdoutQueries}
+					disabled={stdoutBusy || queryLog === null}
+					aria-label={m.settings_stdout_queries_label()}
+					onchange={(event) => void saveStdoutQueries(event.currentTarget.checked)}
+				/>
+			{/snippet}
+		</GroupedRow>
+		{#if stdoutFailure}
+			<div class="notice">
+				<ErrorNotice code={stdoutFailure.code} params={stdoutFailure.params} />
+			</div>
+		{/if}
+		<GroupedRow label={m.settings_stdout_queries_note()} />
+	{/if}
 </GroupedList>
 
 <GroupedList header={m.settings_group_update()}>

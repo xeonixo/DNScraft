@@ -118,9 +118,11 @@ The level is read from the config file, so changing it needs a restart.
 ## Query log
 
 Persisted query log and stats live in the control-api SQLite store (API + MCP).
-When `[log] queries = true`, each answered query is also written to **stdout**
-as one JSON object. Stdout carries only these query events; all system messages
-stay on stderr:
+When `[log] queries = true` (or runtime `control_api_settings.query_log.stdout_queries`),
+each answered query is also written to **stdout** as one JSON object. The UI
+toggle under Settings → Logging writes that runtime key; a version without it
+falls back to the TOML bootstrap. Stdout carries only these query events; all
+system messages stay on stderr:
 
 ```json
 {"answer_size":42,"client_id":null,"duration_ms":7,"listener_id":"lan-udp","profile_id":"default","protocol":"udp53","qclass":"IN","qname":"example.com.","qtype":"A","rcode":"NoError","source":"192.0.2.10","time":1700000000.0,"view_id":"default"}

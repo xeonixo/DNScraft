@@ -171,10 +171,10 @@ pub(crate) fn parse_config(text: &str, source: &str) -> Result<Config, Error> {
 }
 
 /// A running server: the listener set, the SQLite query-log consumer and the
-/// optional stdout debug writer.
+/// gated stdout debug writer.
 pub struct App {
     set: Arc<ListenerSet<PolicyEngine>>,
-    writer: Option<JoinHandle<()>>,
+    writer: JoinHandle<()>,
     /// SQLite query-log consumer task.
     query_log_task: Option<JoinHandle<()>>,
     sink: Arc<dyn QueryEventSink>,
@@ -233,9 +233,7 @@ impl App {
         // is a backstop against a leaked sender holding a task (and the
         // process) open.
         drop(self.sink);
-        if let Some(writer) = self.writer {
-            let _ = tokio::time::timeout(Duration::from_secs(2), writer).await;
-        }
+        let _ = tokio::time::timeout(Duration::from_secs(2), self.writer).await;
         if let Some(query_log) = self.query_log_task {
             let _ = tokio::time::timeout(Duration::from_secs(2), query_log).await;
         }
@@ -254,9 +252,10 @@ impl App {
 /// Builds a server from a parsed config, reading TLS secrets from the
 /// environment.
 ///
-/// Query events go to the SQLite query log by default. When `[log] queries` is
-/// explicitly enabled, the same events are also teed to the JSON-lines stdout
-/// debug writer. `clock` drives the policy engine (schedules, pauses).
+/// Query events go to the SQLite query log by default. The same events are
+/// also teed to a gated JSON-lines stdout writer: bootstrap `[log] queries`
+/// sets the initial gate, and `control_api_settings.query_log.stdout_queries`
+/// toggles it at runtime. `clock` drives the policy engine (schedules, pauses).
 /// Production passes [`dnscraft_filtering::SystemClock`]; tests inject a manual
 /// clock.
 pub async fn build(
@@ -333,18 +332,19 @@ pub async fn build_with_enrollment(
     })?;
     let query_log_task = Some(handle.spawn(Arc::clone(&query_log).run(query_rx)));
 
-    // The JSON-lines stdout writer is an explicit debug opt-in; the SQLite
-    // sink is always the primary sink.
-    let (sink, writer) = if log.queries {
-        let (stdout, rx) = ChannelSink::new(STDOUT_LOG_CHANNEL_CAPACITY);
-        let writer = tokio::task::spawn_blocking(move || {
-            events::write_events_blocking(rx, log.ip_truncate);
-        });
-        let sink: Arc<dyn QueryEventSink> = Arc::new(events::TeeSink::new(query_sink, stdout));
-        (sink, Some(writer))
-    } else {
-        (query_sink, None)
-    };
+    // The JSON-lines stdout writer is always wired but gated: bootstrap
+    // `[log] queries` and runtime `stdout_queries` control whether events
+    // reach it. The SQLite sink stays the primary sink.
+    let stdout_gate = Arc::new(dnscraft_api::StdoutQueriesGate::new(log.queries));
+    let (stdout, rx) = ChannelSink::new(STDOUT_LOG_CHANNEL_CAPACITY);
+    let writer = tokio::task::spawn_blocking(move || {
+        events::write_events_blocking(rx, log.ip_truncate);
+    });
+    let gated: Arc<dyn QueryEventSink> = Arc::new(events::GatedSink::new(
+        Arc::clone(&stdout_gate),
+        stdout,
+    ));
+    let sink: Arc<dyn QueryEventSink> = Arc::new(events::TeeSink::new(query_sink, gated));
 
     // A configured `[tls]` engine owns certificate renewal; otherwise keep the
     // environment-PEM bootstrap for encrypted listeners.
@@ -416,6 +416,7 @@ pub async fn build_with_enrollment(
         &engines,
         &set,
         &query_log,
+        Arc::clone(&stdout_gate),
         &db,
         node_id.as_str(),
         Some(Arc::clone(&oidc_runtime)),

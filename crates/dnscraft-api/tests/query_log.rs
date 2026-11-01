@@ -478,6 +478,40 @@ async fn query_log_row_carries_answers_only_when_present() {
 }
 
 #[tokio::test]
+async fn query_log_stdout_queries_setting_toggles_the_gate_and_falls_back() {
+    use dnscraft_api::StdoutQueriesGate;
+
+    let clock = Arc::new(ManualClock::new(base_time()));
+    let db = Db::open_in_memory(clock).await.unwrap();
+    let log = Arc::new(QueryLog::new(
+        db.clone(),
+        dnscraft_api::QueryLogConfig::default(),
+        "node-a",
+    ));
+    let gate = Arc::new(StdoutQueriesGate::new(false));
+    let modules = ModuleAppliers {
+        query_log: Some(Arc::clone(&log)),
+        stdout_queries: Some(Arc::clone(&gate)),
+        ..ModuleAppliers::default()
+    };
+    let service = ConfigService::new(
+        ConfigStore::new(db.clone()),
+        Audit::new(db),
+        modules,
+        "node-a",
+    );
+
+    assert!(!gate.enabled());
+    put_settings(&service, json!({"query_log": {"stdout_queries": true}})).await;
+    assert!(gate.enabled());
+    // A version without the key falls back to the bootstrap (`false`).
+    put_settings(&service, json!({"query_log": {"retention_days": 30}})).await;
+    assert!(!gate.enabled());
+    put_settings(&service, json!({"query_log": {"stdout_queries": true}})).await;
+    assert!(gate.enabled());
+}
+
+#[tokio::test]
 async fn query_log_ip_truncate_setting_applies_to_later_rows_and_rollback() {
     let clock = Arc::new(ManualClock::new(base_time()));
     let db = Db::open_in_memory(clock).await.unwrap();

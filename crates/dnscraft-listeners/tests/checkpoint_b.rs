@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use dnscraft_filtering::{
-    FilterConfig, FilterEngine, FilterSetConfig, ListBodies, ListId, ManualClock, SetId,
+    FilterConfig, FilterEngine, FilterSetConfig, EmptyBodies, ListBodies, ManualClock, SetId,
     SnapshotBuilder,
 };
 use dnscraft_listeners::{
@@ -28,15 +28,6 @@ use dnscraft_testkit::Hierarchy;
 use support::encode_a_query;
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::{oneshot, watch};
-
-#[derive(Debug, Default)]
-struct EmptyBodies;
-
-impl ListBodies for EmptyBodies {
-    fn body(&self, _id: &ListId) -> Option<Arc<str>> {
-        None
-    }
-}
 
 fn filter_with_block() -> Arc<FilterEngine> {
     let mut sc = FilterSetConfig::new(SetId::new("default").unwrap(), "default");

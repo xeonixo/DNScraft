@@ -15,7 +15,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use dnscraft_filtering::{
-    FilterConfig, FilterEngine, FilterSetConfig, ListBodies, ListId, ManualClock, SetId,
+    FilterConfig, FilterEngine, FilterSetConfig, EmptyBodies, ListBodies, ManualClock, SetId,
     SnapshotBuilder,
 };
 use dnscraft_policy::{
@@ -27,15 +27,6 @@ use dnscraft_resolver::dnssec::TrustAnchors;
 use dnscraft_resolver::{Query, Resolver, ResolverConfig};
 use dnscraft_testkit::Hierarchy;
 use tokio::runtime::Runtime;
-
-#[derive(Debug, Default)]
-struct EmptyBodies;
-
-impl ListBodies for EmptyBodies {
-    fn body(&self, _id: &ListId) -> Option<Arc<str>> {
-        None
-    }
-}
 
 fn build_engine(rt: &Runtime) -> (Hierarchy, PolicyEngine) {
     rt.block_on(async {

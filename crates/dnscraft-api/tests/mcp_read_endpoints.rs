@@ -21,7 +21,7 @@ use dnscraft_api::{
     SessionStore, TokenStore,
 };
 use dnscraft_filtering::{
-    BlockMode, FilterConfig, FilterEngine, FilterSetConfig, ListBodies, ListId,
+    BlockMode, FilterConfig, FilterEngine, FilterSetConfig, EmptyBodies, ListBodies,
     ManualClock as FilterClock, SetId, SnapshotBuilder,
 };
 use dnscraft_policy::{
@@ -35,15 +35,6 @@ const IDLE: Duration = Duration::from_secs(60 * 60);
 const ABSOLUTE: Duration = Duration::from_secs(12 * 3600);
 const MAX_TTL: Duration = Duration::from_secs(365 * 24 * 3600);
 const NOW: u64 = 1_700_000_000;
-
-#[derive(Debug, Default)]
-struct EmptyBodies;
-
-impl ListBodies for EmptyBodies {
-    fn body(&self, _id: &ListId) -> Option<Arc<str>> {
-        None
-    }
-}
 
 fn sid(id: &str) -> SetId {
     SetId::new(id).unwrap()

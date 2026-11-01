@@ -438,7 +438,7 @@ mod unit {
     use std::time::{Duration, SystemTime};
 
     use dnscraft_filtering::{
-        FilterConfig, FilterEngine, FilterSetConfig, ListBodies, ListId, ManualClock, SetId,
+        FilterConfig, FilterEngine, FilterSetConfig, EmptyBodies, ListBodies, ManualClock, SetId,
         SnapshotBuilder,
     };
     use dnscraft_proto::{Class, Header, RecordType};
@@ -456,14 +456,6 @@ mod unit {
     use crate::pipeline::{Draft, StepCtx};
     use crate::select::SelectionCause;
     use crate::snapshot::PolicySnapshot;
-
-    #[derive(Debug, Default)]
-    struct EmptyBodies;
-    impl ListBodies for EmptyBodies {
-        fn body(&self, _id: &ListId) -> Option<Arc<str>> {
-            None
-        }
-    }
 
     #[test]
     fn exception_exact_and_suffix() {

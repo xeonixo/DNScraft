@@ -26,6 +26,7 @@ mod config;
 mod config_apply;
 mod error;
 mod filter_apply;
+mod kv_secret;
 mod mcp_backend;
 mod modules;
 mod notifications;

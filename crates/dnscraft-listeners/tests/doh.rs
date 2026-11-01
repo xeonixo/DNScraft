@@ -1341,7 +1341,10 @@ async fn doh_honours_xff_from_trusted_proxy_for_source_and_peer_ip() {
         "198.51.100.7".parse::<std::net::IpAddr>().unwrap()
     );
     assert_eq!(event.peer_ip, Some(Ipv4Addr::LOCALHOST.into()));
-    assert_eq!(event.client_id.as_ref().map(|id| id.as_str()), Some("goup-monitor"));
+    assert_eq!(
+        event.client_id.as_ref().map(|id| id.as_str()),
+        Some("goup-monitor")
+    );
     h.stop().await;
 }
 

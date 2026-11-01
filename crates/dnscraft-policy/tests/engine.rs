@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
 use dnscraft_filtering::{
-    FilterConfig, FilterEngine, FilterSetConfig, ListBodies, ListId, ManualClock, SetId,
+    FilterConfig, FilterEngine, FilterSetConfig, EmptyBodies, ListBodies, ManualClock, SetId,
     SnapshotBuilder,
 };
 use dnscraft_policy::{
@@ -42,15 +42,6 @@ fn anchors_of(h: &Hierarchy) -> TrustAnchors {
         rdata: RData::decode(&bytes, RecordType::DS, 0, bytes.len()).unwrap(),
     };
     TrustAnchors::from_records(&[ds]).unwrap()
-}
-
-#[derive(Debug, Default)]
-struct EmptyBodies;
-
-impl ListBodies for EmptyBodies {
-    fn body(&self, _id: &ListId) -> Option<Arc<str>> {
-        None
-    }
 }
 
 fn set(id: &str) -> SetId {

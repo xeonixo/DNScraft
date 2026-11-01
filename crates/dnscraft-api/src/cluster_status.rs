@@ -109,11 +109,6 @@ impl ClusterStatusProvider for ClusterStatusHandle {
     }
 }
 
-/// RFC 3339 (UTC, seconds precision).
 fn rfc3339(time: SystemTime) -> String {
-    time::OffsetDateTime::from(time)
-        .format(time::macros::format_description!(
-            "[year]-[month]-[day]T[hour]:[minute]:[second]Z"
-        ))
-        .unwrap_or_default()
+    dnscraft_common::time_fmt::rfc3339(time)
 }

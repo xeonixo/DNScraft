@@ -15,7 +15,7 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bytes::Bytes;
 use dnscraft_filtering::{
-    FilterConfig, FilterEngine, FilterSetConfig, ListBodies, ListId, ManualClock, SetId,
+    FilterConfig, FilterEngine, FilterSetConfig, EmptyBodies, ListBodies, ManualClock, SetId,
     SnapshotBuilder,
 };
 use dnscraft_listeners::{
@@ -56,15 +56,6 @@ const LOCAL_A: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 99);
 
 fn install_ring() {
     let _ = default_provider().install_default();
-}
-
-#[derive(Debug, Default)]
-struct EmptyBodies;
-
-impl ListBodies for EmptyBodies {
-    fn body(&self, _id: &ListId) -> Option<Arc<str>> {
-        None
-    }
 }
 
 fn filter_with_block() -> Arc<FilterEngine> {

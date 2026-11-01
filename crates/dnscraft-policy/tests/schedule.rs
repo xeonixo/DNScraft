@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
 use dnscraft_filtering::{
-    BlockMode, FilterConfig, FilterEngine, FilterSetConfig, ListBodies, ListId, ManualClock, SetId,
+    BlockMode, FilterConfig, FilterEngine, FilterSetConfig, EmptyBodies, ListBodies, ManualClock, SetId,
     SnapshotBuilder,
 };
 use dnscraft_policy::{
@@ -23,15 +23,6 @@ use dnscraft_resolver::{Query, Resolver, ResolverConfig};
 use dnscraft_testkit::{Hierarchy, ServerSpec, Zone, default_servers};
 use hickory_proto::rr::rdata::CNAME;
 use hickory_proto::rr::{Name as HName, RData as HRData, Record as HRecord};
-
-#[derive(Debug, Default)]
-struct EmptyBodies;
-
-impl ListBodies for EmptyBodies {
-    fn body(&self, _id: &ListId) -> Option<Arc<str>> {
-        None
-    }
-}
 
 fn sid(s: &str) -> SetId {
     SetId::new(s).unwrap()

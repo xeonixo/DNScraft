@@ -193,9 +193,10 @@ impl FilterConfig {
         if self.lists.len() != other.lists.len() {
             return false;
         }
-        self.lists.iter().zip(other.lists.iter()).all(|(a, b)| {
-            a.id == b.id && a.source == b.source && a.enabled == b.enabled
-        })
+        self.lists
+            .iter()
+            .zip(other.lists.iter())
+            .all(|(a, b)| a.id == b.id && a.source == b.source && a.enabled == b.enabled)
     }
 }
 
@@ -240,6 +241,7 @@ pub trait ListBodies: Send + Sync + std::fmt::Debug {
     /// The body of list `id`, or `None` if it has not been downloaded yet.
     fn body(&self, id: &ListId) -> Option<Arc<str>>;
 
+
     /// The body of list `id` plus a rule-text reader pinned to those bytes.
     /// Snapshot builders call this instead of [`Self::body`]. The default has
     /// no pinned reader, so rule text then comes from [`Self::rule_at`].
@@ -253,6 +255,16 @@ pub trait ListBodies: Send + Sync + std::fmt::Debug {
     fn rule_at(&self, id: &ListId, offset: u32) -> Option<(u32, Arc<str>)> {
         let body = self.body(id)?;
         crate::index::rule_at_body(&body, offset).map(|(line, text)| (line, Arc::from(text)))
+    }
+}
+
+/// Empty [`ListBodies`] for tests and examples that only use custom rules.
+#[derive(Debug, Default)]
+pub struct EmptyBodies;
+
+impl ListBodies for EmptyBodies {
+    fn body(&self, _id: &ListId) -> Option<Arc<str>> {
+        None
     }
 }
 

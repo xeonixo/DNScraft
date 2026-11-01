@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use dnscraft_filtering::{
-    FilterConfig, FilterEngine, FilterSetConfig, ListBodies, ListId, ManualClock, SetId,
+    FilterConfig, FilterEngine, FilterSetConfig, EmptyBodies, ListBodies, ManualClock, SetId,
     SnapshotBuilder,
 };
 use dnscraft_policy::{
@@ -24,15 +24,6 @@ fn clock() -> Arc<ManualClock> {
     Arc::new(ManualClock::new(
         SystemTime::UNIX_EPOCH + Duration::from_secs(1_000),
     ))
-}
-
-#[derive(Debug, Default)]
-struct EmptyBodies;
-
-impl ListBodies for EmptyBodies {
-    fn body(&self, _id: &ListId) -> Option<Arc<str>> {
-        None
-    }
 }
 
 fn set(id: &str) -> SetId {

@@ -340,11 +340,11 @@ pub async fn build_with_enrollment(
     let writer = tokio::task::spawn_blocking(move || {
         events::write_events_blocking(rx, log.ip_truncate);
     });
-    let gated: Arc<dyn QueryEventSink> = Arc::new(events::GatedSink::new(
-        Arc::clone(&stdout_gate),
+    let sink: Arc<dyn QueryEventSink> = Arc::new(events::TeeSink::new(
+        query_sink,
         stdout,
+        Arc::clone(&stdout_gate),
     ));
-    let sink: Arc<dyn QueryEventSink> = Arc::new(events::TeeSink::new(query_sink, gated));
 
     // A configured `[tls]` engine owns certificate renewal; otherwise keep the
     // environment-PEM bootstrap for encrypted listeners.

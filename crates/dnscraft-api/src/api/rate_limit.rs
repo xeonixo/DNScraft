@@ -1,16 +1,12 @@
 //! Per-source token-bucket rate limiting for the internal API.
 //!
-//! A [`RateLimiter`] holds one read/write/auth bucket per tracked source (the
-//! peer IP string today; a `principal:<id>` string once auth lands). Refill is
-//! driven by the injectable [`Clock`] — never wall-clock sleeps — and the map is
-//! bounded by an LRU cap so a flood of distinct sources cannot grow it without
-//! bound. The [`rate_limit`] middleware resolves the source (trusted peer, or
-//! `X-Forwarded-For` only from a configured proxy), classifies the request and
-//! rejects with `429` + `control_api.rate_limited` when the bucket is empty.
+//! A [`RateLimiter`] wraps [`dnscraft_common::rate_limit::TokenRateLimiter`]
+//! with control-api config and trusted-proxy source resolution. The
+//! [`rate_limit`] middleware rejects with `429` + `control_api.rate_limited`
+//! when the bucket is empty.
 
-use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use axum::extract::{ConnectInfo, Request, State};
 use axum::http::header::{HeaderName, HeaderValue};
@@ -21,177 +17,17 @@ use axum::response::Response;
 use crate::config::RateLimitConfig;
 use crate::server::AppState;
 use dnscraft_common::clock::Clock;
-use dnscraft_common::clock::unix_seconds;
+use dnscraft_common::rate_limit::{Rates, TokenRateLimiter};
 
 /// Default maximum number of distinct sources tracked before LRU eviction.
 pub const DEFAULT_MAX_TRACKED_SOURCES: usize = 10_000;
 
-/// Which rate-limit bucket a request falls into.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BucketClass {
-    /// Read endpoints (GET/HEAD).
-    Read,
-    /// Mutating endpoints (everything else).
-    Write,
-    /// Authentication endpoints (login, tokens, OIDC) — stricter.
-    Auth,
-}
-
-/// One token bucket: refills continuously up to a burst ceiling.
-#[derive(Clone, Copy, Debug)]
-struct TokenBucket {
-    /// Current token balance (never exceeds `burst`).
-    tokens: f64,
-    /// Unix seconds of the last refill.
-    last: i64,
-}
-
-impl TokenBucket {
-    /// A bucket that starts full (a fresh source may burst immediately).
-    fn full(now: i64, burst: f64) -> Self {
-        Self {
-            tokens: burst,
-            last: now,
-        }
-    }
-
-    /// Refills tokens for the elapsed time, capped at `burst`.
-    fn refill(&mut self, now: i64, rate: f64, burst: f64) {
-        let elapsed = (now - self.last).max(0) as f64;
-        self.tokens = (self.tokens + elapsed * rate).min(burst);
-        self.last = now;
-    }
-
-    /// Consumes one token. `Ok(())` on success, `Err(seconds)` until a token is
-    /// available again when the bucket is empty.
-    fn try_consume(&mut self, now: i64, rate: f64, burst: f64) -> Result<(), u64> {
-        self.refill(now, rate, burst);
-        if self.tokens >= 1.0 {
-            self.tokens -= 1.0;
-            Ok(())
-        } else {
-            let deficit = 1.0 - self.tokens;
-            Err((deficit / rate).ceil().max(1.0) as u64)
-        }
-    }
-}
-
-/// The three buckets held for a single source.
-struct Buckets {
-    read: TokenBucket,
-    write: TokenBucket,
-    auth: TokenBucket,
-}
-
-impl Buckets {
-    fn new(now: i64, cfg: &RateLimitConfig) -> Self {
-        let factor = cfg.burst_factor as f64;
-        Self {
-            read: TokenBucket::full(now, cfg.read_per_second as f64 * factor),
-            write: TokenBucket::full(now, cfg.write_per_second as f64 * factor),
-            auth: TokenBucket::full(now, cfg.auth_per_second as f64 * factor),
-        }
-    }
-
-    fn bucket_mut(&mut self, class: BucketClass) -> &mut TokenBucket {
-        match class {
-            BucketClass::Read => &mut self.read,
-            BucketClass::Write => &mut self.write,
-            BucketClass::Auth => &mut self.auth,
-        }
-    }
-}
-
-/// The configured steady-state rate for a bucket class.
-fn rate_for(cfg: &RateLimitConfig, class: BucketClass) -> f64 {
-    match class {
-        BucketClass::Read => cfg.read_per_second as f64,
-        BucketClass::Write => cfg.write_per_second as f64,
-        BucketClass::Auth => cfg.auth_per_second as f64,
-    }
-}
-
-/// One tracked source's buckets plus the generation of its last access.
-struct Entry {
-    buckets: Buckets,
-    /// Generation at the last access, for LRU staleness detection.
-    touched: u64,
-}
-
-/// Mutable limiter state: the bucket map and its recency order.
-struct LimiterState {
-    map: HashMap<String, Entry>,
-    /// Recency order; front = least recently used. Each entry records the
-    /// generation at which it was pushed, so a stale entry (superseded by a
-    /// later touch of the same key) is skipped lazily on eviction.
-    order: VecDeque<(String, u64)>,
-    seq: u64,
-    max_keys: usize,
-}
-
-impl LimiterState {
-    fn check(
-        &mut self,
-        key: &str,
-        class: BucketClass,
-        now: i64,
-        cfg: &RateLimitConfig,
-    ) -> Result<(), u64> {
-        self.seq += 1;
-        let seq = self.seq;
-        let entry = self.map.entry(key.to_owned()).or_insert_with(|| Entry {
-            buckets: Buckets::new(now, cfg),
-            touched: seq,
-        });
-        entry.touched = seq;
-        self.order.push_back((key.to_owned(), seq));
-
-        // `rate` is validated > 0 by `ControlApiConfig::validate`; the `.max(1.0)`
-        // is defence in depth against an unvalidated config reaching the limiter.
-        let rate = rate_for(cfg, class).max(1.0);
-        let burst = rate * cfg.burst_factor as f64;
-        let result = entry
-            .buckets
-            .bucket_mut(class)
-            .try_consume(now, rate, burst);
-
-        self.evict();
-        result
-    }
-
-    /// Evicts least-recently-used entries until the map is within its cap, and
-    /// compacts the recency order when it grows far past the cap.
-    fn evict(&mut self) {
-        while self.map.len() > self.max_keys {
-            let Some((key, seq)) = self.order.pop_front() else {
-                break;
-            };
-            if self.map.get(&key).map(|e| e.touched) == Some(seq) {
-                self.map.remove(&key);
-            }
-            // else: a stale order entry superseded by a later touch — skip.
-        }
-        if self.order.len() > self.max_keys * 2 {
-            self.order = self
-                .map
-                .iter()
-                .map(|(k, e)| (k.clone(), e.touched))
-                .collect();
-        }
-    }
-}
+pub(crate) use dnscraft_common::rate_limit::BucketClass;
 
 /// In-memory token-bucket rate limiter keyed by source.
-///
-/// Construct one per server from the validated [`RateLimitConfig`], the
-/// injectable [`Clock`], and the configured `trusted_proxies`; attach it with
-/// [`AppState::with_rate_limiter`](crate::AppState::with_rate_limiter). The
-/// [`rate_limit`] middleware then consults it on every request.
 pub struct RateLimiter {
-    config: RateLimitConfig,
-    clock: Arc<dyn Clock>,
+    inner: TokenRateLimiter,
     trusted_proxies: Vec<IpAddr>,
-    state: Mutex<LimiterState>,
 }
 
 impl RateLimiter {
@@ -212,26 +48,23 @@ impl RateLimiter {
         max_keys: usize,
     ) -> Self {
         Self {
-            config,
-            clock,
+            inner: TokenRateLimiter::new(
+                Rates {
+                    read: config.read_per_second as f64,
+                    write: config.write_per_second as f64,
+                    auth: config.auth_per_second as f64,
+                    burst_factor: config.burst_factor as f64,
+                },
+                clock,
+                max_keys,
+            ),
             trusted_proxies,
-            state: Mutex::new(LimiterState {
-                map: HashMap::new(),
-                order: VecDeque::new(),
-                seq: 0,
-                max_keys: max_keys.max(1),
-            }),
         }
     }
 
-    /// Consumes one token for `key` in `class`; `Err(seconds)` until retry on
-    /// excess. Refill is clock-driven — this never sleeps.
+    /// Consumes one token for `key` in `class`; `Err(seconds)` until retry on excess.
     pub(crate) fn check(&self, key: &str, class: BucketClass) -> Result<(), u64> {
-        let now = unix_seconds(self.clock.now());
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .check(key, class, now, &self.config)
+        self.inner.check(key, class)
     }
 }
 
@@ -354,24 +187,11 @@ mod tests {
     #[cfg(test)]
     impl RateLimiter {
         fn tracked_sources(&self) -> usize {
-            self.state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .map
-                .len()
+            self.inner.tracked()
         }
 
         fn tracked_keys(&self) -> Vec<String> {
-            let mut keys: Vec<String> = self
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .map
-                .keys()
-                .cloned()
-                .collect();
-            keys.sort();
-            keys
+            self.inner.tracked_keys()
         }
     }
 

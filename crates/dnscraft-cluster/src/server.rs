@@ -1381,9 +1381,6 @@ fn tls_config_error(message: String) -> ClusterError {
     ClusterError::TransportTls { message }
 }
 
-/// RFC 3339 (UTC, seconds precision) for a [`SystemTime`].
 pub(crate) fn rfc3339(time: SystemTime) -> String {
-    OffsetDateTime::from(time)
-        .format(&Rfc3339)
-        .unwrap_or_default()
+    dnscraft_common::time_fmt::rfc3339(time)
 }

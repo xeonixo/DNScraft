@@ -17,3 +17,4 @@ zeroize = { workspace = true }
 serde = { workspace = true }
 idna = { workspace = true }
 ring = { workspace = true }
+time = { workspace = true, features = ["formatting"] }

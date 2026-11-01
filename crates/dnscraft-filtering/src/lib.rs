@@ -70,8 +70,8 @@ pub use services::{
     ServicesUpdateReport, ServicesUrls, seed_services_cache, update_services_catalog,
 };
 pub use set::{
-    DEFAULT_MAX_LIST_SIZE_MB, DEFAULT_UPDATE_INTERVAL, FilterConfig, FilterSetConfig, ListBodies,
-    ListConfig, ListText, McpRule, OpenedList, SnapshotError,
+    DEFAULT_MAX_LIST_SIZE_MB, DEFAULT_UPDATE_INTERVAL, EmptyBodies, FilterConfig, FilterSetConfig,
+    ListBodies, ListConfig, ListText, McpRule, OpenedList, SnapshotError,
 };
 pub use snapshot::{CustomFacts, ListFacts, SharedIndex, Snapshot, SnapshotBuilder};
 pub use stats::{FilterStats, ListStats, SetStats};

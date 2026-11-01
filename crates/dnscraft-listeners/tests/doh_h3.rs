@@ -121,7 +121,7 @@ impl DohH3Harness {
                 bound: udp_tx,
                 shutdown: shutdown_rx,
                 trusted_proxies: std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
-        })));
+            })));
             tokio::time::timeout(Duration::from_secs(2), udp_rx)
                 .await
                 .unwrap()

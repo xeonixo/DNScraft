@@ -11,62 +11,44 @@ use tokio::sync::mpsc;
 
 use crate::config::IpTruncate;
 
-/// Forwards every event to two sinks.
-///
-/// Used for the runtime-gated stdout debug writer: the SQLite query-log sink
-/// stays the primary sink and the JSON-lines channel is the secondary.
+/// Forwards every event to the primary sink, and to the secondary only while
+/// the gate is enabled (stdout JSON-lines debug stream).
 pub(crate) struct TeeSink {
     primary: Arc<dyn QueryEventSink>,
     secondary: Arc<dyn QueryEventSink>,
+    gate: Arc<StdoutQueriesGate>,
 }
 
 impl TeeSink {
-    /// Forwards to `primary` and `secondary`, in that order.
+    /// Forwards to `primary` always; to `secondary` only while `gate` is on.
     pub(crate) fn new(
         primary: Arc<dyn QueryEventSink>,
         secondary: Arc<dyn QueryEventSink>,
+        gate: Arc<StdoutQueriesGate>,
     ) -> Self {
-        Self { primary, secondary }
+        Self {
+            primary,
+            secondary,
+            gate,
+        }
     }
 }
 
 impl QueryEventSink for TeeSink {
     fn try_send(&self, event: QueryEvent) -> bool {
-        let primary = self.primary.try_send(event.clone());
-        let secondary = self.secondary.try_send(event);
-        primary && secondary
+        if self.gate.enabled() {
+            let primary = self.primary.try_send(event.clone());
+            let secondary = self.secondary.try_send(event);
+            primary && secondary
+        } else {
+            self.primary.try_send(event)
+        }
     }
 
     fn events_dropped(&self) -> u64 {
         self.primary
             .events_dropped()
             .saturating_add(self.secondary.events_dropped())
-    }
-}
-
-/// Forwards events to an inner sink only while the gate is enabled.
-pub(crate) struct GatedSink {
-    gate: Arc<StdoutQueriesGate>,
-    inner: Arc<dyn QueryEventSink>,
-}
-
-impl GatedSink {
-    /// Wraps `inner` so `try_send` is a no-op (still successful) when the gate is off.
-    pub(crate) fn new(gate: Arc<StdoutQueriesGate>, inner: Arc<dyn QueryEventSink>) -> Self {
-        Self { gate, inner }
-    }
-}
-
-impl QueryEventSink for GatedSink {
-    fn try_send(&self, event: QueryEvent) -> bool {
-        if !self.gate.enabled() {
-            return true;
-        }
-        self.inner.try_send(event)
-    }
-
-    fn events_dropped(&self) -> u64 {
-        self.inner.events_dropped()
     }
 }
 
@@ -195,16 +177,15 @@ mod tests {
     }
 
     #[test]
-    fn gated_sink_skips_the_inner_sink_while_disabled() {
-        use dnscraft_api::StdoutQueriesGate;
-
+    fn tee_skips_secondary_while_gate_disabled() {
         let gate = Arc::new(StdoutQueriesGate::new(false));
-        let (inner, mut rx) = ChannelSink::new(8);
-        let gated = GatedSink::new(Arc::clone(&gate), inner);
-        assert!(gated.try_send(event()));
-        assert!(rx.try_recv().is_err(), "disabled gate must not forward");
+        let (primary, _prx) = ChannelSink::new(8);
+        let (secondary, mut srx) = ChannelSink::new(8);
+        let tee = TeeSink::new(primary, secondary, Arc::clone(&gate));
+        assert!(tee.try_send(event()));
+        assert!(srx.try_recv().is_err(), "disabled gate must not forward");
         gate.apply(Some(true));
-        assert!(gated.try_send(event()));
-        assert!(rx.try_recv().is_ok());
+        assert!(tee.try_send(event()));
+        assert!(srx.try_recv().is_ok());
     }
 }

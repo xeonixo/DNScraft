@@ -84,8 +84,8 @@ async fn start_set(
         public_domain: "example.com".into(),
         client_ids: Arc::new(EmptyClientIds),
         classify: default_classifier(),
-            trusted_proxies: Vec::new(),
-        })
+        trusted_proxies: Vec::new(),
+    })
     .await
     .unwrap()
 }
@@ -242,8 +242,8 @@ async fn runtime_doh_h3_udp_bind_failure_reported_without_hang() {
         public_domain: "example.com".into(),
         client_ids: Arc::new(EmptyClientIds),
         classify: default_classifier(),
-            trusted_proxies: Vec::new(),
-        };
+        trusted_proxies: Vec::new(),
+    };
     let set = tokio::time::timeout(Duration::from_secs(3), ListenerSet::start_with(params))
         .await
         .expect("start must not hang on a partial DoH h3 bind")
@@ -286,8 +286,8 @@ async fn runtime_doh_h3_tcp_bind_failure_reported_without_hang() {
         public_domain: "example.com".into(),
         client_ids: Arc::new(EmptyClientIds),
         classify: default_classifier(),
-            trusted_proxies: Vec::new(),
-        };
+        trusted_proxies: Vec::new(),
+    };
     let set = tokio::time::timeout(Duration::from_secs(3), ListenerSet::start_with(params))
         .await
         .expect("start must not hang when the DoH TCP half fails to bind")
@@ -635,8 +635,8 @@ async fn runtime_reload_keeps_bans_across_rate_and_public_changes() {
         public_domain: "example.com".into(),
         client_ids: Arc::new(EmptyClientIds),
         classify: support::loopback_as_public(),
-            trusted_proxies: Vec::new(),
-        })
+        trusted_proxies: Vec::new(),
+    })
     .await
     .unwrap();
 
@@ -784,8 +784,8 @@ async fn runtime_shutdown_drains_inflight_within_grace() {
         public_domain: "example.com".into(),
         client_ids: Arc::new(EmptyClientIds),
         classify: default_classifier(),
-            trusted_proxies: Vec::new(),
-        })
+        trusted_proxies: Vec::new(),
+    })
     .await
     .unwrap();
 
@@ -846,8 +846,8 @@ async fn runtime_shutdown_drains_tcp_inflight_within_grace() {
         public_domain: "example.com".into(),
         client_ids: Arc::new(EmptyClientIds),
         classify: default_classifier(),
-            trusted_proxies: Vec::new(),
-        })
+        trusted_proxies: Vec::new(),
+    })
     .await
     .unwrap();
 
@@ -973,8 +973,8 @@ async fn runtime_h3_toggle_restarts_doh_listener() {
         public_domain: "example.com".into(),
         client_ids: Arc::new(EmptyClientIds),
         classify: default_classifier(),
-            trusted_proxies: Vec::new(),
-        })
+        trusted_proxies: Vec::new(),
+    })
     .await
     .unwrap();
 

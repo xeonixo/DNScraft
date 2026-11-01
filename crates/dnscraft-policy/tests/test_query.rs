@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use dnscraft_filtering::{
-    BlockMode, FilterConfig, FilterEngine, FilterSetConfig, ListBodies, ListId, ManualClock, SetId,
+    BlockMode, FilterConfig, FilterEngine, FilterSetConfig, EmptyBodies, ListBodies, ManualClock, SetId,
     SnapshotBuilder,
 };
 use dnscraft_policy::{
@@ -19,15 +19,6 @@ use dnscraft_proto::{Class, Name, Rcode, RecordType};
 use dnscraft_resolver::dnssec::TrustAnchors;
 use dnscraft_resolver::{AnswerSource, Query, Resolver, ResolverConfig};
 use dnscraft_testkit::{Hierarchy, ServerHandle};
-
-#[derive(Debug, Default)]
-struct EmptyBodies;
-
-impl ListBodies for EmptyBodies {
-    fn body(&self, _id: &ListId) -> Option<Arc<str>> {
-        None
-    }
-}
 
 fn sid(s: &str) -> SetId {
     SetId::new(s).unwrap()

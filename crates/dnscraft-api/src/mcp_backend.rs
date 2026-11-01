@@ -352,11 +352,7 @@ fn listener_status(
 }
 
 pub(crate) fn rfc3339(ts: SystemTime) -> String {
-    let d = ts.duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO);
-    OffsetDateTime::from_unix_timestamp_nanos((d.as_nanos() as i128).min(i64::MAX as i128))
-        .unwrap_or(OffsetDateTime::UNIX_EPOCH)
-        .format(&Rfc3339)
-        .unwrap_or_default()
+    dnscraft_common::time_fmt::rfc3339(ts)
 }
 
 fn duration_secs(d: PauseDuration) -> Duration {

@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use dnscraft_filtering::{
-    FilterConfig, FilterEngine, FilterSetConfig, ListBodies, ListId, SetId, SnapshotBuilder,
+    FilterConfig, FilterEngine, FilterSetConfig, EmptyBodies, ListBodies, SetId, SnapshotBuilder,
 };
 use dnscraft_listeners::{
     Admission, Exposure, FakeHandler, Limits, ListenerConfig, Protocol, PublicConfig, SourceClass,
@@ -40,15 +40,6 @@ pub async fn poll_until(mut ready: impl FnMut() -> bool, timeout: Duration) {
         }
         tokio::task::yield_now().await;
         tokio::time::sleep(Duration::from_millis(1)).await;
-    }
-}
-
-#[derive(Debug, Default)]
-struct EmptyBodies;
-
-impl ListBodies for EmptyBodies {
-    fn body(&self, _id: &ListId) -> Option<Arc<str>> {
-        None
     }
 }
 

@@ -516,12 +516,11 @@ impl SnapshotBuilder {
             if sets.contains_key(&s.id) {
                 return Err(SnapshotError::DuplicateSet(s.id.clone()));
             }
-            let combo = effective_combo(&s.lists, &enabled).map_err(|list| {
-                SnapshotError::UnknownList {
+            let combo =
+                effective_combo(&s.lists, &enabled).map_err(|list| SnapshotError::UnknownList {
                     set: s.id.clone(),
                     list,
-                }
-            })?;
+                })?;
             let mcp = build_mcp_index(&s.id, &s.mcp_rules, now)?;
             let mut custom = parse_custom(&s.custom_rules);
             let (service_srcs, unknown_services) =

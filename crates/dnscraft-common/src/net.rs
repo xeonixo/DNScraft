@@ -169,11 +169,7 @@ mod tests {
         let peer = "10.0.0.1".parse::<IpAddr>().unwrap();
         let inner = "10.0.0.2".parse::<IpAddr>().unwrap();
         assert_eq!(
-            client_ip_from_forwarded_for(
-                peer,
-                &[peer],
-                Some("192.0.2.66, 198.51.100.7, 10.0.0.1"),
-            ),
+            client_ip_from_forwarded_for(peer, &[peer], Some("192.0.2.66, 198.51.100.7, 10.0.0.1"),),
             "198.51.100.7".parse::<IpAddr>().unwrap()
         );
         assert_eq!(

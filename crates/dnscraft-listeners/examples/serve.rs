@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use dnscraft_filtering::{
-    FilterConfig, FilterEngine, FilterSetConfig, ListBodies, ListId, ManualClock, SetId,
+    FilterConfig, FilterEngine, FilterSetConfig, EmptyBodies, ListBodies, ManualClock, SetId,
     SnapshotBuilder,
 };
 use dnscraft_listeners::{
@@ -35,15 +35,6 @@ use dnscraft_policy::{
 use dnscraft_resolver::{Resolver, ResolverConfig};
 use std::sync::Mutex;
 use tokio::sync::{oneshot, watch};
-
-#[derive(Debug, Default)]
-struct EmptyBodies;
-
-impl ListBodies for EmptyBodies {
-    fn body(&self, _id: &ListId) -> Option<Arc<str>> {
-        None
-    }
-}
 
 fn empty_filter() -> Arc<FilterEngine> {
     let sc = FilterSetConfig::new(SetId::new("default").unwrap(), "default");

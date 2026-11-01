@@ -12,9 +12,11 @@
 //!
 //! ## Endpoint aggregations
 //!
-//! The dashboard endpoints aggregate the raw query log inside the requested
-//! window, and therefore cover the raw retention window. Cardinality is capped
-//! per the spec: [`TOP_CLIENTS_MAX`] and [`TOP_DOMAINS_MAX`].
+//! [`QueryLog::stats_overview`] prefers `stats_hourly` for completed hours and
+//! only scans the raw log for the still-open hour (plus a full raw fallback
+//! before the first rollup pass). Top-domain / top-client endpoints still read
+//! the raw log inside the requested window. Cardinality is capped per the
+//! spec: [`TOP_CLIENTS_MAX`] and [`TOP_DOMAINS_MAX`].
 //!
 //! ## Export
 //!
@@ -140,11 +142,12 @@ pub struct FilterHits {
 
 /// Aggregated dashboard statistics for one window.
 ///
-/// `source` is `raw` when the window lies inside the raw query-log retention
-/// and `rollup` otherwise. Rollups keep only protocol, profile, answer origin
-/// and node, so in `rollup` mode `by_view`, `by_rcode` and `dnssec` are empty,
-/// `active_clients` and `filter_hits` are `null`, and `blocked` counts the
-/// `filter_block` answer origin. Windows are day-granular in rollup mode.
+/// `source` is `raw` when the response was built entirely from the query log
+/// (open-hour windows, or before rollups are seeded) and `rollup` when
+/// completed hours came from `stats_hourly` / `stats_daily`. Rollups keep only
+/// protocol, profile, answer origin and node, so in `rollup` mode `by_view`,
+/// `by_rcode` and `dnssec` are empty, `active_clients` and `filter_hits` are
+/// `null`, and `blocked` counts the `filter_block` answer origin.
 #[derive(Clone, Debug, Serialize)]
 pub struct StatsOverview {
     /// `raw` or `rollup`: which storage answered the request.
@@ -394,9 +397,9 @@ impl QueryLog {
     /// restricted to one `node_id`.
     ///
     /// Absent bounds default to the last 24 hours, measured on the injected
-    /// clock. `from > to` is `control_api.query_log.invalid`. A window that
-    /// starts before the raw retention horizon is answered from the daily
-    /// rollups (GA16), see [`StatsOverview`].
+    /// clock. `from > to` is `control_api.query_log.invalid`. Prefer
+    /// `stats_hourly` for completed hours and only scan the raw log for the
+    /// open hour; see [`StatsOverview`].
     pub async fn stats_overview(
         &self,
         from_us: Option<i64>,
@@ -426,6 +429,11 @@ impl QueryLog {
         let scope = Scope::from(scope);
         let dropped = self.sink_dropped();
         let stream_dropped = self.stream_dropped();
+        if let Some(overview) =
+            overview_hourly_with_tail(db, from, to, scope.clone(), dropped, stream_dropped).await?
+        {
+            return Ok(overview);
+        }
         let retention_secs =
             i64::from(self.config().retention_days).saturating_mul(SECONDS_PER_DAY);
         let raw_horizon = db
@@ -435,64 +443,14 @@ impl QueryLog {
         if from < raw_horizon {
             let rolled =
                 rollup_overview(db, from, to, scope.clone(), dropped, stream_dropped).await?;
-            // Rollups can lag (or be empty before the first pass): never show
-            // less than the raw rows that exist in the window.
-            let raw_total = raw_counts(db, from, to, &scope).await?.total;
+            // Cheap existence check: never show less than the raw rows that
+            // still exist in the window when rollups lag or are empty.
+            let raw_total = raw_row_count(db, from, to, &scope).await?;
             if raw_total <= rolled.total {
                 return Ok(rolled);
             }
         }
-        let counts = raw_counts(db, from, to, &scope).await?;
-        let RawCounts {
-            total,
-            allowed,
-            blocked,
-            by_protocol,
-            by_view,
-            by_profile,
-            by_answer_source,
-            by_rcode,
-            dnssec,
-            by_list,
-            by_reason,
-        } = counts;
-        let active_clients = db
-            .with_read_conn({
-                let scope = scope.clone();
-                move |conn| {
-                    conn.query_row(
-                        "SELECT COUNT(DISTINCT COALESCE(device_id, client_id, client_name)) FROM query_log
-                         WHERE time >= ?1 AND time <= ?2
-                           AND COALESCE(device_id, client_id, client_name) IS NOT NULL
-                           AND (?3 IS NULL OR node_id = ?3)
-                           AND (?4 IS NULL OR profile_id = ?4)",
-                        params![from, to, scope.node_id, scope.profile_id],
-                        |row| row.get::<_, i64>(0),
-                    )
-                    .map_err(db_err)
-                }
-            })
-            .await?;
-        let filter_hits = filter_hits(db, from, to, &scope, by_list, by_reason).await?;
-        Ok(StatsOverview {
-            source: "raw",
-            from: format_micros(from),
-            to: format_micros(to),
-            total,
-            allowed,
-            blocked,
-            allowed_ratio: ratio(allowed, total),
-            active_clients: Some(active_clients),
-            query_log_dropped: dropped,
-            query_log_stream_dropped: stream_dropped,
-            filter_hits: Some(filter_hits),
-            by_protocol,
-            by_view,
-            by_profile,
-            by_answer_source,
-            by_rcode,
-            dnssec,
-        })
+        overview_from_raw(db, from, to, &scope, dropped, stream_dropped).await
     }
 
     /// Top clients by query or blocked count for `[from_us, to_us]`.
@@ -851,6 +809,7 @@ async fn filter_hits(
 /// Rows are wide (the `record` JSON), so every separate `GROUP BY` re-reads the whole window; one
 /// grouped scan answers all breakdowns. `json_extract` takes several paths at once so the JSON is
 /// parsed once per row.
+#[derive(Default)]
 struct RawCounts {
     total: i64,
     allowed: i64,
@@ -953,6 +912,268 @@ async fn raw_counts(
             }
         }
         Ok(out)
+    })
+    .await
+}
+
+/// Full raw overview (filter hits, active clients, every breakdown).
+async fn overview_from_raw(
+    db: &Db,
+    from: i64,
+    to: i64,
+    scope: &Scope,
+    dropped: u64,
+    stream_dropped: u64,
+) -> Result<StatsOverview, ControlApiError> {
+    let counts = raw_counts(db, from, to, scope).await?;
+    let RawCounts {
+        total,
+        allowed,
+        blocked,
+        by_protocol,
+        by_view,
+        by_profile,
+        by_answer_source,
+        by_rcode,
+        dnssec,
+        by_list,
+        by_reason,
+    } = counts;
+    let active_clients = active_client_count(db, from, to, scope).await?;
+    let hits = filter_hits(db, from, to, scope, by_list, by_reason).await?;
+    Ok(StatsOverview {
+        source: "raw",
+        from: format_micros(from),
+        to: format_micros(to),
+        total,
+        allowed,
+        blocked,
+        allowed_ratio: ratio(allowed, total),
+        active_clients: Some(active_clients),
+        query_log_dropped: dropped,
+        query_log_stream_dropped: stream_dropped,
+        filter_hits: Some(hits),
+        by_protocol,
+        by_view,
+        by_profile,
+        by_answer_source,
+        by_rcode,
+        dnssec,
+    })
+}
+
+/// Fast overview: closed hours from `stats_hourly`, open hour from raw.
+///
+/// Returns `None` when hourly rollups are not seeded yet so the caller can
+/// fall back to daily rollups or a full raw scan.
+async fn overview_hourly_with_tail(
+    db: &Db,
+    from: i64,
+    to: i64,
+    scope: Scope,
+    dropped: u64,
+    stream_dropped: u64,
+) -> Result<Option<StatsOverview>, ControlApiError> {
+    let seeded: bool = db
+        .with_read_conn(|conn| {
+            conn.query_row("SELECT EXISTS(SELECT 1 FROM stats_hourly)", [], |row| {
+                row.get(0)
+            })
+            .map_err(db_err)
+        })
+        .await?;
+    if !seeded {
+        return Ok(None);
+    }
+
+    let from_hour = from.div_euclid(MICROS_PER_HOUR);
+    let open_hour = to.div_euclid(MICROS_PER_HOUR);
+    let closed = if from_hour < open_hour {
+        hourly_rollup_parts(db, from_hour, open_hour - 1, &scope).await?
+    } else {
+        HourlyParts::default()
+    };
+
+    let tail_from = (open_hour.saturating_mul(MICROS_PER_HOUR)).max(from);
+    let whole_window_is_open_hour = from_hour == open_hour;
+    let (tail, active_clients, hits, source) = if tail_from <= to {
+        let counts = raw_counts(db, tail_from, to, &scope).await?;
+        if whole_window_is_open_hour {
+            let clients = active_client_count(db, from, to, &scope).await?;
+            let hits = filter_hits(
+                db,
+                from,
+                to,
+                &scope,
+                counts.by_list.clone(),
+                counts.by_reason.clone(),
+            )
+            .await?;
+            (counts, Some(clients), Some(hits), "raw")
+        } else {
+            (counts, None, None, "rollup")
+        }
+    } else {
+        (RawCounts::default(), None, None, "rollup")
+    };
+
+    let total = closed.total + tail.total;
+    let blocked = closed.blocked + tail.blocked;
+    // Closed hours only know `filter_block`; the open-hour tail uses status.
+    let allowed = closed.total.saturating_sub(closed.blocked) + tail.allowed;
+    // Rollup responses omit dimensions the hourly table does not store, even
+    // when the open-hour tail could fill them — keeps `source` semantics stable.
+    let (by_view, by_rcode, dnssec) = if source == "raw" {
+        (tail.by_view, tail.by_rcode, tail.dnssec)
+    } else {
+        (BTreeMap::new(), BTreeMap::new(), BTreeMap::new())
+    };
+    Ok(Some(StatsOverview {
+        source,
+        from: format_micros(from),
+        to: format_micros(to),
+        total,
+        allowed,
+        blocked,
+        allowed_ratio: ratio(allowed, total),
+        active_clients,
+        query_log_dropped: dropped,
+        query_log_stream_dropped: stream_dropped,
+        filter_hits: hits,
+        by_protocol: merge_counts(closed.by_protocol, tail.by_protocol),
+        by_view,
+        by_profile: merge_counts(closed.by_profile, tail.by_profile),
+        by_answer_source: merge_counts(closed.by_answer_source, tail.by_answer_source),
+        by_rcode,
+        dnssec,
+    }))
+}
+
+#[derive(Default)]
+struct HourlyParts {
+    total: i64,
+    blocked: i64,
+    by_protocol: BTreeMap<String, i64>,
+    by_profile: BTreeMap<String, i64>,
+    by_answer_source: BTreeMap<String, i64>,
+}
+
+async fn hourly_rollup_parts(
+    db: &Db,
+    from_hour: i64,
+    to_hour: i64,
+    scope: &Scope,
+) -> Result<HourlyParts, ControlApiError> {
+    let (total, blocked) = db
+        .with_read_conn({
+            let scope = scope.clone();
+            move |conn| {
+                conn.query_row(
+                    "SELECT COALESCE(SUM(query_count), 0),
+                            COALESCE(SUM(CASE WHEN answer_source = 'filter_block'
+                                              THEN query_count ELSE 0 END), 0)
+                     FROM stats_hourly
+                     WHERE hour >= ?1 AND hour <= ?2
+                       AND (?3 IS NULL OR node_id = ?3)
+                       AND (?4 IS NULL OR profile_id = ?4)",
+                    params![from_hour, to_hour, scope.node_id, scope.profile_id],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .map_err(db_err)
+            }
+        })
+        .await?;
+    Ok(HourlyParts {
+        total,
+        blocked,
+        by_protocol: hourly_counts_by(db, "protocol", from_hour, to_hour, scope).await?,
+        by_profile: hourly_counts_by(db, "profile_id", from_hour, to_hour, scope).await?,
+        by_answer_source: hourly_counts_by(db, "answer_source", from_hour, to_hour, scope).await?,
+    })
+}
+
+async fn hourly_counts_by(
+    db: &Db,
+    expr: &'static str,
+    from_hour: i64,
+    to_hour: i64,
+    scope: &Scope,
+) -> Result<BTreeMap<String, i64>, ControlApiError> {
+    let scope = scope.clone();
+    db.with_read_conn(move |conn| {
+        let sql = format!(
+            "SELECT {expr}, COALESCE(SUM(query_count), 0) FROM stats_hourly
+             WHERE hour >= ?1 AND hour <= ?2
+               AND (?3 IS NULL OR node_id = ?3)
+               AND (?4 IS NULL OR profile_id = ?4) GROUP BY 1"
+        );
+        let mut stmt = conn.prepare(&sql).map_err(db_err)?;
+        let rows = stmt
+            .query_map(
+                params![from_hour, to_hour, scope.node_id, scope.profile_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .map_err(db_err)?;
+        let mut counts = BTreeMap::new();
+        for row in rows {
+            let (key, count) = row.map_err(db_err)?;
+            counts.insert(key, count);
+        }
+        Ok(counts)
+    })
+    .await
+}
+
+fn merge_counts(
+    mut left: BTreeMap<String, i64>,
+    right: BTreeMap<String, i64>,
+) -> BTreeMap<String, i64> {
+    for (key, count) in right {
+        *left.entry(key).or_default() += count;
+    }
+    left
+}
+
+async fn active_client_count(
+    db: &Db,
+    from: i64,
+    to: i64,
+    scope: &Scope,
+) -> Result<i64, ControlApiError> {
+    let scope = scope.clone();
+    db.with_read_conn(move |conn| {
+        conn.query_row(
+            "SELECT COUNT(DISTINCT COALESCE(device_id, client_id, client_name)) FROM query_log
+             WHERE time >= ?1 AND time <= ?2
+               AND COALESCE(device_id, client_id, client_name) IS NOT NULL
+               AND (?3 IS NULL OR node_id = ?3)
+               AND (?4 IS NULL OR profile_id = ?4)",
+            params![from, to, scope.node_id, scope.profile_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(db_err)
+    })
+    .await
+}
+
+/// Indexed `COUNT(*)` — used to compare rollup coverage without a wide scan.
+async fn raw_row_count(
+    db: &Db,
+    from: i64,
+    to: i64,
+    scope: &Scope,
+) -> Result<i64, ControlApiError> {
+    let scope = scope.clone();
+    db.with_read_conn(move |conn| {
+        conn.query_row(
+            "SELECT COUNT(*) FROM query_log
+             WHERE time >= ?1 AND time <= ?2
+               AND (?3 IS NULL OR node_id = ?3)
+               AND (?4 IS NULL OR profile_id = ?4)",
+            params![from, to, scope.node_id, scope.profile_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(db_err)
     })
     .await
 }

@@ -623,6 +623,34 @@ async fn stats_overview_reports_filter_hits_clients_and_sink_drops() {
 }
 
 #[tokio::test]
+async fn stats_overview_uses_hourly_rollups_inside_retention() {
+    let (log, _clock) = harness(QueryLogConfig::default()).await;
+    // Two hours ago (closed) and a few seconds ago (open hour).
+    let events = vec![
+        Spec::new(at_secs(BASE_SECS - 2 * 3600 - 30), "old.example.com").event(),
+        {
+            let mut spec = Spec::new(at_secs(BASE_SECS - 2 * 3600 - 10), "blocked.example.com");
+            spec.blocked = true;
+            spec.event()
+        },
+        Spec::new(at_secs(BASE_SECS - 30), "fresh.example.com").event(),
+    ];
+    log.insert_batch(events).await.unwrap();
+    log.run_rollup().await.unwrap();
+
+    let (status, _, body) = request(&log, "/api/v1/stats/overview").await;
+    assert_eq!(status, StatusCode::OK);
+    let overview = &json(&body)["data"];
+    assert_eq!(overview["source"], "rollup");
+    assert_eq!(overview["total"], 3);
+    assert_eq!(overview["blocked"], 1);
+    assert_eq!(overview["allowed"], 2);
+    assert!(overview["active_clients"].is_null());
+    assert!(overview["filter_hits"].is_null());
+    assert_eq!(overview["by_protocol"]["udp53"], 3);
+}
+
+#[tokio::test]
 async fn stats_overview_long_range_is_answered_from_rollups() {
     let (log, _clock) = harness(QueryLogConfig::default()).await;
     let events = vec![

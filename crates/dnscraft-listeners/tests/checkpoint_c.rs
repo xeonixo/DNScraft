@@ -478,6 +478,7 @@ impl EncryptedSet {
             event_sink: None,
             alt_svc_port: std::sync::Arc::new(std::sync::atomic::AtomicU16::new(0)),
             web: Arc::default(),
+            trusted_proxies: Arc::new(std::sync::RwLock::new(Vec::new())),
             bound: doh_tx,
             shutdown: doh_sd_rx,
         })));

@@ -102,6 +102,7 @@ impl DohH3Harness {
             web: Arc::default(),
             bound: tcp_tx,
             shutdown: shutdown_rx.clone(),
+            trusted_proxies: std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
         })));
 
         let udp_addr = if h3 {
@@ -119,7 +120,8 @@ impl DohH3Harness {
                 alt_svc_port: Arc::clone(&alt_svc_port),
                 bound: udp_tx,
                 shutdown: shutdown_rx,
-            })));
+                trusted_proxies: std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
+        })));
             tokio::time::timeout(Duration::from_secs(2), udp_rx)
                 .await
                 .unwrap()

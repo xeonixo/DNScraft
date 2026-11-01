@@ -90,10 +90,12 @@ reference only, it never changes selection. Only `view` changes selection, and
 only as the pin of step 2.
 
 **Log name precedence:** the query log names a client as the directory client
-matching the source IP → the label of the registered Client ID on the request
-(`source: "client_id"`) → none. The label is read from the policy snapshot and
-carried on the decision record as `client_label`; unregistered Client IDs never get
-a label.
+matching the effective source IP → the label of the registered Client ID on the
+request (`source: "client_id"`) → none. The effective source IP is the TCP peer,
+except on DoH when the peer is a configured trusted proxy and `X-Forwarded-For`
+names a client (see `SPEC-listeners.md`). The label is read from the policy
+snapshot and carried on the decision record as `client_label`; unregistered
+Client IDs never get a label.
 
 **Node validity:** a view may carry `nodes` (empty = all nodes). On a node, only
 views whose `nodes` is empty or contains the node's `node_id` participate in

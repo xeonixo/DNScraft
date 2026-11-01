@@ -123,6 +123,7 @@ mod tests {
             protocol: DnsProtocol::Udp53,
             listener_id: ListenerId::new("lan-udp").unwrap(),
             source: Ipv4Addr::new(192, 0, 2, 10).into(),
+            peer_ip: None,
             client_id: None,
             query: Query {
                 name: Name::from_ascii("example.com.").unwrap(),

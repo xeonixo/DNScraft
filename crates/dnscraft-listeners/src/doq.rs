@@ -603,6 +603,7 @@ where
         node_id: shared.listener.node_id.clone(),
         exposure: shared.listener.exposure,
         source: peer.ip().to_canonical(),
+        peer_ip: None,
         arrival: peer.ip().to_canonical(),
         client_id: match client_id {
             ClientIdState::Registered(id) => Some(id.clone()),

@@ -120,20 +120,22 @@ Public encrypted listeners (`192.0.2.1`, `example.com`) stay commented in `dnscr
 
 ### Source classification & proxies
 
-DNScraft classifies a client as private or public from the **TCP peer address** it sees. Docker's userland proxy, NAT, and reverse proxies replace the real client address with the proxy's, so every client can look private. In that case:
+Do53 / DoT / DoQ classify a client from the **TCP/UDP peer**. DoH uses the same peer unless the peer is listed in `control_api.trusted_proxies` and sends `X-Forwarded-For`; then admission, query-log enrichment, and policy see the forwarded client IP (right-to-left trusted-hop walk, same as the control API). The TCP peer is still recorded as `peer_ip` on the query-log row when it differs.
+
+Without trusted proxies, Docker's userland proxy, NAT, and reverse proxies replace the real client address with the proxy's, so every DoH client can look private. In that case:
 
 - an open DoH listener accepts queries without a Client ID,
 - the web UI is reachable from outside, and
 - no source is banned.
 
-The control API logs a warning at startup when it shares a DoH listener. To keep real source IPs, use host networking (`network_mode: host`) or iptables-based publishing (the default `docker-proxy` path does not preserve them). Put the web UI behind TLS and authentication either way.
+The control API warns at startup when it shares a DoH listener and `trusted_proxies` is empty. Prefer setting `trusted_proxies` and forwarding `X-Forwarded-For` / `X-Forwarded-Proto` from Nginx (or similar). Alternatives that preserve peer IPs: host networking (`network_mode: host`) or iptables-based publishing (the default `docker-proxy` path does not). Put the web UI behind TLS and authentication either way.
 
 ## Production checklist
 
 - [ ] **TLS and auth before publishing 443.** Configure `DNSCRAFT_TLS_*` or `[tls]` ACME, and do not expose the control API as plain HTTP.
 - [ ] **Public web access stays off.** It is off by default. Enable it only on purpose, through the web-access setting (`/api/v1/web-access`, stored as `control_api_settings.web_access.public_enabled`).
 - [ ] **Break-glass admin.** Set `DNSCRAFT_ADMIN_PASSWORD_FILE` for the first boot to seed the `break-glass` admin. Create your normal accounts, then remove the variable and file. Existing accounts are never overwritten.
-- [ ] **Reverse proxy.** Set `control_api.trusted_proxies` to the proxy's address. The proxy must send `X-Forwarded-For` and `X-Forwarded-Proto`, which are honoured only from trusted proxies. Remember that source classification still uses the TCP peer, so a proxy on a private network makes all clients look private.
+- [ ] **Reverse proxy.** Set `control_api.trusted_proxies` to the proxy's address (as seen by the node). The proxy must send `X-Forwarded-For` and `X-Forwarded-Proto`. Both the control API and DoH honour those headers only from trusted proxies, so query-log names and DoH admission follow the real client.
 - [ ] **Public DoH.** Public DoH listeners need Client IDs (`<id>.dns.<domain>` or `/dns-query/<id>`). Do not run an open DoH listener on a public address.
 - [ ] **HTTP/3.** For DoH over HTTP/3, publish UDP 443 as well (`443:443/udp`). Compose currently publishes only TCP 443.
 - [ ] **Volumes and permissions.** The image runs as uid `10001` and owns `/var/lib/dnscraft`. Named volumes inherit this ownership. For a bind mount, make the host directory writable by uid `10001`. The musl image runs as root.

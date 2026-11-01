@@ -281,6 +281,7 @@ fn spawn_query<H>(
             node_id: shared.listener.node_id.clone(),
             exposure: shared.listener.exposure,
             source: peer.ip(),
+            peer_ip: None,
             arrival,
             client_id: None,
             size_limit,

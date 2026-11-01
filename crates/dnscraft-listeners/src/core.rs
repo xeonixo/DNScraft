@@ -38,7 +38,12 @@ pub struct QueryMeta {
     /// Listener exposure (DDR only on local Do53).
     pub exposure: Exposure,
     /// Client source address (IPv4-mapped forms are canonicalised).
+    ///
+    /// For DoH behind a trusted reverse proxy this is the effective client from
+    /// `X-Forwarded-For`, not the TCP peer.
     pub source: IpAddr,
+    /// TCP/UDP peer when it differs from [`Self::source`] (DoH via trusted proxy).
+    pub peer_ip: Option<IpAddr>,
     /// Arrival / local address for DDR hints (UDP `RecvMeta.dst_ip` or TCP `local_addr`).
     pub arrival: IpAddr,
     /// Client ID from SNI / DoH path, if any.
@@ -136,8 +141,10 @@ pub struct QueryEvent {
     pub protocol: DnsProtocol,
     /// Listener id.
     pub listener_id: ListenerId,
-    /// Canonical client source.
+    /// Canonical client source (effective IP; see [`QueryMeta::source`]).
     pub source: IpAddr,
+    /// TCP peer when it differs from [`Self::source`] (DoH via trusted proxy).
+    pub peer_ip: Option<IpAddr>,
     /// Client ID when present.
     pub client_id: Option<ClientId>,
     /// Question that was handled.
@@ -387,6 +394,7 @@ fn make_event(
         protocol: meta.protocol,
         listener_id: meta.listener_id.clone(),
         source,
+        peer_ip: meta.peer_ip,
         client_id: meta.client_id.clone(),
         query: Query {
             name: question.name.clone(),

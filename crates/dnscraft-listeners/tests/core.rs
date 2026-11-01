@@ -30,6 +30,7 @@ fn meta(protocol: DnsProtocol, size_limit: usize, pad: bool) -> QueryMeta {
         listener_id: lid(),
         exposure: Exposure::Local,
         source: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
+        peer_ip: None,
         arrival: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
         client_id: None,
         size_limit,

@@ -133,6 +133,7 @@ fn meta_from(data: &[u8]) -> QueryMeta {
         listener_id: ListenerId::new("fuzz").unwrap(),
         exposure,
         source,
+        peer_ip: None,
         arrival: source,
         client_id: if b(19) & 1 == 0 {
             ClientId::new("fuzz").ok()

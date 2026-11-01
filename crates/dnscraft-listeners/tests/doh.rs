@@ -167,6 +167,32 @@ impl DohHarness {
         web: Arc<WebSlot>,
         loopback_is_public: bool,
     ) -> Self {
+        Self::spawn_web_proxies(
+            exposure,
+            limits,
+            gate,
+            certs,
+            handler,
+            web,
+            loopback_is_public,
+            Vec::new(),
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn spawn_web_proxies<H: QueryHandler + 'static>(
+        exposure: Exposure,
+        limits: Limits,
+        gate: SniGate,
+        certs: Arc<CertResolver>,
+        handler: Arc<H>,
+        web: Arc<WebSlot>,
+        loopback_is_public: bool,
+        trusted_proxies: Vec<std::net::IpAddr>,
+        event_sink: Option<Arc<dyn dnscraft_listeners::QueryEventSink>>,
+    ) -> Self {
         let stats = Arc::new(DohStats::default());
         let tls_stats = Arc::new(TlsStats::default());
         let (bound_tx, bound_rx) = oneshot::channel();
@@ -190,11 +216,12 @@ impl DohHarness {
             tls_stats,
             certs,
             sni_gate: Arc::new(gate),
-            event_sink: None,
+            event_sink,
             alt_svc_port: std::sync::Arc::new(std::sync::atomic::AtomicU16::new(0)),
             web,
             bound: bound_tx,
             shutdown: shutdown_rx,
+            trusted_proxies: std::sync::Arc::new(std::sync::RwLock::new(trusted_proxies)),
         }));
         let addr = tokio::time::timeout(Duration::from_secs(2), bound_rx)
             .await
@@ -1252,5 +1279,171 @@ async fn local_listener_never_routes_the_web_handler_for_public_sources() {
     let (status, _, body) = doh_exchange_h1(h.addr, get_req("/")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_ne!(&body[..], b"web");
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn doh_honours_xff_from_trusted_proxy_for_source_and_peer_ip() {
+    install_ring();
+    let engine = policy_engine_with_client_ids(&["goup-monitor"]).await;
+    let gate = SniGate {
+        public_domain: DOMAIN.into(),
+        reserved: Arc::new(std::sync::RwLock::new(ReservedLabels::new(
+            ["node1".into()],
+        ))),
+        registry: Arc::new(PolicyClientIds(engine)),
+    };
+    let (pem, key, _) = example_dns_cert();
+    let certs = Arc::new(CertResolver::new());
+    certs.install(&pem, &key).unwrap();
+
+    let answer = fake_a_answer(Ipv4Addr::new(192, 0, 2, 44));
+    let handler = Arc::new(FakeHandler::new(answer));
+    let (sink, mut rx) = dnscraft_listeners::ChannelSink::new(8);
+    let h = DohHarness::spawn_web_proxies(
+        Exposure::Local,
+        Limits::default(),
+        gate,
+        certs,
+        Arc::clone(&handler),
+        Arc::default(),
+        false,
+        vec![Ipv4Addr::LOCALHOST.into()],
+        Some(sink),
+    )
+    .await;
+
+    let q = encode_a_query(7, "example.com.");
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/dns-query/goup-monitor")
+        .header(header::CONTENT_TYPE, DNS_MESSAGE_TYPE)
+        .header(header::HOST, "dns.example.com")
+        .header("x-forwarded-for", "198.51.100.7")
+        .body(Full::new(Bytes::from(q)))
+        .unwrap();
+    let (status, _, _) = doh_exchange_h1(h.addr, req).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let recorded = handler.recorded();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(
+        recorded[0].source_ip,
+        "198.51.100.7".parse::<std::net::IpAddr>().unwrap()
+    );
+
+    let event = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        event.source,
+        "198.51.100.7".parse::<std::net::IpAddr>().unwrap()
+    );
+    assert_eq!(event.peer_ip, Some(Ipv4Addr::LOCALHOST.into()));
+    assert_eq!(event.client_id.as_ref().map(|id| id.as_str()), Some("goup-monitor"));
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn doh_ignores_xff_from_untrusted_peer() {
+    install_ring();
+    let engine = policy_engine_with_client_ids(&["goup-monitor"]).await;
+    let gate = SniGate {
+        public_domain: DOMAIN.into(),
+        reserved: Arc::new(std::sync::RwLock::new(ReservedLabels::new(
+            ["node1".into()],
+        ))),
+        registry: Arc::new(PolicyClientIds(engine)),
+    };
+    let (pem, key, _) = example_dns_cert();
+    let certs = Arc::new(CertResolver::new());
+    certs.install(&pem, &key).unwrap();
+
+    let answer = fake_a_answer(Ipv4Addr::new(192, 0, 2, 44));
+    let handler = Arc::new(FakeHandler::new(answer));
+    let h = DohHarness::spawn_web_proxies(
+        Exposure::Local,
+        Limits::default(),
+        gate,
+        certs,
+        Arc::clone(&handler),
+        Arc::default(),
+        false,
+        Vec::new(),
+        None,
+    )
+    .await;
+
+    let q = encode_a_query(8, "example.com.");
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/dns-query/goup-monitor")
+        .header(header::CONTENT_TYPE, DNS_MESSAGE_TYPE)
+        .header(header::HOST, "dns.example.com")
+        .header("x-forwarded-for", "198.51.100.7")
+        .body(Full::new(Bytes::from(q)))
+        .unwrap();
+    let (status, _, _) = doh_exchange_h1(h.addr, req).await;
+    assert_eq!(status, StatusCode::OK);
+    let recorded = handler.recorded();
+    assert_eq!(recorded.len(), 1);
+    assert!(recorded[0].source_ip.is_loopback());
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn doh_requires_client_id_when_xff_makes_source_public() {
+    install_ring();
+    let engine = policy_engine_with_client_ids(&["goup-monitor"]).await;
+    let gate = SniGate {
+        public_domain: DOMAIN.into(),
+        reserved: Arc::new(std::sync::RwLock::new(ReservedLabels::new(
+            ["node1".into()],
+        ))),
+        registry: Arc::new(PolicyClientIds(engine)),
+    };
+    let (pem, key, _) = example_dns_cert();
+    let certs = Arc::new(CertResolver::new());
+    certs.install(&pem, &key).unwrap();
+
+    let answer = fake_a_answer(Ipv4Addr::new(192, 0, 2, 44));
+    let handler = Arc::new(FakeHandler::new(answer));
+    // Public listener; TCP peer is loopback (private) but trusted + XFF → public client.
+    let h = DohHarness::spawn_web_proxies(
+        Exposure::Public,
+        Limits::default(),
+        gate,
+        certs,
+        handler,
+        Arc::default(),
+        false,
+        vec![Ipv4Addr::LOCALHOST.into()],
+        None,
+    )
+    .await;
+
+    let q = encode_a_query(9, "example.com.");
+    let bare = Request::builder()
+        .method(Method::POST)
+        .uri("/dns-query")
+        .header(header::CONTENT_TYPE, DNS_MESSAGE_TYPE)
+        .header(header::HOST, "dns.example.com")
+        .header("x-forwarded-for", "198.51.100.7")
+        .body(Full::new(Bytes::from(q.clone())))
+        .unwrap();
+    let (status, _, _) = doh_exchange_h1(h.addr, bare).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let with_id = Request::builder()
+        .method(Method::POST)
+        .uri("/dns-query/goup-monitor")
+        .header(header::CONTENT_TYPE, DNS_MESSAGE_TYPE)
+        .header(header::HOST, "dns.example.com")
+        .header("x-forwarded-for", "198.51.100.7")
+        .body(Full::new(Bytes::from(q)))
+        .unwrap();
+    let (status, _, _) = doh_exchange_h1(h.addr, with_id).await;
+    assert_eq!(status, StatusCode::OK);
     h.stop().await;
 }

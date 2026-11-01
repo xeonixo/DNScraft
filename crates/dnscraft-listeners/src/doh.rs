@@ -1,6 +1,7 @@
 //! DNS over HTTPS (RFC 8484) over HTTP/2 and HTTP/1.1 via hyper.
 
 use bytes::Bytes;
+use dnscraft_common::net::client_ip_from_forwarded_for;
 use dnscraft_policy::{ClientId, DnsProtocol};
 use dnscraft_proto::{Message, Rcode, RecordType};
 use dnscraft_tls::CertResolver;
@@ -17,6 +18,7 @@ use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 use tokio::net::{TcpListener as TokioTcpListener, TcpStream};
@@ -107,6 +109,8 @@ pub struct DohServeParams<H: ?Sized> {
     pub alt_svc_port: Arc<AtomicU16>,
     /// Serves non-DoH paths for private sources on a local listener (web UI / API); empty → `404`.
     pub web: Arc<WebSlot>,
+    /// Reverse-proxy addresses whose `X-Forwarded-For` is honoured for DoH attribution.
+    pub trusted_proxies: Arc<RwLock<Vec<IpAddr>>>,
     /// Bound address (port 0 friendly).
     pub bound: oneshot::Sender<SocketAddr>,
     /// Set to `true` to stop accepting.
@@ -130,6 +134,8 @@ pub(crate) struct DohShared<H: ?Sized> {
     pub(crate) alt_svc_port: Arc<AtomicU16>,
     /// Web UI / API hand-off (HTTP/1.1 and HTTP/2 only).
     pub(crate) web: Arc<WebSlot>,
+    /// Reverse-proxy addresses whose `X-Forwarded-For` is honoured for DoH attribution.
+    pub(crate) trusted_proxies: Arc<RwLock<Vec<IpAddr>>>,
     /// Listener shutdown signal (graceful connection drain).
     pub(crate) shutdown: watch::Receiver<bool>,
 }
@@ -162,6 +168,7 @@ where
         event_sink,
         alt_svc_port,
         web,
+        trusted_proxies,
         bound,
         mut shutdown,
     } = params;
@@ -200,6 +207,7 @@ where
         event_sink,
         alt_svc_port,
         web,
+        trusted_proxies,
         shutdown: shutdown.clone(),
     });
 
@@ -564,9 +572,10 @@ where
     H: QueryHandler,
 {
     let (parts, body) = req.into_parts();
+    let (source, peer_ip) = effective_doh_source(&shared, peer, &parts.headers);
     // Path / Client-ID gate first: unknown paths are refused before any body is read.
     let client_id_state =
-        match resolve_path_client_id(&shared, peer, &parse_doh_path(parts.uri.path())) {
+        match resolve_path_client_id(&shared, source, &parse_doh_path(parts.uri.path())) {
             Ok(state) => state,
             Err(status) => return status_empty(status),
         };
@@ -580,7 +589,7 @@ where
         r = Limited::new(body, MAX_MESSAGE_LEN + 1).collect() => match r {
             Ok(c) => c.to_bytes(),
             Err(_) => {
-                strike_malformed(&shared, peer);
+                strike_malformed(&shared, source);
                 return status_empty(StatusCode::PAYLOAD_TOO_LARGE);
             }
         },
@@ -590,13 +599,14 @@ where
         }
     };
     if collected.len() > MAX_MESSAGE_LEN {
-        strike_malformed(&shared, peer);
+        strike_malformed(&shared, source);
         return status_empty(StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     let parts_out = process_doh_request(
         &shared,
-        peer,
+        source,
+        peer_ip,
         client_id_state,
         &parts.method,
         &parts.uri,
@@ -607,13 +617,35 @@ where
     parts_to_response(parts_out)
 }
 
+/// Effective DoH client IP: `X-Forwarded-For` when the TCP peer is a trusted proxy.
+pub(crate) fn effective_doh_source<H: ?Sized>(
+    shared: &DohShared<H>,
+    peer: IpAddr,
+    headers: &HeaderMap,
+) -> (IpAddr, Option<IpAddr>) {
+    let peer = peer.to_canonical();
+    let trusted = shared
+        .trusted_proxies
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let xff = headers
+        .get(header::HeaderName::from_static("x-forwarded-for"))
+        .and_then(|value| value.to_str().ok());
+    let source = client_ip_from_forwarded_for(peer, &trusted, xff);
+    let peer_ip = (source != peer).then_some(peer);
+    (source, peer_ip)
+}
+
 /// Shared DoH admission/`handle_wire` for HTTP/1.1, HTTP/2, and HTTP/3.
 ///
 /// `client_id_state` comes from [`resolve_path_client_id`], which callers run before reading
-/// the body.
+/// the body. `source` is the effective client IP (possibly from `X-Forwarded-For`);
+/// `peer_ip` is the TCP peer when it differs from `source`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn process_doh_request<H>(
     shared: &Arc<DohShared<H>>,
-    peer: IpAddr,
+    source: IpAddr,
+    peer_ip: Option<IpAddr>,
     client_id_state: ClientIdState,
     method: &Method,
     uri: &Uri,
@@ -626,7 +658,7 @@ where
     let wire = match extract_wire(method, uri, content_type_of(headers), &body) {
         Ok(w) => w,
         Err(e) => {
-            strike_malformed(shared, peer);
+            strike_malformed(shared, source);
             let status = match e {
                 DohWireError::BadRequest => StatusCode::BAD_REQUEST,
                 DohWireError::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
@@ -643,8 +675,9 @@ where
         listener_id: shared.listener.id.clone(),
         node_id: shared.listener.node_id.clone(),
         exposure: shared.listener.exposure,
-        source: peer,
-        arrival: peer.to_canonical(),
+        source,
+        peer_ip,
+        arrival: source.to_canonical(),
         client_id: match &client_id_state {
             ClientIdState::Registered(id) => Some(id.clone()),
             _ => None,
@@ -661,7 +694,7 @@ where
             .admission
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        adm.check(&shared.listener, peer, &client_id_state, now)
+        adm.check(&shared.listener, source, &client_id_state, now)
     };
 
     match decision {

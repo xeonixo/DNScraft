@@ -61,7 +61,7 @@ pub fn write_events_blocking(mut rx: mpsc::Receiver<QueryEvent>, ip_truncate: Ip
 }
 
 fn event_json(event: &QueryEvent, ip_truncate: IpTruncate) -> Value {
-    serde_json::json!({
+    let mut value = serde_json::json!({
         "time": unix_seconds(event.time),
         "protocol": event.protocol.as_str(),
         "listener_id": event.listener_id.as_str(),
@@ -75,7 +75,11 @@ fn event_json(event: &QueryEvent, ip_truncate: IpTruncate) -> Value {
         "duration_ms": event.duration.as_millis() as u64,
         "view_id": event.decision.view_id.as_str(),
         "profile_id": event.decision.profile_id.as_str(),
-    })
+    });
+    if let Some(peer) = event.peer_ip {
+        value["peer_ip"] = serde_json::json!(ip_truncate.truncate(peer));
+    }
+    value
 }
 
 fn unix_seconds(time: SystemTime) -> f64 {
@@ -107,6 +111,7 @@ mod tests {
             protocol: DnsProtocol::Udp53,
             listener_id: ListenerId::new("lan-udp").unwrap(),
             source: Ipv4Addr::new(192, 0, 2, 10).into(),
+            peer_ip: None,
             client_id: None,
             query: Query {
                 name: Name::from_ascii("a\"b.example.com.").unwrap(),

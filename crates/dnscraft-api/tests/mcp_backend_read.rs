@@ -87,6 +87,7 @@ fn event(
         protocol: DnsProtocol::Udp53,
         listener_id: ListenerId::new("lan-udp").unwrap(),
         source: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
+        peer_ip: None,
         client_id: client_id.and_then(|id| ClientId::new(id).ok()),
         query: Query {
             name: Name::from_ascii(&format!("{domain}.")).unwrap(),

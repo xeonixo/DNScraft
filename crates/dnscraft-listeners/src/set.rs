@@ -40,6 +40,8 @@ pub struct ListenerSet<H: QueryHandler + ?Sized = PolicyEngine> {
     admission: Arc<Mutex<Admission>>,
     ddr: Arc<RwLock<DdrEndpoints>>,
     web: Arc<WebSlot>,
+    /// Shared with DoH listeners; updated from `control_api.trusted_proxies`.
+    trusted_proxies: Arc<RwLock<Vec<IpAddr>>>,
     public_domain: String,
     node_id: Option<NodeId>,
     inner: Mutex<Inner>,
@@ -104,6 +106,9 @@ pub struct ListenerSetParams<H: QueryHandler + ?Sized = PolicyEngine> {
     /// classify loopback as public and exercise public admission and bans from
     /// `127.0.0.1` without real public peers.
     pub classify: SourceClassifier,
+    /// Reverse-proxy addresses whose `X-Forwarded-For` is honoured on DoH.
+    /// Defaults to empty; the assembler copies `control_api.trusted_proxies`.
+    pub trusted_proxies: Vec<IpAddr>,
 }
 
 impl ListenerSet<PolicyEngine> {
@@ -130,6 +135,7 @@ impl ListenerSet<PolicyEngine> {
             clock,
             public_domain,
             classify: default_classifier(),
+            trusted_proxies: Vec::new(),
         })
         .await
     }
@@ -149,6 +155,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
             client_ids,
             classify,
             node_id,
+            trusted_proxies,
         } = params;
         let config = filter_listeners_for_node(config, node_id.as_ref());
 
@@ -177,6 +184,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
             admission,
             ddr,
             web: Arc::default(),
+            trusted_proxies: Arc::new(RwLock::new(trusted_proxies)),
             public_domain,
             node_id,
             inner: Mutex::new(Inner {
@@ -227,6 +235,17 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
     /// Slot for the web UI / API handler served on local DoH listeners (empty → `404`).
     pub fn web_slot(&self) -> Arc<WebSlot> {
         Arc::clone(&self.web)
+    }
+
+    /// Replaces the DoH trusted-proxy list (typically from `control_api.trusted_proxies`).
+    ///
+    /// Live DoH listeners share this list; the change applies to subsequent requests
+    /// without restarting listeners.
+    pub fn set_trusted_proxies(&self, proxies: Vec<IpAddr>) {
+        *self
+            .trusted_proxies
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = proxies;
     }
 
     /// Rebinds only listeners whose [`ListenerConfig`] changed; unchanged keep sockets.
@@ -475,6 +494,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
                         sni_gate: Arc::clone(&self.sni_gate),
                         event_sink: Some(Arc::clone(&self.sink)),
                         alt_svc_port: Arc::clone(&alt_svc_port),
+                        trusted_proxies: Arc::clone(&self.trusted_proxies),
                         bound: h3_bound_tx,
                         shutdown: shutdown_rx.clone(),
                     }));
@@ -491,6 +511,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
                         event_sink: Some(Arc::clone(&self.sink)),
                         alt_svc_port: Arc::clone(&alt_svc_port),
                         web: Arc::clone(&self.web),
+                        trusted_proxies: Arc::clone(&self.trusted_proxies),
                         bound: tcp_bound_tx,
                         shutdown: shutdown_rx,
                     }));
@@ -546,6 +567,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
                         event_sink: Some(Arc::clone(&self.sink)),
                         alt_svc_port,
                         web: Arc::clone(&self.web),
+                        trusted_proxies: Arc::clone(&self.trusted_proxies),
                         bound: bound_tx,
                         shutdown: shutdown_rx,
                     }))
@@ -822,6 +844,7 @@ mod tests {
             public_domain: "example.com".into(),
             client_ids: Arc::new(EmptyClientIds),
             classify: default_classifier(),
+            trusted_proxies: Vec::new(),
         })
         .await
         .unwrap();
@@ -858,6 +881,7 @@ mod tests {
             public_domain: "example.com".into(),
             client_ids: Arc::new(EmptyClientIds),
             classify: default_classifier(),
+            trusted_proxies: Vec::new(),
         })
         .await
         .unwrap();

@@ -414,6 +414,7 @@ where
         node_id: shared.listener.node_id.clone(),
         exposure: shared.listener.exposure,
         source: peer_ip,
+        peer_ip: None,
         arrival: identity.arrival.to_canonical(),
         client_id: identity.meta_client_id(),
         size_limit: MAX_MESSAGE_LEN,

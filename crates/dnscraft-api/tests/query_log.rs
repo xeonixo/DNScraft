@@ -95,6 +95,7 @@ fn sample_event(time: SystemTime, index: usize) -> QueryEvent {
         protocol,
         listener_id: ListenerId::new("lan-udp").unwrap(),
         source: IpAddr::V4(Ipv4Addr::new(192, 0, 2, (index % 200 + 1) as u8)),
+        peer_ip: None,
         client_id: (index.is_multiple_of(7))
             .then(|| dnscraft_policy::ClientId::new("iphone-k7q2x9").unwrap()),
         query: Query {
@@ -609,6 +610,58 @@ async fn query_log_rows_carry_the_directory_device_id() {
         .await
         .unwrap();
     assert_eq!(page.records.len(), 2);
+}
+
+/// DoH behind a trusted proxy: effective source is the remote client, so the
+/// proxy's directory name must not win; the Client ID label does. `peer_ip`
+/// records the proxy.
+#[tokio::test]
+async fn query_log_names_client_id_when_effective_source_bypasses_proxy_directory() {
+    let clock = Arc::new(ManualClock::new(base_time()));
+    let db = Db::open_in_memory(clock).await.unwrap();
+    let log = QueryLog::new(db, dnscraft_api::QueryLogConfig::default(), "node-a")
+        .with_client_enricher(Arc::new(ProxyClients));
+
+    let mut event = client_id_event(
+        at_secs(BASE_SECS - 1),
+        Ipv4Addr::new(198, 51, 100, 7),
+        "goup-monitor",
+        Some("GoUp-monitor"),
+    );
+    event.peer_ip = Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)));
+    log.insert_batch(vec![event]).await.unwrap();
+
+    let page = log
+        .list(&QueryLogFilter {
+            client_id: Some("goup-monitor".to_owned()),
+            limit: 10,
+            ..default_filter()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.records.len(), 1);
+    let record = &page.records[0];
+    assert_eq!(record["source_ip"], "198.51.100.7");
+    assert_eq!(record["peer_ip"], "10.0.0.1");
+    assert_eq!(record["client"]["display_name"], "GoUp-monitor");
+    assert_eq!(record["client"]["source"], "client_id");
+}
+
+/// Directory that only knows the reverse proxy (10.0.0.1).
+struct ProxyClients;
+
+impl ClientEnricher for ProxyClients {
+    fn by_ip(&self, ip: IpAddr) -> Option<ClientView> {
+        (ip == IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))).then(|| ClientView {
+            id: "proxy-1".to_owned(),
+            display_name: "#ELMO NginxProxy".to_owned(),
+            source: "unifi".to_owned(),
+            macs: Vec::new(),
+            vlan_id: None,
+            vlan_name: None,
+            local_domain: None,
+        })
+    }
 }
 
 #[tokio::test]

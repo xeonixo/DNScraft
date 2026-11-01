@@ -1,6 +1,39 @@
 //! Network helper functions.
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+/// Resolves the client address behind a reverse proxy.
+///
+/// When `peer` is not in `trusted`, returns `peer` (spoofed
+/// `X-Forwarded-For` from untrusted clients is ignored). When `peer` is
+/// trusted, walks `x_forwarded_for` from the right (the hop closest to us)
+/// and returns the first address that is not itself trusted. The leftmost
+/// entries are client-controlled and are never trusted alone. A missing
+/// header, a malformed entry, or a list made only of trusted proxies falls
+/// back to `peer`.
+pub fn client_ip_from_forwarded_for(
+    peer: IpAddr,
+    trusted: &[IpAddr],
+    x_forwarded_for: Option<&str>,
+) -> IpAddr {
+    let peer = peer.to_canonical();
+    if !trusted.iter().any(|ip| ip.to_canonical() == peer) {
+        return peer;
+    }
+    let Some(raw) = x_forwarded_for else {
+        return peer;
+    };
+    for entry in raw.rsplit(',') {
+        let Ok(ip) = entry.trim().parse::<IpAddr>() else {
+            return peer;
+        };
+        let ip = ip.to_canonical();
+        if !trusted.iter().any(|t| t.to_canonical() == ip) {
+            return ip;
+        }
+    }
+    peer
+}
+
 /// Whether the host portion of a URL is loopback (`localhost` or an IP loopback).
 pub fn is_loopback_host_str(rest: &str) -> bool {
     let host_port = rest.split('/').next().unwrap_or(rest);
@@ -111,5 +144,59 @@ mod tests {
         assert!(is_private(IpAddr::V4(Ipv4Addr::LOCALHOST)));
         assert!(!is_private(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))));
         assert!(is_private(IpAddr::V6(Ipv6Addr::LOCALHOST)));
+    }
+
+    #[test]
+    fn forwarded_for_ignores_untrusted_peer() {
+        let peer = "203.0.113.5".parse::<IpAddr>().unwrap();
+        assert_eq!(
+            client_ip_from_forwarded_for(peer, &[], Some("198.51.100.7")),
+            peer
+        );
+    }
+
+    #[test]
+    fn forwarded_for_honours_trusted_proxy() {
+        let peer = "10.0.0.1".parse::<IpAddr>().unwrap();
+        assert_eq!(
+            client_ip_from_forwarded_for(peer, &[peer], Some("198.51.100.7, 10.0.0.1")),
+            "198.51.100.7".parse::<IpAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn forwarded_for_skips_spoofed_leftmost_and_chained_proxies() {
+        let peer = "10.0.0.1".parse::<IpAddr>().unwrap();
+        let inner = "10.0.0.2".parse::<IpAddr>().unwrap();
+        assert_eq!(
+            client_ip_from_forwarded_for(
+                peer,
+                &[peer],
+                Some("192.0.2.66, 198.51.100.7, 10.0.0.1"),
+            ),
+            "198.51.100.7".parse::<IpAddr>().unwrap()
+        );
+        assert_eq!(
+            client_ip_from_forwarded_for(
+                peer,
+                &[peer, inner],
+                Some("198.51.100.7, 10.0.0.2, 10.0.0.1"),
+            ),
+            "198.51.100.7".parse::<IpAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn forwarded_for_falls_back_on_malformed_or_all_trusted() {
+        let peer = "10.0.0.1".parse::<IpAddr>().unwrap();
+        assert_eq!(
+            client_ip_from_forwarded_for(peer, &[peer], Some("not-an-ip")),
+            peer
+        );
+        assert_eq!(
+            client_ip_from_forwarded_for(peer, &[peer], Some("10.0.0.1, 10.0.0.1")),
+            peer
+        );
+        assert_eq!(client_ip_from_forwarded_for(peer, &[peer], None), peer);
     }
 }

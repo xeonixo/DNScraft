@@ -1328,6 +1328,10 @@ fn prepare_row(
     if let Some(device_id) = &device_id {
         record["device_id"] = json!(device_id);
     }
+    if let Some(peer_ip) = event.peer_ip {
+        let (peer, _) = truncate_ip(peer_ip, config.ip_truncate);
+        record["peer_ip"] = json!(peer.to_string());
+    }
     let record = record.to_string();
     Ok(PreparedRow {
         id,
@@ -1762,6 +1766,7 @@ mod tests {
             protocol: DnsProtocol::Udp53,
             listener_id: ListenerId::new("lan-udp").unwrap(),
             source: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+            peer_ip: None,
             client_id: None,
             query: Query {
                 name: Name::from_ascii(&format!("{name}.example.com.")).unwrap(),

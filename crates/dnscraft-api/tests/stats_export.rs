@@ -116,6 +116,7 @@ impl Spec {
             protocol: self.protocol,
             listener_id: ListenerId::new("lan-udp").unwrap(),
             source: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
+            peer_ip: None,
             client_id: self.client.as_deref().map(|id| ClientId::new(id).unwrap()),
             query: Query {
                 name: Name::from_ascii(&name).unwrap(),

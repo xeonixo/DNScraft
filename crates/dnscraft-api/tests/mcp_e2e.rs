@@ -962,6 +962,7 @@ fn sample_event(seconds: u64) -> QueryEvent {
         protocol: DnsProtocol::Udp53,
         listener_id: ListenerId::new("udp-53").unwrap(),
         source: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
+        peer_ip: None,
         client_id: None,
         query: Query {
             name: Name::from_ascii("www.example.test.").unwrap(),

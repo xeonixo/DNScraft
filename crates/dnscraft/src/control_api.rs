@@ -82,14 +82,20 @@ pub(crate) async fn start(
         )
     })?;
 
+    // Same list the control API uses for XFF; DoH attribution and admission honour it too.
+    set.set_trusted_proxies(api_config.trusted_proxies.clone());
+
     let shared_port = shared_listener_port(set, &api_config);
-    if let (Some(listener), Some(_)) = (api_config.shared_doh_listener.as_deref(), shared_port) {
+    if let (Some(listener), Some(_)) = (api_config.shared_doh_listener.as_deref(), shared_port)
+        && api_config.trusted_proxies.is_empty()
+    {
         tracing::warn!(
             shared_doh_listener = listener,
-            "control-api shares a DoH listener: source classification uses the TCP peer address, \
-             and Docker userland-proxy, NAT or reverse proxies make all clients look private \
-             (open DoH without client-id, web UI reachable, no bans). Use host networking or \
-             iptables publishing that preserves source IPs; see deploy/README.md"
+            "control-api shares a DoH listener without trusted_proxies: source classification \
+             uses the TCP peer address, and Docker userland-proxy, NAT or reverse proxies make \
+             all clients look private (open DoH without client-id, web UI reachable, no bans). \
+             Set control_api.trusted_proxies and forward X-Forwarded-For, or use host networking \
+             / iptables publishing that preserves source IPs; see deploy/README.md"
         );
     }
     let hostname = api_hostname(config);

@@ -201,9 +201,11 @@ When building the IP index, later lower-priority sources lose collisions:
 2. **Manual CIDR** — **longest prefix wins** among overlapping ranges
 3. **UniFi** (classic + Integration snapshot)
 
-The query log uses the same IP match. A DoH/DoT request without a directory match
-falls back to the label of its registered Client ID (see `SPEC-policy.md`, log name
-precedence), and a directory match always wins.
+The query log uses the same IP match against the **effective** source IP (for DoH
+behind a trusted reverse proxy, that is the client from `X-Forwarded-For`, not the
+proxy). A DoH/DoT request without a directory match falls back to the label of its
+registered Client ID (see `SPEC-policy.md`, log name precedence), and a directory
+match always wins.
 
 Name collisions **within the same local_domain** after normalisation:
 **first-seen wins**. The label assignment (`client id → dns_label`) is persisted

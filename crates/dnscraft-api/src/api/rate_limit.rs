@@ -236,32 +236,12 @@ impl RateLimiter {
     }
 }
 
-/// Resolves the rate-limit source: the trusted peer IP, unless the peer is a
-/// configured `trusted_proxies` address. Then `X-Forwarded-For` is walked from
-/// the right (the entry closest to us, appended by our proxy chain) and the
-/// first entry that is not itself a trusted proxy is the client. The leftmost
-/// entry is client-controlled and is never trusted. A malformed entry, a
-/// missing header, or a list made only of trusted proxies falls back to the peer.
+/// Resolves the rate-limit source via [`dnscraft_common::net::client_ip_from_forwarded_for`].
 fn resolve_source(peer: IpAddr, trusted: &[IpAddr], headers: &HeaderMap) -> IpAddr {
-    if !trusted.contains(&peer) {
-        return peer;
-    }
-    let Some(raw) = headers
+    let xff = headers
         .get(HeaderName::from_static("x-forwarded-for"))
-        .and_then(|value| value.to_str().ok())
-    else {
-        return peer;
-    };
-    for entry in raw.rsplit(',') {
-        let Ok(ip) = entry.trim().parse::<IpAddr>() else {
-            return peer;
-        };
-        let ip = ip.to_canonical();
-        if !trusted.contains(&ip) {
-            return ip;
-        }
-    }
-    peer
+        .and_then(|value| value.to_str().ok());
+    dnscraft_common::net::client_ip_from_forwarded_for(peer, trusted, xff)
 }
 
 /// The client address for a request: the trusted-proxy rule of

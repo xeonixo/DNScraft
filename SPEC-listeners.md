@@ -78,7 +78,12 @@ A **listener** is one `(id, protocol, socket address, exposure)` entry:
 Every query is admitted before policy sees it:
 
 1. **Source class:** `private` = RFC 1918, loopback, link-local, ULA `fc00::/7`, CGNAT `100.64.0.0/10`,
-   IPv4-mapped forms of these; everything else is `public`.
+   IPv4-mapped forms of these; everything else is `public`. For DoH, the classified address is the
+   **effective client IP**: when the TCP peer is in `control_api.trusted_proxies`, the peer's
+   `X-Forwarded-For` is walked right-to-left (same rule as the control API) and the first
+   non-trusted hop is used; otherwise the TCP peer. Spoofed XFF from untrusted peers is ignored.
+   Connection accept still keys off the TCP peer (so a reverse proxy keeps its connection);
+   per-request path admission, rate limits, and ban strikes use the effective IP.
 2. **Do53 from a public source** (any listener): dropped silently (UDP) / connection closed (TCP);
    counted as `listeners.admission.public_do53`. Never answered (SPEC.md "Internet exposure").
 3. **Public listener, public source:** requires a registered Client ID.
@@ -191,10 +196,12 @@ alpn = ["h2", "http/1.1"]           # DoH over TCP; default ["h2", "http/1.1"]
 ### Query events (for the query log)
 
 - After each answered query the listener sends a `QueryEvent { time, listener_id, protocol, source_ip,
-  client_id, query, rcode, answer_size, duration, decision: DecisionRecord }` to a `QueryEventSink`
-  trait object; events with `loggable == false` are not sent. The sink is non-blocking (bounded channel
-  provided by this crate); when full, events are dropped and counted (`events_dropped`) — logging never
-  slows answering. `control-api` implements the consumer later.
+  peer_ip?, client_id, query, rcode, answer_size, duration, decision: DecisionRecord }` to a
+  `QueryEventSink` trait object; events with `loggable == false` are not sent. `source_ip` is the
+  effective client (see trusted-proxy rule above). `peer_ip` is set only when DoH resolved a different
+  TCP peer via a trusted proxy. The sink is non-blocking (bounded channel provided by this crate);
+  when full, events are dropped and counted (`events_dropped`) — logging never slows answering.
+  `control-api` implements the consumer later.
 
 ### Runtime, reload and status
 

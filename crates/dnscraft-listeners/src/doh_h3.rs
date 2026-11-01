@@ -19,8 +19,8 @@ use crate::admission::Admission;
 use crate::clock::{Clock, add_duration, wait_until};
 use crate::config::{Limits, ListenerConfig};
 use crate::doh::{
-    ConnActivity, DohShared, DohStats, needs_address_validation, process_doh_request,
-    release_per_source, resolve_path_client_id,
+    ConnActivity, DohShared, DohStats, effective_doh_source, needs_address_validation,
+    process_doh_request, release_per_source, resolve_path_client_id,
 };
 use crate::doh_request::MAX_DOH_HEADER_LIST_SIZE;
 use crate::doh_request::parse_doh_path;
@@ -61,6 +61,8 @@ pub struct DohH3ServeParams<H: ?Sized> {
     pub event_sink: Option<Arc<dyn QueryEventSink>>,
     /// Filled with the bound UDP port for TCP `Alt-Svc`.
     pub alt_svc_port: Arc<AtomicU16>,
+    /// Reverse-proxy addresses whose `X-Forwarded-For` is honoured for DoH attribution.
+    pub trusted_proxies: Arc<std::sync::RwLock<Vec<IpAddr>>>,
     /// Bound address (port 0 friendly).
     pub bound: oneshot::Sender<SocketAddr>,
     /// Stop accepting.
@@ -94,6 +96,7 @@ where
         sni_gate,
         event_sink,
         alt_svc_port,
+        trusted_proxies,
         bound,
         mut shutdown,
     } = params;
@@ -159,6 +162,7 @@ where
         event_sink,
         alt_svc_port,
         web: Arc::default(),
+        trusted_proxies,
         shutdown: shutdown.clone(),
     });
     let shared = Arc::new(DohH3Shared {
@@ -417,10 +421,11 @@ where
         }
     };
     let (parts, ()) = req.into_parts();
+    let (source, peer_ip) = effective_doh_source(&shared.doh, peer, &parts.headers);
 
     // Path / Client-ID gate before reading the body (same as HTTP/2 and HTTP/1.1).
     let client_id_state =
-        match resolve_path_client_id(&shared.doh, peer, &parse_doh_path(parts.uri.path())) {
+        match resolve_path_client_id(&shared.doh, source, &parse_doh_path(parts.uri.path())) {
             Ok(state) => state,
             Err(status) => {
                 let resp = http::Response::builder()
@@ -452,7 +457,7 @@ where
         body.extend_from_slice(chunk.chunk());
         chunk.advance(chunk.remaining());
         if body.len() > MAX_MESSAGE_LEN {
-            crate::doh::strike_malformed(&shared.doh, peer);
+            crate::doh::strike_malformed(&shared.doh, source);
             let resp = http::Response::builder()
                 .status(http::StatusCode::PAYLOAD_TOO_LARGE)
                 .body(())
@@ -478,7 +483,8 @@ where
 
     let mut out = process_doh_request(
         &shared.doh,
-        peer,
+        source,
+        peer_ip,
         client_id_state,
         &method,
         &uri,

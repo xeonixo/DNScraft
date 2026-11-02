@@ -37,6 +37,7 @@
 
 	let result = $state<Result<NotificationsData>>({ kind: 'loading' });
 	let allowedHosts = $state('');
+	let allowPrivateDestinations = $state(false);
 	let draft = $state<DraftChannel | null>(null);
 	let editingId = $state<string | null>(null);
 	let busy = $state(false);
@@ -51,6 +52,7 @@
 		result = await settle(getNotifications());
 		if (result.kind === 'ok') {
 			allowedHosts = result.data.allowed_hosts.join('\n');
+			allowPrivateDestinations = result.data.allow_private_destinations === true;
 		}
 		if (isAdmin) {
 			try {
@@ -144,6 +146,19 @@
 		};
 	}
 
+	function notificationSettingsBody(): {
+		allowed_hosts: string[];
+		allow_private_destinations: boolean;
+	} {
+		return {
+			allowed_hosts: allowedHosts
+				.split(/[\n,]/)
+				.map((host) => host.trim())
+				.filter(Boolean),
+			allow_private_destinations: allowPrivateDestinations,
+		};
+	}
+
 	async function saveDraft(): Promise<void> {
 		if (!draft || !isAdmin) return;
 		busy = true;
@@ -156,16 +171,35 @@
 			];
 			const saved = await putNotifications(
 				{
-					allowed_hosts: allowedHosts
-						.split(/[\n,]/)
-						.map((host) => host.trim())
-						.filter(Boolean),
+					...notificationSettingsBody(),
 					channels: next,
 				},
 				{ ifMatch: configVersion !== null ? ifMatchFor(configVersion) : undefined },
 			);
 			configVersion = saved.config_version;
 			draft = null;
+			announce(m.alerts_channels_saved());
+			await load();
+		} catch (cause) {
+			failure = failureOf(cause);
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function saveNotificationSettings(): Promise<void> {
+		if (!isAdmin) return;
+		busy = true;
+		failure = null;
+		try {
+			const saved = await putNotifications(
+				{
+					...notificationSettingsBody(),
+					channels: channels.map((channel) => channelPayload(channel, false)),
+				},
+				{ ifMatch: configVersion !== null ? ifMatchFor(configVersion) : undefined },
+			);
+			configVersion = saved.config_version;
 			announce(m.alerts_channels_saved());
 			await load();
 		} catch (cause) {
@@ -185,10 +219,7 @@
 				.map((channel) => channelPayload(channel, false));
 			const saved = await putNotifications(
 				{
-					allowed_hosts: allowedHosts
-						.split(/[\n,]/)
-						.map((host) => host.trim())
-						.filter(Boolean),
+					...notificationSettingsBody(),
 					channels: next,
 				},
 				{ ifMatch: configVersion !== null ? ifMatchFor(configVersion) : undefined },
@@ -249,6 +280,19 @@
 				></textarea>
 				<span id="alerts-hosts-hint" class="hint">{m.alerts_channels_allowed_hosts_hint()}</span>
 			</label>
+			<label class="switch-row hosts-switch">
+				<span>{m.alerts_channels_allow_private()}</span>
+				<Switch
+					bind:checked={allowPrivateDestinations}
+					aria-label={m.alerts_channels_allow_private()}
+				/>
+			</label>
+			<p class="hint">{m.alerts_channels_allow_private_hint()}</p>
+			<p class="actions">
+				<Button variant="primary" disabled={busy} onclick={() => void saveNotificationSettings()}>
+					{m.alerts_channels_save_settings()}
+				</Button>
+			</p>
 		{/if}
 
 		<GroupedList>
@@ -403,6 +447,10 @@
 
 	.hosts-label {
 		font: var(--text-body);
+	}
+
+	.hosts-switch {
+		margin-top: 0.5rem;
 	}
 
 	.field,

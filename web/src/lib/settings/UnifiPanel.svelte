@@ -475,6 +475,36 @@
 					/>
 				</div>
 
+				<label class="field-label" for="unifi-offline">{m.settings_clients_offline_retain()}</label>
+				<div class="poll-row">
+					<input
+						id="unifi-offline"
+						class="field poll"
+						type="number"
+						min="1"
+						max="3650"
+						bind:value={form.offline_retain_days}
+						aria-describedby="unifi-offline-unit"
+					/>
+					<span id="unifi-offline-unit" class="unit">{m.settings_clients_offline_retain_unit()}</span>
+				</div>
+				<p class="hint">{m.settings_clients_offline_retain_note()}</p>
+
+				<label class="field-label" for="unifi-ipv6-ttl">{m.settings_clients_ipv6_ttl()}</label>
+				<div class="poll-row">
+					<input
+						id="unifi-ipv6-ttl"
+						class="field poll"
+						type="number"
+						min="1"
+						max="3650"
+						bind:value={form.ipv6_address_ttl_days}
+						aria-describedby="unifi-ipv6-ttl-unit"
+					/>
+					<span id="unifi-ipv6-ttl-unit" class="unit">{m.settings_clients_ipv6_ttl_unit()}</span>
+				</div>
+				<p class="hint">{m.settings_clients_ipv6_ttl_note()}</p>
+
 				<p class="field-label">{m.settings_unifi_bindings()}</p>
 				{#each nodeIds as nodeId (nodeId)}
 					<div class="binding-row">
@@ -587,6 +617,12 @@
 	.unit {
 		font-size: 0.84375rem;
 		color: var(--label-2);
+	}
+
+	.hint {
+		margin: 0 0 0.75rem;
+		color: var(--label-2);
+		font-size: 0.8125rem;
 	}
 
 	.segment {

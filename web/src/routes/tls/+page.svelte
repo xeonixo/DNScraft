@@ -36,6 +36,7 @@
 	import { m } from '$lib/paraglide/messages';
 	import { displayText } from '$lib/safe-text';
 	import { resolve } from '$app/paths';
+	import { page } from '$app/state';
 
 	type Tab = 'overview' | 'cert' | 'provider' | 'dns';
 
@@ -79,6 +80,12 @@
 		{ value: 'none', label: m.tls_dns_provider_none() },
 	];
 
+	const filterNode = $derived(page.url.searchParams.get('node')?.trim() || '');
+	const tabFromUrl = $derived.by((): Tab | null => {
+		const raw = page.url.searchParams.get('tab');
+		return raw === 'overview' || raw === 'cert' || raw === 'provider' || raw === 'dns' ? raw : null;
+	});
+
 	let tab = $state<Tab>('overview');
 	let status = $state<Result<TlsStatus>>({ kind: 'loading' });
 	let configVersion = $state<number | null>(null);
@@ -112,6 +119,13 @@
 	let hasCloudflareToken = $state(false);
 	let certPem = $state('');
 	let keyPem = $state('');
+	let formKeyType = $state('ecdsa_p256');
+	let formRenewBefore = $state('30d');
+	let formExpiryWarn = $state('14d');
+	let formDyndnsInterval = $state('5m');
+	let formDyndnsEchoUrl = $state('');
+	let formDyndnsRecordInventory = $state(false);
+	let certAdvancedOpen = $state(false);
 
 	const data = $derived(status.kind === 'ok' ? status.data : null);
 	/** Config can load even when the TLS engine is not running (empty public_domain). */
@@ -240,6 +254,11 @@
 		if (raw === 'EcdsaP384' || raw === 'p384' || raw === 'ecdsa_p384') return 'ecdsa_p384';
 		return 'ecdsa_p256';
 	}
+
+	const keyTypeOptions: { value: string; label: string }[] = [
+		{ value: 'ecdsa_p256', label: m.tls_key_type_ecdsa_p256() },
+		{ value: 'ecdsa_p384', label: m.tls_key_type_ecdsa_p384() },
+	];
 
 	function reservedLabelsFor(existing: unknown, hostnames: string[]): string[] {
 		const labels = new SvelteSet<string>(Array.isArray(existing) ? existing.map(String) : []);
@@ -381,6 +400,9 @@
 			formCfToken = '';
 			formCfTokenClear = false;
 			formDomain = String(tls.tls.public_domain ?? '');
+			formKeyType = normalizeKeyType(tls.tls.key_type);
+			formRenewBefore = String(tls.tls.renew_before ?? '30d');
+			formExpiryWarn = String(tls.tls.expiry_warn ?? '14d');
 			const provider = objectField(tls.tls, 'dns_provider');
 			const kind = String(provider.kind ?? 'cloudflare');
 			formDnsProvider =
@@ -407,6 +429,9 @@
 			formIpv6Interfaces = Array.isArray(dyndns.interfaces)
 				? dyndns.interfaces.map(String).join(', ')
 				: '';
+			formDyndnsInterval = String(dyndns.interval ?? '5m');
+			formDyndnsEchoUrl = String(dyndns.echo_url ?? '');
+			formDyndnsRecordInventory = dyndns.record_inventory === true;
 			formNodeProfiles = profilesFromWire(dyndns, clusterNodeIds, formDomain);
 			if (formNodeProfiles.length > 0) {
 				const entry = formNodeProfiles.find((p) => p.public_entry);
@@ -477,7 +502,9 @@
 			...tlsConfig,
 			mode: formSource,
 			public_domain: formDomain.trim(),
-			key_type: normalizeKeyType(tlsConfig.key_type),
+			key_type: normalizeKeyType(formKeyType),
+			renew_before: formRenewBefore.trim() || '30d',
+			expiry_warn: formExpiryWarn.trim() || '14d',
 			dns_provider: {
 				...objectField(tlsConfig, 'dns_provider'),
 				kind: formDnsProvider,
@@ -517,6 +544,9 @@
 				ipv6_identifier: flatIpv6Ident,
 				interfaces: flatInterfaces,
 				proxied: false,
+				interval: formDyndnsInterval.trim() || '5m',
+				echo_url: formDyndnsEchoUrl.trim(),
+				record_inventory: formDyndnsRecordInventory,
 			},
 			// Engine apply requires a notifications object; keep prior values.
 			notifications: {
@@ -573,7 +603,17 @@
 	}
 
 	onMount(() => {
-		void load();
+		if (tabFromUrl) tab = tabFromUrl;
+		else if (filterNode) tab = 'dns';
+		void load().then(() => {
+			if (!filterNode) return;
+			requestAnimationFrame(() => {
+				document.getElementById(`tls-node-host-${filterNode}`)?.scrollIntoView({
+					block: 'center',
+					behavior: 'smooth',
+				});
+			});
+		});
 	});
 </script>
 
@@ -603,6 +643,13 @@
 
 <div class="tls">
 	<p class="lead">{m.tls_lead()}</p>
+
+	{#if filterNode}
+		<p class="filter-banner">
+			{m.cluster_hub_filter_node({ node: filterNode })}
+			<a class="filter-clear" href={resolve('/tls')}>{m.cluster_hub_clear_filter()}</a>
+		</p>
+	{/if}
 
 	{#if bootstrap}
 		<div class="banner-wrap">
@@ -810,6 +857,61 @@
 								>{m.tls_action_upload()}</Button
 							>
 						{/if}
+
+						<button
+							type="button"
+							class="advanced-toggle"
+							onclick={() => (certAdvancedOpen = !certAdvancedOpen)}
+						>
+							{certAdvancedOpen ? m.tls_advanced_hide() : m.tls_advanced_show()}
+						</button>
+						{#if certAdvancedOpen}
+							<label class="field-label" for="tls-key-type">{m.tls_key_type_label()}</label>
+							<select id="tls-key-type" class="field" bind:value={formKeyType}>
+								{#each keyTypeOptions as opt (opt.value)}
+									<option value={opt.value}>{opt.label}</option>
+								{/each}
+							</select>
+							<label class="field-label" for="tls-renew-before">{m.tls_renew_before_label()}</label>
+							<input
+								id="tls-renew-before"
+								class="field mono"
+								bind:value={formRenewBefore}
+								autocomplete="off"
+							/>
+							<label class="field-label" for="tls-expiry-warn">{m.tls_expiry_warn_label()}</label>
+							<input
+								id="tls-expiry-warn"
+								class="field mono"
+								bind:value={formExpiryWarn}
+								autocomplete="off"
+							/>
+							<p class="field-label">{m.tls_dyndns_advanced_group()}</p>
+							<label class="field-label" for="tls-dyndns-interval">{m.tls_dyndns_interval_label()}</label>
+							<input
+								id="tls-dyndns-interval"
+								class="field mono"
+								bind:value={formDyndnsInterval}
+								autocomplete="off"
+							/>
+							<label class="field-label" for="tls-dyndns-echo">{m.tls_dyndns_echo_url_label()}</label>
+							<input
+								id="tls-dyndns-echo"
+								class="field mono"
+								bind:value={formDyndnsEchoUrl}
+								autocomplete="off"
+							/>
+							<div class="switch-row">
+								<div>
+									<p class="switch-title">{m.tls_dyndns_record_inventory()}</p>
+									<p class="hint tight">{m.tls_dyndns_record_inventory_hint()}</p>
+								</div>
+								<Switch
+									bind:checked={formDyndnsRecordInventory}
+									aria-label={m.tls_dyndns_record_inventory()}
+								/>
+							</div>
+						{/if}
 					</div>
 
 					{@render dnsProviderStatus()}
@@ -989,7 +1091,11 @@
 							<p class="hint tight">{m.tls_dyndns_nodes_hint()}</p>
 							<div class="node-dns-list" role="group" aria-label={m.tls_dyndns_nodes_group()}>
 								{#each formNodeProfiles as profile (profile.node_id)}
-									<div class="node-dns-row" class:node-dns-off={!profile.enabled}>
+									<div
+										class="node-dns-row"
+										class:node-dns-off={!profile.enabled}
+										class:node-dns-focus={filterNode === profile.node_id}
+									>
 										<div class="node-dns-id">
 											<span class="mono">{displayText(profile.node_id).text}</span>
 											<div class="node-dns-toggles">
@@ -1535,11 +1641,36 @@
 		background: var(--surface-2);
 	}
 
+	.filter-banner {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.75rem;
+		margin: 0 0 0.75rem;
+		color: var(--label-2);
+		font-size: 0.875rem;
+	}
+
+	.filter-clear {
+		color: var(--accent);
+		text-decoration: none;
+	}
+
+	.filter-clear:hover {
+		text-decoration: underline;
+	}
+
 	.node-dns-row {
 		display: flex;
 		flex-direction: column;
 		gap: 0.375rem;
 		padding: 0.625rem 0.75rem;
+	}
+
+	.node-dns-row.node-dns-focus {
+		outline: 2px solid var(--accent);
+		outline-offset: -2px;
+		border-radius: var(--r-control);
 	}
 
 	.node-dns-row + .node-dns-row {
@@ -1741,6 +1872,18 @@
 	.save-row {
 		display: flex;
 		justify-content: flex-end;
+	}
+
+	.advanced-toggle {
+		align-self: flex-start;
+		min-height: 2.75rem;
+		margin-top: 0.5rem;
+		padding: 0;
+		border: none;
+		background: transparent;
+		color: var(--accent);
+		font: inherit;
+		cursor: pointer;
 	}
 
 	.area {

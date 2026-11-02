@@ -36,6 +36,10 @@ export interface UnifiProfileForm {
 export interface ClientsUnifiForm {
 	local_domain: string;
 	local_domain_mode: LocalDomainMode;
+	/** Whole days; wire format `Nd` (default 7). */
+	offline_retain_days: number;
+	/** Whole days; wire format `Nd` (default 1). */
+	ipv6_address_ttl_days: number;
 	profiles: UnifiProfileForm[];
 	/** node_id → profile_id; empty string means unbound. */
 	bindings: Record<string, string>;
@@ -61,10 +65,28 @@ export const DEFAULT_PROFILE: UnifiProfileForm = {
 export const DEFAULT_UNIFI_FORM: ClientsUnifiForm = {
 	local_domain: 'home.arpa',
 	local_domain_mode: 'unifi_then_config',
+	offline_retain_days: 7,
+	ipv6_address_ttl_days: 1,
 	profiles: [{ ...DEFAULT_PROFILE }],
 	bindings: {},
 	selected_profile_id: 'default',
 };
+
+/** Parses a duration like `7d` / `24h` into whole days; falls back when unknown. */
+export function daysOf(value: unknown, fallback: number): number {
+	if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+		return Math.max(1, Math.round(value));
+	}
+	if (typeof value !== 'string') return fallback;
+	const match = /^(\d+)(s|m|h|d)?$/i.exec(value.trim());
+	if (!match) return fallback;
+	const amount = Number(match[1]);
+	const unit = (match[2] ?? 'd').toLowerCase();
+	if (unit === 's') return Math.max(1, Math.round(amount / 86_400));
+	if (unit === 'm') return Math.max(1, Math.round(amount / 1_440));
+	if (unit === 'h') return Math.max(1, Math.round(amount / 24));
+	return Math.max(1, amount);
+}
 
 function asRecord(value: unknown): Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -188,6 +210,8 @@ export function formFromClients(clients: unknown, unifiStatus?: unknown): Client
 	return {
 		local_domain: asString(section.local_domain, 'home.arpa') || 'home.arpa',
 		local_domain_mode: mode === 'config' ? 'config' : 'unifi_then_config',
+		offline_retain_days: daysOf(section.offline_retain, 7),
+		ipv6_address_ttl_days: daysOf(section.ipv6_address_ttl, 1),
 		profiles,
 		bindings,
 		selected_profile_id: profiles[0]?.id ?? 'default',
@@ -209,6 +233,8 @@ export function clientsPatchFromForm(form: ClientsUnifiForm): Record<string, unk
 	return {
 		local_domain: form.local_domain.trim() || 'home.arpa',
 		local_domain_mode: form.local_domain_mode,
+		offline_retain: `${Math.max(1, Math.round(form.offline_retain_days))}d`,
+		ipv6_address_ttl: `${Math.max(1, Math.round(form.ipv6_address_ttl_days))}d`,
 		unifi_profiles,
 		unifi_bindings,
 	};

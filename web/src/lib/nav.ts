@@ -61,6 +61,7 @@ export const navSections: NavSection[] = [
 			item('/zones', () => m.nav_zones(), 'target'),
 			item('/names', () => m.nav_names(), 'text'),
 			item('/forward-zones', () => m.nav_forward_zones(), 'arrow-right'),
+			item('/resolver', () => m.nav_resolver(), 'globe'),
 			item('/profiles', () => m.nav_profiles(), 'sliders'),
 			item('/test-query', () => m.nav_test_query(), 'play-circle'),
 		],

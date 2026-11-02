@@ -6,6 +6,7 @@
 	import GroupedRow from '$lib/components/GroupedRow.svelte';
 	import CheckSheet from '$lib/config/CheckSheet.svelte';
 	import RollbackSheet from '$lib/config/RollbackSheet.svelte';
+	import BackupsPanel from '$lib/settings/BackupsPanel.svelte';
 	import {
 		CONFIG_VERSION_CODE,
 		getConfig,
@@ -410,9 +411,7 @@
 	</GroupedList>
 {/if}
 
-<GroupedList header={m.config_section_backups()} footer={m.config_backups_detail()}>
-	<GroupedRow label={m.config_backups_label()} detail={m.config_backups_unavailable()} />
-</GroupedList>
+<BackupsPanel {isAdmin} />
 
 {#if checkSheetOpen && checked}
 	<CheckSheet

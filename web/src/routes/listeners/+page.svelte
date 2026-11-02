@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { resolve } from '$app/paths';
+	import { page } from '$app/state';
 	import Banner from '$lib/components/Banner.svelte';
 	import Button from '$lib/components/Button.svelte';
 	import ConfirmSheet from '$lib/components/ConfirmSheet.svelte';
@@ -22,13 +24,20 @@
 	} from '$lib/api/listeners';
 	import { failureOf, settle, type Result } from '$lib/api/result';
 	import { auth } from '$lib/auth/state.svelte';
-	import { formatNodesDetail, nodeChoicesFor, toggleNodeId } from '$lib/cluster/nodes';
+	import {
+		formatNodesDetail,
+		listenersForNode,
+		nodeChoicesFor,
+		toggleNodeId,
+	} from '$lib/cluster/nodes';
+	import ListenersAdvancedPanel from '$lib/listeners/ListenersAdvancedPanel.svelte';
 	import { allowsPublic, suggestListenerId, type AddrFamily } from '$lib/listeners/id';
 	import { displayText } from '$lib/safe-text';
 	import { m } from '$lib/paraglide/messages';
 
 	const isAdmin = $derived(auth.role === 'admin');
 	const protocols: ListenerBody['protocol'][] = ['udp53', 'tcp53', 'dot', 'doh', 'doq'];
+	const filterNode = $derived(page.url.searchParams.get('node')?.trim() || '');
 
 	let result = $state<Result<Listener[]>>({ kind: 'loading' });
 	let configVersion = $state<number | null>(null);
@@ -165,7 +174,7 @@
 
 	const grouped = $derived.by(() => {
 		if (result.kind !== 'ok') return [] as { protocol: Listener['protocol']; rows: Listener[] }[];
-		const rows = result.data;
+		const rows = filterNode ? listenersForNode(result.data, filterNode) : result.data;
 		return protocols.map((protocol) => ({
 			protocol,
 			rows: rows.filter((listener: Listener) => listener.protocol === protocol),
@@ -218,7 +227,7 @@
 		formPublic = false;
 		formAddress = composeAddress('ipv4', 'doh', false);
 		formH3 = false;
-		formNodes = [];
+		formNodes = filterNode ? [filterNode] : [];
 		failure = null;
 		sheetOpen = true;
 	}
@@ -288,6 +297,13 @@
 	{/if}
 </div>
 
+{#if filterNode}
+	<p class="filter-banner">
+		{m.cluster_hub_filter_node({ node: filterNode })}
+		<a class="filter-clear" href={resolve('/listeners')}>{m.cluster_hub_clear_filter()}</a>
+	</p>
+{/if}
+
 {#if hasPublic}
 	<div class="banner-wrap">
 		<Banner title={m.listeners_exposure_banner_title()}>
@@ -341,6 +357,7 @@
 	{/if}
 
 	<p class="footnote">{m.listeners_footnote()}</p>
+	<ListenersAdvancedPanel {isAdmin} />
 {/if}
 
 {#if sheetOpen && isAdmin}
@@ -457,6 +474,25 @@
 		color: var(--label-2);
 		font-size: 0.9375rem;
 		line-height: 1.35;
+	}
+
+	.filter-banner {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.75rem;
+		margin: 0 0 0.75rem;
+		color: var(--label-2);
+		font-size: 0.875rem;
+	}
+
+	.filter-clear {
+		color: var(--accent);
+		text-decoration: none;
+	}
+
+	.filter-clear:hover {
+		text-decoration: underline;
 	}
 
 	.banner-wrap {

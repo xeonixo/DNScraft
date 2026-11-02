@@ -2,6 +2,30 @@ import type { IconName, StatusTone } from '$lib/components/icons';
 import { formatNumber } from '$lib/format';
 import { m } from '$lib/paraglide/messages';
 
+/** Empty `nodes[]` means every node (listeners, views). */
+export function appliesToNode(nodes: readonly string[], nodeId: string): boolean {
+	return nodes.length === 0 || nodes.includes(nodeId);
+}
+
+export function listenersForNode<T extends { nodes: string[] }>(
+	listeners: readonly T[],
+	nodeId: string,
+): T[] {
+	return listeners.filter((row) => appliesToNode(row.nodes, nodeId));
+}
+
+export function viewsForNode<T extends { nodes: string[] }>(views: readonly T[], nodeId: string): T[] {
+	return views.filter((row) => appliesToNode(row.nodes, nodeId));
+}
+
+/** DynDNS: one profile per `node_id` (not empty=all). */
+export function dyndnsProfileForNode<T extends { node_id: string }>(
+	profiles: readonly T[],
+	nodeId: string,
+): T | undefined {
+	return profiles.find((row) => row.node_id === nodeId);
+}
+
 /** List detail for a `nodes[]` field: empty means every node in the cluster. */
 export function formatNodesDetail(nodes: readonly string[]): string {
 	if (nodes.length === 0) return m.listeners_nodes_all();

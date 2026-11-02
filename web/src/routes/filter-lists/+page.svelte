@@ -18,8 +18,10 @@
 		type FilterList,
 		type FilterSet,
 	} from '$lib/api/filtering';
+	import { getConfig } from '$lib/api/config';
 	import { failureOf, settle, type Result } from '$lib/api/result';
 	import { auth } from '$lib/auth/state.svelte';
+	import { patchConfigSection } from '$lib/settings/config-patch';
 	import {
 		RECOMMENDED_GROUPS,
 		RECOMMENDED_LISTS,
@@ -90,6 +92,11 @@
 	let formUrl = $state('');
 	let formEnabled = $state(true);
 	let submitted = $state(false);
+	let formUpdateInterval = $state('1d');
+	let formMaxListSizeMb = $state('64');
+	let filteringBaseline = $state<Record<string, unknown>>({});
+	let globalsBusy = $state(false);
+	let globalsFailure = $state<Failure | null>(null);
 
 	const nameError = $derived(
 		submitted && slugify(editing?.id ?? formName) === '' ? m.filter_lists_name_required() : null,
@@ -191,6 +198,47 @@
 
 	async function load(): Promise<void> {
 		result = await settle(listFilterLists());
+	}
+
+	async function loadFilteringGlobals(): Promise<void> {
+		if (!isAdmin) return;
+		try {
+			const snapshot = await getConfig();
+			const filtering =
+				snapshot.config?.filtering && typeof snapshot.config.filtering === 'object'
+					? ({ ...(snapshot.config.filtering as Record<string, unknown>) } as Record<
+							string,
+							unknown
+						>)
+					: {};
+			filteringBaseline = filtering;
+			const interval = filtering.update_interval;
+			formUpdateInterval =
+				typeof interval === 'string' ? interval : interval != null ? String(interval) : '1d';
+			const maxMb = filtering.max_list_size_mb;
+			formMaxListSizeMb =
+				typeof maxMb === 'number' && Number.isFinite(maxMb) ? String(maxMb) : '64';
+		} catch {
+			filteringBaseline = {};
+		}
+	}
+
+	async function saveFilteringGlobals(): Promise<void> {
+		if (!isAdmin) return;
+		globalsBusy = true;
+		globalsFailure = null;
+		try {
+			await patchConfigSection('filtering', {
+				...filteringBaseline,
+				update_interval: formUpdateInterval.trim() || '1d',
+				max_list_size_mb: Number(formMaxListSizeMb.trim()) || 64,
+			});
+			await loadFilteringGlobals();
+		} catch (cause) {
+			globalsFailure = failureOf(cause);
+		} finally {
+			globalsBusy = false;
+		}
 	}
 
 	/** Filter sets are an admin read; any failure just leaves the usage line off the rows. */
@@ -319,7 +367,10 @@
 
 	onMount(() => {
 		void load();
-		if (isAdmin) void loadSets();
+		if (isAdmin) {
+			void loadSets();
+			void loadFilteringGlobals();
+		}
 	});
 </script>
 
@@ -435,6 +486,40 @@
 				<GroupedRow label={m.state_empty()} />
 			{/each}
 		</GroupedList>
+
+		{#if isAdmin}
+			<div class="section-head">{m.filter_lists_globals_section()}</div>
+			{#if globalsFailure}<ErrorNotice code={globalsFailure.code} params={globalsFailure.params} />{/if}
+			<GroupedList>
+				<div class="globals-form">
+					<label class="field-block" for="filter-update-interval">
+						<span class="field-label">{m.filter_lists_update_interval()}</span>
+						<input
+							id="filter-update-interval"
+							class="field mono"
+							bind:value={formUpdateInterval}
+							autocomplete="off"
+						/>
+					</label>
+					<label class="field-block" for="filter-max-list-mb">
+						<span class="field-label">{m.filter_lists_max_list_size_mb()}</span>
+						<input
+							id="filter-max-list-mb"
+							class="field mono"
+							bind:value={formMaxListSizeMb}
+							inputmode="numeric"
+							autocomplete="off"
+						/>
+					</label>
+					<p class="hint">{m.filter_lists_globals_hint()}</p>
+					<div class="globals-save">
+						<Button variant="primary" disabled={globalsBusy} onclick={() => void saveFilteringGlobals()}>
+							{m.action_save()}
+						</Button>
+					</div>
+				</div>
+			</GroupedList>
+		{/if}
 	{/if}
 
 	{#if recommendOpen && isAdmin}
@@ -757,5 +842,35 @@
 		justify-content: flex-end;
 		gap: var(--space-2);
 		margin-inline-start: auto;
+	}
+	.section-head {
+		margin: 1.25rem 0 0.5rem;
+		font-size: 0.8125rem;
+		font-weight: 600;
+		color: var(--label-3);
+		text-transform: uppercase;
+	}
+	.globals-form {
+		padding: 0.5rem 0;
+	}
+	.globals-form .field-block {
+		display: block;
+		padding: 0.375rem 1rem;
+	}
+	.globals-form .field-label {
+		display: block;
+		margin-bottom: 0.25rem;
+		font-size: 0.8125rem;
+		color: var(--label-2);
+	}
+	.globals-form .hint {
+		margin: 0.25rem 1rem 0.75rem;
+		font-size: 0.8125rem;
+		color: var(--label-3);
+	}
+	.globals-save {
+		display: flex;
+		justify-content: flex-end;
+		padding: 0 1rem 0.75rem;
 	}
 </style>

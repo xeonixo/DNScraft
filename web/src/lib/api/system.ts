@@ -31,3 +31,37 @@ export const deleteWebBan = (ip: string): Promise<{ ip: string }> =>
 	del(`/web-bans/${encodeURIComponent(ip)}`);
 
 export const getUpdateCheck = (): Promise<UpdateCheck> => get('/update/check');
+
+/** One recorded backup run from `GET /api/v1/backups` (`kv` JSON). */
+export interface BackupLastRun {
+	/** Unix seconds when the run finished. */
+	at: number | string;
+	result?: string;
+	file?: string;
+	code?: string;
+}
+
+/** `GET /api/v1/backups` (system_routes.rs). */
+export interface BackupStatus {
+	enabled: boolean;
+	directory: string;
+	retention_count: number;
+	files: number;
+	last_run: BackupLastRun | null;
+	next_run: string | null;
+}
+
+/** `PUT /api/v1/backups/settings` response. */
+export interface BackupSettingsResult {
+	version: number;
+	enabled: boolean;
+	retention_count: number;
+}
+
+export const getBackups = (): Promise<BackupStatus> => get('/backups');
+
+export const putBackupSettings = (
+	body: { enabled: boolean; retention_count: number },
+	options?: { ifMatch?: string },
+): Promise<BackupSettingsResult> =>
+	put('/backups/settings', { body, ifMatch: options?.ifMatch });

@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { SvelteMap } from 'svelte/reactivity';
 	import { resolve } from '$app/paths';
+	import { page } from '$app/state';
 	import Button from '$lib/components/Button.svelte';
 	import ErrorNotice from '$lib/components/ErrorNotice.svelte';
 	import GroupedList from '$lib/components/GroupedList.svelte';
@@ -24,7 +25,12 @@
 	} from '$lib/api/policy';
 	import { failureOf, settle, type Result } from '$lib/api/result';
 	import { auth } from '$lib/auth/state.svelte';
-	import { formatNodesDetail, nodeChoicesFor, toggleNodeId } from '$lib/cluster/nodes';
+	import {
+		formatNodesDetail,
+		nodeChoicesFor,
+		toggleNodeId,
+		viewsForNode,
+	} from '$lib/cluster/nodes';
 	import { m } from '$lib/paraglide/messages';
 	import { bestPrefix, findInvalidRange, parseCidr, parseRanges } from '$lib/policy/cidr';
 	import { displayText } from '$lib/safe-text';
@@ -35,6 +41,7 @@
 	const RANGE_PREVIEW = 3;
 
 	const isAdmin = $derived(auth.role === 'admin');
+	const filterNode = $derived(page.url.searchParams.get('node')?.trim() || '');
 	let result = $state<Result<PolicyView[]>>({ kind: 'loading' });
 	let profiles = $state<PolicyProfile[]>([]);
 	/** Client IDs with their pinned range; a failed read leaves the pinned lines out. */
@@ -66,7 +73,8 @@
 
 	const rows = $derived.by(() => {
 		if (result.kind !== 'ok') return [] as PolicyView[];
-		return [...result.data].sort((a, b) => Number(b.is_default) - Number(a.is_default));
+		const scoped = filterNode ? viewsForNode(result.data, filterNode) : result.data;
+		return [...scoped].sort((a, b) => Number(b.is_default) - Number(a.is_default));
 	});
 	const invalidRange = $derived(findInvalidRange(formRanges));
 	/** The server refuses to delete a range that a Client ID is pinned to; its error carries the ids. */
@@ -213,7 +221,7 @@
 		formId = '';
 		formDefault = false;
 		formRanges = '';
-		formNodes = [];
+		formNodes = filterNode ? [filterNode] : [];
 		formProfile = profiles[0]?.id ?? 'default';
 		resetForm();
 	}
@@ -286,6 +294,13 @@
 			<Button variant="primary" onclick={openCreate}>{m.zones_add()}</Button>
 		{/if}
 	</div>
+
+	{#if filterNode}
+		<p class="filter-banner">
+			{m.cluster_hub_filter_node({ node: filterNode })}
+			<a class="filter-clear" href={resolve('/zones')}>{m.cluster_hub_clear_filter()}</a>
+		</p>
+	{/if}
 
 	{#if result.kind === 'loading'}
 		<p class="state">{m.state_loading()}</p>
@@ -511,6 +526,22 @@
 	}
 	.lead a {
 		color: var(--accent);
+	}
+	.filter-banner {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.75rem;
+		margin: 0 0 0.75rem;
+		color: var(--label-2);
+		font-size: 0.875rem;
+	}
+	.filter-clear {
+		color: var(--accent);
+		text-decoration: none;
+	}
+	.filter-clear:hover {
+		text-decoration: underline;
 	}
 	.state {
 		color: var(--label-2);

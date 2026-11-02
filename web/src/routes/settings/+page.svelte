@@ -51,6 +51,9 @@
 
 	let update = $state<Result<UpdateCheck>>({ kind: 'loading' });
 	let runningVersion = $state<string>('—');
+	let updateCheckEnabled = $state(false);
+	let updateCheckBusy = $state(false);
+	let updateCheckFailure = $state<{ code: string; params: Record<string, unknown> } | null>(null);
 
 	onMount(() => {
 		void loadLogging();
@@ -68,6 +71,7 @@
 		try {
 			const snapshot = await getConfig();
 			const settings = snapshot.config?.control_api_settings as Record<string, unknown> | undefined;
+			updateCheckEnabled = settings?.update_check === true;
 			const stored = settings?.query_log as Record<string, unknown> | undefined;
 			const days = stored?.retention_days;
 			retentionDays = typeof days === 'number' ? days : null;
@@ -83,6 +87,25 @@
 
 	async function loadUpdate(): Promise<void> {
 		update = await settle(getUpdateCheck());
+		if (update.kind === 'ok') updateCheckEnabled = update.data.enabled;
+	}
+
+	async function saveUpdateCheck(next: boolean): Promise<void> {
+		if (!isAdmin) return;
+		updateCheckBusy = true;
+		updateCheckFailure = null;
+		const previous = updateCheckEnabled;
+		updateCheckEnabled = next;
+		try {
+			await patchConfigSection('control_api_settings', { update_check: next });
+			announce(next ? m.settings_update_check_on() : m.settings_update_check_off());
+			await loadUpdate();
+		} catch (cause) {
+			updateCheckEnabled = previous;
+			updateCheckFailure = failureOf(cause);
+		} finally {
+			updateCheckBusy = false;
+		}
 	}
 
 	async function saveRetention(): Promise<void> {
@@ -242,8 +265,28 @@
 	{/if}
 </GroupedList>
 
-<GroupedList header={m.settings_group_update()}>
+<GroupedList header={m.settings_group_update()} footer={m.settings_update_check_note()}>
 	<GroupedRow label={m.settings_running_version()} detail={runningVersion} detailMono />
+	{#if isAdmin}
+		<GroupedRow
+			label={m.settings_update_check_label()}
+			detail={updateCheckEnabled ? m.settings_update_check_on() : m.settings_update_check_off()}
+		>
+			{#snippet trailing()}
+				<Switch
+					checked={updateCheckEnabled}
+					disabled={updateCheckBusy}
+					aria-label={m.settings_update_check_label()}
+					onchange={(event) => void saveUpdateCheck(event.currentTarget.checked)}
+				/>
+			{/snippet}
+		</GroupedRow>
+		{#if updateCheckFailure}
+			<div class="notice">
+				<ErrorNotice code={updateCheckFailure.code} params={updateCheckFailure.params} />
+			</div>
+		{/if}
+	{/if}
 	{#if update.kind === 'loading'}
 		<GroupedRow label={m.state_loading()} />
 	{:else if update.kind === 'unavailable'}

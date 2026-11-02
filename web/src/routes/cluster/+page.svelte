@@ -16,6 +16,7 @@
 	} from '$lib/api/cluster';
 	import { failureOf, settle, type Result } from '$lib/api/result';
 	import { auth } from '$lib/auth/state.svelte';
+	import NodeHubPanel from '$lib/cluster/NodeHubPanel.svelte';
 	import { nodeLag, nodeRoleLabel, nodeStatusLabel, nodeVerdict } from '$lib/cluster/nodes';
 	import { displayText } from '$lib/safe-text';
 	import { formatDateTime, formatFingerprint, formatNumber } from '$lib/format';
@@ -311,6 +312,9 @@
 				detailMono
 			/>
 		</GroupedList>
+		{#if !detail.revoked}
+			<NodeHubPanel nodeId={detailNodeId} {isAdmin} />
+		{/if}
 		<div class="actions">
 			{#if isAdmin && !detail.revoked}
 				<Button

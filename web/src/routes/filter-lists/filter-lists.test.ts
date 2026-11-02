@@ -76,6 +76,13 @@ function serve(overrides: Record<string, Handler> = {}): void {
 					},
 				],
 			}),
+		'GET /api/v1/config': () =>
+			ok({
+				version: 1,
+				config: {
+					filtering: { update_interval: '1d', max_list_size_mb: 64, lists: [], sets: [] },
+				},
+			}),
 		...overrides,
 	};
 	fetchMock.mockImplementation(async (input, init) => {

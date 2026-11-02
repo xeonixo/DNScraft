@@ -80,6 +80,8 @@ describe('formFromClients / clientsPatchFromForm', () => {
 		});
 		expect(form.local_domain).toBe('lan.example');
 		expect(form.local_domain_mode).toBe('config');
+		expect(form.offline_retain_days).toBe(7);
+		expect(form.ipv6_address_ttl_days).toBe(1);
 		expect(form.bindings).toEqual({ master: 'home', garage: 'home' });
 		expect(isSelfSyncOwner(form, 'master')).toBe(true);
 		expect(isSelfSyncOwner(form, 'garage')).toBe(false);
@@ -87,6 +89,8 @@ describe('formFromClients / clientsPatchFromForm', () => {
 		expect(clientsPatchFromForm(form)).toEqual({
 			local_domain: 'lan.example',
 			local_domain_mode: 'config',
+			offline_retain: '7d',
+			ipv6_address_ttl: '1d',
 			unifi_profiles: [
 				{
 					id: 'home',
@@ -132,6 +136,8 @@ describe('formFromClients / clientsPatchFromForm', () => {
 		const form: ClientsUnifiForm = {
 			local_domain: 'home.arpa',
 			local_domain_mode: 'unifi_then_config',
+			offline_retain_days: 7,
+			ipv6_address_ttl_days: 1,
 			selected_profile_id: 'default',
 			bindings: {},
 			profiles: [

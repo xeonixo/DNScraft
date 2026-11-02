@@ -87,6 +87,15 @@ function serve(overrides: Record<string, Handler> = {}): void {
 		'GET /api/v1/config': () => ok({ version: 12, config: stored }),
 		'GET /api/v1/config/versions': () => ok(VERSIONS),
 		'POST /api/v1/config/validate': () => ok(NO_FINDINGS),
+		'GET /api/v1/backups': () =>
+			ok({
+				enabled: false,
+				directory: '/var/lib/dnscraft/backups',
+				retention_count: 7,
+				files: 0,
+				last_run: null,
+				next_run: null,
+			}),
 		...overrides,
 	};
 	fetchMock.mockImplementation(async (input, init) => {
@@ -161,9 +170,9 @@ describe('configuration screen for a viewer', () => {
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
-	it('still says that backups are not available on this node', () => {
+	it('hides the backups panel from viewers', () => {
 		setup('viewer');
-		expect(screen.getByText(m.config_backups_unavailable())).toBeInTheDocument();
+		expect(screen.queryByText(m.config_section_backups())).toBeNull();
 	});
 });
 

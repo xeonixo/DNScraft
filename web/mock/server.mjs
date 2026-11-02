@@ -1273,7 +1273,19 @@ async function route(request, response, options) {
 			webAccessPublic = body.public_enabled === true;
 			return sendData(response, { version: 2, public_enabled: webAccessPublic });
 		}
-		case 'GET /api/v1/update/check':
+		case 'GET /api/v1/update/check': {
+			const enabled =
+				currentOf(options.store).config.control_api_settings?.update_check === true;
+			if (!enabled) {
+				return sendData(response, {
+					enabled: false,
+					current: '0.1.0-mock',
+					latest: null,
+					update_available: false,
+					release_url: null,
+					checked_at: null,
+				});
+			}
 			return sendData(response, {
 				enabled: true,
 				current: '0.1.0-mock',
@@ -1282,6 +1294,47 @@ async function route(request, response, options) {
 				release_url: 'https://example.com/releases/0.2.0',
 				checked_at: new Date().toISOString(),
 			});
+		}
+		case 'GET /api/v1/backups': {
+			if (options.role !== 'admin') {
+				throw new ApiFailure(403, 'control_api.auth.insufficient_scope', { required: 'admin' });
+			}
+			const backups = currentOf(options.store).config.control_api_settings?.backups ?? {};
+			const enabled = backups.enabled === true;
+			return sendData(response, {
+				enabled,
+				directory: '/var/lib/dnscraft/backups',
+				retention_count:
+					typeof backups.retention_count === 'number' ? backups.retention_count : 7,
+				files: enabled ? 2 : 0,
+				last_run: enabled
+					? {
+							at: Math.floor(Date.now() / 1000) - 3600,
+							result: 'ok',
+							file: 'dnscraft-backup-mock.sqlite',
+						}
+					: null,
+				next_run: enabled ? new Date(Date.now() + 86_400_000).toISOString() : null,
+			});
+		}
+		case 'PUT /api/v1/backups/settings': {
+			if (options.role !== 'admin') {
+				throw new ApiFailure(403, 'control_api.auth.insufficient_scope', { required: 'admin' });
+			}
+			const body = await readJsonBody(request);
+			const enabled = body.enabled === true;
+			const retention_count =
+				typeof body.retention_count === 'number' ? body.retention_count : 7;
+			const current = currentOf(options.store);
+			if (ifMatchProblem(request.headers['if-match'], current.version)) {
+				throw new ApiFailure(409, 'control_api.config.version');
+			}
+			const config = structuredClone(current.config);
+			if (!config.control_api_settings) config.control_api_settings = {};
+			config.control_api_settings.backups = { enabled, retention_count };
+			const version = replaceConfig(options.store, config);
+			return sendData(response, { version, enabled, retention_count });
+		}
 		case 'GET /api/v1/audit': {
 			if (options.role !== 'admin') {
 				throw new ApiFailure(403, 'control_api.auth.insufficient_scope', { required: 'admin' });

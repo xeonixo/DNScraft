@@ -83,6 +83,7 @@ function serve(overrides: Record<string, Handler> = {}): void {
 		'GET /api/v1/stats/top_clients': () => ok(topClients),
 		'GET /api/v1/stats/cache': () => ok(cache),
 		'GET /api/v1/resolver/upstreams': () => ok(upstreams),
+		'GET /api/v1/alerts': () => ok({ active_count: 0, items: [] }),
 		...overrides,
 	};
 	fetchMock.mockImplementation(async (input, init) => {

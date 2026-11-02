@@ -50,7 +50,9 @@ pub use api::auth::{
     Requirement, Role, Scope, SessionMeta, SessionStore, TokenPrincipal, TokenSnapshot, TokenStore,
     auth_middleware, authorize, rbac_middleware, requirement, secure_cookie, session_set_cookie,
 };
-pub use api::clients_routes::{ClientDirectory, DirectoryClient, DirectoryExport, SyncSummary};
+pub use api::clients_routes::{
+    ClientDirectory, DirectoryClient, DirectoryExport, DirectoryHealth, SyncSummary,
+};
 pub use api::filter_routes::ServiceCatalogProvider;
 pub use api::rate_limit::{DEFAULT_MAX_TRACKED_SOURCES, RateLimiter};
 pub use audit::{Audit, ConfigChangeRecord};
@@ -88,7 +90,9 @@ pub use query_log::{
     ClientEnricher, ClientView, Order, OrderBy, QueryLog, QueryLogFilter, QueryLogPage,
     QueryLogSink,
 };
-pub use server::{AppState, Readiness, SharedBody, handle_request, prepare_router, serve};
+pub use server::{
+    AppState, ListenersStatusProvider, Readiness, SharedBody, handle_request, prepare_router, serve,
+};
 pub use stats::{
     CacheStats, FilterHits, ROLLUP_RETENTION_DAYS, RollupRow, RollupWindow, RuleHits,
     StatsOverview, StatsScope, TOP_CLIENTS_MAX, TOP_DOMAINS_MAX, TopBy, TopClient, TopClients,

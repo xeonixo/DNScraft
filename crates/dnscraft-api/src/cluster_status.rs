@@ -7,6 +7,7 @@
 use std::sync::Mutex;
 use std::time::SystemTime;
 
+use dnscraft_cluster::StatusWarning;
 use serde_json::{Value, json};
 
 /// The six cluster fields exposed under `cluster` by `GET /api/v1/status`.
@@ -33,6 +34,9 @@ pub struct ClusterStatus {
     /// Sub-node: why the last config apply failed (module code and policy
     /// detail); cleared by the next successful apply.
     pub last_apply_error: Option<String>,
+    /// Sub-node: non-fatal warnings from the last successful heartbeat
+    /// (`cluster.clock_skew`, `cluster.config.stale`, …). Empty on the master.
+    pub warnings: Vec<StatusWarning>,
 }
 
 impl ClusterStatus {

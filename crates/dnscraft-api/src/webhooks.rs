@@ -27,14 +27,37 @@ use crate::storage::Db;
 /// Config snapshot section for notification channels.
 pub(crate) const SECTION: &str = "notifications";
 /// Event codes a channel may subscribe to: the alert ids of `GET /api/v1/alerts`.
-pub(crate) const EVENT_CATALOG: [&str; 7] = [
+pub(crate) const EVENT_CATALOG: [&str; 30] = [
     "tls.cert.revoked",
     "tls.cert.expired",
     "tls.cert.expiring",
     "tls.dyndns.stale",
+    "tls.bootstrap.self_signed",
+    "tls.store.corrupt",
+    "tls.engine.error",
+    "tls.dns.conflict",
+    "tls.secret.missing",
     "filtering.list.update_failed",
     "cluster.master.unreachable",
     "cluster.node.offline",
+    "cluster.node.disconnected",
+    "cluster.sync.degraded",
+    "cluster.config.lag",
+    "cluster.apply_failed",
+    "cluster.clock_skew",
+    "cluster.master_conflict",
+    "cluster.config.stale",
+    "cluster.offline_write_queue_full",
+    "system.not_ready",
+    "system.backup.failed",
+    "system.update.unreachable",
+    "resolver.upstream.down",
+    "resolver.upstream.degraded",
+    "resolver.priming.fallback",
+    "listeners.bind_failed",
+    "clients.unifi.sync_failed",
+    "clients.unifi.ip_conflicts",
+    "querylog.dropped",
 ];
 /// Longest accepted webhook secret.
 pub(crate) const MAX_SECRET_BYTES: usize = 256;

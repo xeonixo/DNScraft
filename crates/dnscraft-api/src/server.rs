@@ -32,9 +32,16 @@ use dnscraft_cluster::{
     ClusterBroadcast, ClusterClient, ClusterStore, OfflineWriteQueue, Role, WriteExecutor,
 };
 use dnscraft_filtering::FilterEngine;
+use dnscraft_listeners::ListenersStatus;
 use dnscraft_mcp::McpConfig;
 use dnscraft_policy::PolicyEngine;
 use dnscraft_resolver::Resolver;
+
+/// Live listener bind / runtime status for `GET /api/v1/alerts`.
+pub trait ListenersStatusProvider: Send + Sync {
+    /// Snapshot of every configured listener (including bind failures).
+    fn listeners_status(&self) -> ListenersStatus;
+}
 
 /// Shared state handed to every handler (and cloned into the router).
 ///
@@ -45,6 +52,7 @@ pub struct AppState {
     tls: Option<Arc<dyn TlsStatusProvider>>,
     tls_admin: Option<Arc<dyn TlsAdmin>>,
     clients: Option<Arc<dyn ClientDirectory>>,
+    listeners_status: Option<Arc<dyn ListenersStatusProvider>>,
     rate_limiter: Arc<RateLimiter>,
     /// Trusted reverse-proxy peers; read by the response-header middleware to
     /// honour `X-Forwarded-Proto` only from them.
@@ -101,6 +109,7 @@ impl AppState {
             tls: None,
             tls_admin: None,
             clients: None,
+            listeners_status: None,
             rate_limiter: Arc::new(RateLimiter::new(
                 RateLimitConfig::default(),
                 Arc::new(SystemClock),
@@ -630,6 +639,17 @@ impl AppState {
     /// The client directory adapter, if one is attached.
     pub(crate) fn client_directory(&self) -> Option<&Arc<dyn ClientDirectory>> {
         self.clients.as_ref()
+    }
+
+    /// Attaches the live listener runtime status used by alerts.
+    pub fn with_listeners_status(mut self, provider: Arc<dyn ListenersStatusProvider>) -> Self {
+        self.listeners_status = Some(provider);
+        self
+    }
+
+    /// Live listener runtime status, if attached.
+    pub(crate) fn listeners_status(&self) -> Option<&Arc<dyn ListenersStatusProvider>> {
+        self.listeners_status.as_ref()
     }
 
     /// Records the trusted reverse-proxy peers (the same list the rate limiter

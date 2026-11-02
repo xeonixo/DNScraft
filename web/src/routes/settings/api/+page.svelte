@@ -26,6 +26,8 @@
 			api_cat_query_log: () => m.api_cat_query_log(),
 			api_cat_audit: () => m.api_cat_audit(),
 			api_cat_tokens: () => m.api_cat_tokens(),
+			api_cat_alerts: () => m.api_cat_alerts(),
+			api_cat_notifications: () => m.api_cat_notifications(),
 		};
 		return map[entry.summaryKey]();
 	}

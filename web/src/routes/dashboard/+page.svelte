@@ -14,6 +14,7 @@
 	import CacheSheet from '$lib/dashboard/CacheSheet.svelte';
 	import PauseSheet from '$lib/dashboard/PauseSheet.svelte';
 	import * as view from '$lib/dashboard/view';
+	import { getAlerts } from '$lib/api/alerts';
 	import { listClusterNodes, type ClusterNode } from '$lib/api/cluster';
 	import { nodeLag, nodeRoleLabel, nodeStatusLabel, nodeVerdict } from '$lib/cluster/nodes';
 	import { listAllMcpRules, resumeFilterSet } from '$lib/api/mcp-rules';
@@ -83,6 +84,8 @@
 	let upstreams = $state<Result<UpstreamsData>>({ kind: 'loading' });
 	/** Registry rows for the cluster card; a failed read leaves the list empty. */
 	let clusterNodes = $state<ClusterNode[]>([]);
+	/** Active alerts count for the banner row; 0 when the read fails. */
+	let alertCount = $state(0);
 
 	/** The duration being confirmed; the sheet is mounted only while it is set. */
 	let pauseDuration = $state<PauseDuration | null>(null);
@@ -128,7 +131,7 @@
 	async function refreshAll(): Promise<boolean> {
 		const now = new Date();
 		const current = period;
-		const [s, r, o, d, c, k, u] = await Promise.all([
+		const [s, r, o, d, c, k, u, a] = await Promise.all([
 			settle(getStatus()),
 			settle(getReadiness()),
 			settle(getOverview(current, now)),
@@ -136,6 +139,7 @@
 			settle(getTopClients(current, TOP_LIMIT, now)),
 			settle(getCacheStats(current, now)),
 			settle(getUpstreams()),
+			settle(getAlerts()),
 		]);
 		status = s;
 		readiness = r;
@@ -144,6 +148,7 @@
 		clients = c;
 		cache = k;
 		upstreams = u;
+		alertCount = a.kind === 'ok' ? a.data.active_count : 0;
 		return [s, r, o, d, c, k, u].every((result) => result.kind !== 'error');
 	}
 
@@ -328,6 +333,15 @@
 				</p>
 			{/if}
 			<p><a href={resolve('/tls')}>{m.dashboard_tls_link()}</a></p>
+		</Banner>
+	{/if}
+	{#if alertCount > 0}
+		<Banner
+			title={alertCount === 1
+				? m.alerts_banner_one()
+				: m.alerts_banner_many({ count: formatNumber(alertCount, locale) })}
+		>
+			<p><a href={resolve('/alerts')}>{m.alerts_banner_open()}</a></p>
 		</Banner>
 	{/if}
 

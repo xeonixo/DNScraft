@@ -11,7 +11,9 @@ export interface ApiCatalogEntry {
 		| 'api_cat_tls_status'
 		| 'api_cat_query_log'
 		| 'api_cat_audit'
-		| 'api_cat_tokens';
+		| 'api_cat_tokens'
+		| 'api_cat_alerts'
+		| 'api_cat_notifications';
 	/** When set, the explorer may offer a safe GET try. */
 	tryPath?: string;
 }
@@ -69,5 +71,19 @@ export const API_CATALOG: ApiCatalogEntry[] = [
 		path: '/api/v1/auth/tokens',
 		role: 'admin',
 		summaryKey: 'api_cat_tokens',
+	},
+	{
+		method: 'GET',
+		path: '/api/v1/alerts',
+		role: 'viewer',
+		summaryKey: 'api_cat_alerts',
+		tryPath: '/alerts',
+	},
+	{
+		method: 'GET',
+		path: '/api/v1/notifications',
+		role: 'viewer',
+		summaryKey: 'api_cat_notifications',
+		tryPath: '/notifications',
 	},
 ];

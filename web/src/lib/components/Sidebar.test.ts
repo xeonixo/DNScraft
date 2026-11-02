@@ -18,6 +18,7 @@ function mockStatus(data: Record<string, unknown>): void {
 		vi.fn(async (input: RequestInfo | URL) => {
 			const url = String(input);
 			if (url.includes('/api/v1/status')) return json({ data });
+			if (url.includes('/api/v1/alerts')) return json({ data: { active_count: 0, items: [] } });
 			return new Response(JSON.stringify({ error: { code: 'control_api.not_found' } }), {
 				status: 404,
 			});

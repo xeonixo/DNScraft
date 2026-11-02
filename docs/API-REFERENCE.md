@@ -281,7 +281,7 @@ binary must call `run_backup_if_due` periodically; it runs at most once per 24 h
 
 | Method | Path | Summary |
 |---|---|---|
-| GET | `/api/v1/alerts` | Active alerts: `active_count` and `items` (`id`, `severity`, `module`, `params`, `target_route`). Sources: TLS (revoked, expired, expiring, DynDNS stale), failed filter-list updates, sub-node without master, and on the master `cluster.node.offline` for each non-revoked sub-node whose last contact (or join time) is over 5 minutes old. |
+| GET | `/api/v1/alerts` | Active alerts: `active_count` and `items` (`id`, `severity`, `module`, `params`, `target_route`). Sources: readiness (`system.not_ready`), listener bind failures, resolver upstreams/priming, TLS (revoked/expired/expiring, DynDNS stale, self-signed, store corrupt, engine error, DNS conflicts, missing Cloudflare token), filter-list update failures, cluster (master unreachable, node offline/disconnected, sync degraded, lag, apply failed, heartbeat warnings), UniFi sync/IP conflicts, query-log drops, backup failure, and cached update-check unreachable. |
 
 ### Auth
 

@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { resolve } from '$app/paths';
 	import Icon from './Icon.svelte';
+	import { getAlerts } from '$lib/api/alerts';
 	import { getStatus, type StatusCluster } from '$lib/api/stats';
 	import { m } from '$lib/paraglide/messages';
 	import { createPoller } from '$lib/poll';
@@ -43,6 +44,7 @@
 
 	let nodeLabel = $state<string>(m.sidebar_node_unknown());
 	let nodeDot = $state<NodeDot>('unknown');
+	let alertCount = $state(0);
 
 	function applyNodeStatus(cluster: StatusCluster): void {
 		if (cluster.role === 'master') {
@@ -81,7 +83,22 @@
 		}
 	}
 
-	const statusPoller = createPoller(refreshNodeStatus, {
+	async function refreshAlerts(): Promise<boolean> {
+		try {
+			const alerts = await getAlerts();
+			alertCount = alerts.active_count;
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	async function refreshSidebar(): Promise<boolean> {
+		const [statusOk, alertsOk] = await Promise.all([refreshNodeStatus(), refreshAlerts()]);
+		return statusOk && alertsOk;
+	}
+
+	const statusPoller = createPoller(refreshSidebar, {
 		intervalMs: STATUS_POLL_MS,
 		maxBackoffMs: STATUS_POLL_MAX_BACKOFF_MS,
 		doc: globalThis.document,
@@ -102,6 +119,9 @@
 	>
 		<span class="nav-icon"><Icon name={entry.icon} /></span>
 		<span class="nav-label">{entry.label()}</span>
+		{#if entry.path === '/alerts' && alertCount > 0}
+			<span class="nav-badge" aria-label={String(alertCount)}>{alertCount}</span>
+		{/if}
 	</a>
 {/snippet}
 
@@ -230,6 +250,19 @@
 		text-decoration: none;
 	}
 
+	.nav-badge {
+		flex: 0 0 auto;
+		min-width: 1.25rem;
+		padding: 0.0625rem 0.375rem;
+		border-radius: 999px;
+		background: var(--danger);
+		color: var(--on-accent);
+		font-size: 0.6875rem;
+		font-weight: 600;
+		line-height: 1.25;
+		text-align: center;
+	}
+
 	.nav-item:not([aria-current='page']):hover {
 		background: var(--surface);
 	}
@@ -251,6 +284,7 @@
 	}
 
 	.nav-label {
+		flex: 1 1 auto;
 		min-width: 0;
 		overflow-wrap: anywhere;
 	}

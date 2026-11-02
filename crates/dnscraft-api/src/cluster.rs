@@ -1460,6 +1460,7 @@ impl ClusterRuntime {
             last_sync: None,
             degraded_nodes: 0,
             last_apply_error: None,
+            warnings: Vec::new(),
         });
         if let (Some(version), Some(snapshot)) = (version, snapshot) {
             server.config_sync().publish(version, &snapshot)?;
@@ -1623,6 +1624,7 @@ impl ClusterRuntime {
             last_sync: None,
             degraded_nodes: 0,
             last_apply_error: None,
+            warnings: Vec::new(),
         });
 
         let status = Arc::clone(&self.status);
@@ -1665,6 +1667,7 @@ impl ClusterRuntime {
         let maintenance_service = Arc::clone(&service);
         let maintenance_queue = queue.clone();
         let maintenance_streamer = log_streamer.clone();
+        let maintenance_status = Arc::clone(&self.status);
         let interval = config.timing.heartbeat_interval;
         let mut maintenance_shutdown = self.shutdown.subscribe();
         self.tasks.push(tokio::spawn(async move {
@@ -1677,6 +1680,7 @@ impl ClusterRuntime {
                     maintenance_clock.as_ref(),
                     &maintenance_service,
                     maintenance_queue.as_deref(),
+                    &maintenance_status,
                 )
                 .await;
                 if let Some(streamer) = &maintenance_streamer {
@@ -1786,6 +1790,7 @@ async fn maintenance_pass(
     clock: &dyn Clock,
     service: &ConfigService,
     queue: Option<&OfflineWriteQueue>,
+    status: &ClusterStatusHandle,
 ) {
     if let Err(error) = client.renew_if_due(paths, clock.now()).await {
         tracing::warn!(error = %error, "cluster certificate renewal failed");
@@ -1807,9 +1812,12 @@ async fn maintenance_pass(
     };
     match client.heartbeat(applied_version, queue_depth).await {
         Ok(response) => {
-            for warning in response.warnings {
+            for warning in &response.warnings {
                 tracing::warn!(code = %warning.code, "cluster heartbeat warning");
             }
+            status.update(|cluster| {
+                cluster.warnings = response.warnings;
+            });
         }
         Err(error) => tracing::debug!(error = %error, "cluster heartbeat failed"),
     }

@@ -110,6 +110,14 @@ pub(crate) struct EngineDirectory {
 }
 
 impl dnscraft_api::ClientDirectory for EngineDirectory {
+    fn health(&self) -> dnscraft_api::DirectoryHealth {
+        let status = self.engine.status();
+        dnscraft_api::DirectoryHealth {
+            last_error: status.last_error,
+            ip_conflicts: status.ip_conflicts,
+        }
+    }
+
     fn clients(&self) -> Vec<DirectoryClient> {
         self.engine
             .lookup()

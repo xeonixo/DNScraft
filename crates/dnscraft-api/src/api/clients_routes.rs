@@ -79,6 +79,15 @@ pub struct DirectoryExport {
     pub networks: Value,
 }
 
+/// Sync / inventory health for alerts (no secret material).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DirectoryHealth {
+    /// Stable `clients.*` code of the last sync error, if any.
+    pub last_error: Option<&'static str>,
+    /// Cumulative IP claims resolved by dropping a loser from the index.
+    pub ip_conflicts: u64,
+}
+
 /// Read and sync access to the client directory (GA6). Implementations map
 /// engine failures to their stable `clients.*` codes; no secret material is
 /// ever returned.
@@ -88,6 +97,11 @@ pub trait ClientDirectory: Send + Sync {
     fn clients(&self) -> Vec<DirectoryClient>;
     /// Runs one sync now.
     async fn sync(&self) -> Result<SyncSummary, ControlApiError>;
+
+    /// Latest UniFi sync / inventory health for `GET /api/v1/alerts`.
+    fn health(&self) -> DirectoryHealth {
+        DirectoryHealth::default()
+    }
 
     /// Installs or clears the in-memory UniFi API key (`SecretPush` / local PUT).
     fn set_api_key(&self, _key: Option<String>) {}

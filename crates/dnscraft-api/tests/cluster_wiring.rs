@@ -301,6 +301,7 @@ async fn synced_config_applier_publishes_applied_version_before_config_ack() {
         last_sync: None,
         degraded_nodes: 0,
         last_apply_error: None,
+        warnings: Vec::new(),
     });
     let clock: Arc<dyn dnscraft_common::clock::Clock> = Arc::new(ClusterClock::new(at(NOW)));
     let applier = SyncedConfigApplier::new(Arc::clone(&service), "node-b")

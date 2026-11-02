@@ -10,9 +10,10 @@ use std::time::Duration;
 
 use dnscraft_api::{
     AppState, Audit, AuthState, ClusterRuntime, ClusterRuntimeOptions, ClusterStore, ConfigService,
-    ControlApiTls, Db, EngineStatusProvider, EngineTlsAdmin, LocalAccountStore, OfflineWriteQueue,
-    OidcRuntime, QueryLog, Readiness, ServiceCatalogProvider, SessionStore, SystemClock,
-    TlsStatusProvider, TokenStore, mcp_backend_inner, run_backup_if_due,
+    ControlApiTls, Db, EngineStatusProvider, EngineTlsAdmin, ListenersStatusProvider,
+    LocalAccountStore, OfflineWriteQueue, OidcRuntime, QueryLog, Readiness, ServiceCatalogProvider,
+    SessionStore, SystemClock, TlsStatusProvider, TokenStore, dispatch_alerts, mcp_backend_inner,
+    run_backup_if_due,
 };
 use dnscraft_cluster::{ClusterConfig, Role};
 use dnscraft_filtering::{FilterEngine, ServiceCatalog};
@@ -237,6 +238,9 @@ pub(crate) async fn start(
         engine: Arc::clone(&engines.clients),
     });
     state = state.with_clients(directory.clone());
+    state = state.with_listeners_status(Arc::new(ListenerRuntimeStatus {
+        set: Arc::downgrade(set),
+    }));
     report_readiness(state.readiness(), engines, set);
 
     // Cluster role: the master's listener, registry and TLS signer, or the
@@ -282,9 +286,8 @@ pub(crate) async fn start(
         ));
     }
 
-    // Scheduled backups run from the same state the API serves.
-    // The same hourly tick (first one immediately at startup) folds the raw
-    // query log into the stats rollups the long dashboard windows read.
+    // Scheduled backups, alert webhooks and stats rollups share one hourly tick
+    // (first fire immediately at startup) against the same live API state.
     let backup_state = state.clone();
     let rollup_log = Arc::clone(query_log);
     let backup = tokio::spawn(async move {
@@ -296,6 +299,9 @@ pub(crate) async fn start(
             }
             if let Err(error) = run_backup_if_due(&backup_state).await {
                 tracing::warn!(code = error.code(), "scheduled backup failed");
+            }
+            if let Err(error) = dispatch_alerts(&backup_state).await {
+                tracing::warn!(code = error.code(), "alert webhook dispatch failed");
             }
         }
     });
@@ -365,8 +371,20 @@ pub(crate) async fn start(
     })
 }
 
-/// Blocked-services catalog for `GET /api/v1/filtering/services`, read live
-/// from the filtering engine (`available: false` while none is cached).
+/// Live listener bind status for `GET /api/v1/alerts`.
+struct ListenerRuntimeStatus {
+    set: std::sync::Weak<ListenerSet<PolicyEngine>>,
+}
+
+impl ListenersStatusProvider for ListenerRuntimeStatus {
+    fn listeners_status(&self) -> dnscraft_listeners::ListenersStatus {
+        self.set
+            .upgrade()
+            .map(|set| set.status())
+            .unwrap_or_default()
+    }
+}
+
 /// Lists and lifts the listener set's source bans for `/api/v1/web-bans`.
 struct ListenerBans {
     set: std::sync::Weak<ListenerSet<PolicyEngine>>,

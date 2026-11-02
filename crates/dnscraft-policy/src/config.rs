@@ -1,7 +1,7 @@
 //! Policy configuration values and the per-query request context.
 
 use std::collections::BTreeMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -92,11 +92,19 @@ pub struct RequestContext {
     pub test_query: bool,
 }
 
+/// Maximum length of a record comment (metadata only).
+pub const MAX_RECORD_COMMENT_CHARS: usize = 200;
+/// Maximum number of tags on one record.
+pub const MAX_RECORD_TAGS: usize = 10;
+/// Maximum length of one tag name.
+pub const MAX_RECORD_TAG_CHARS: usize = 32;
+
 /// One local resource record in the global name space.
 ///
 /// Serialized as presentation text (`name`, `type`, `ttl`, `rdata`,
 /// `overrides`). `rdata` is one string (`"192.0.2.10"`) or a list of strings.
 /// A single value is written back as a string so older configs keep parsing.
+/// Optional `comment` and `tags` are metadata only (ignored by the resolver).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "RecordWire", into = "RecordWire")]
 pub struct ViewRecordConfig {
@@ -112,6 +120,10 @@ pub struct ViewRecordConfig {
     /// Per-view replacement, keyed by view id. A view without an entry uses
     /// [`Self::rdata`].
     pub overrides: BTreeMap<ViewId, ViewOverride>,
+    /// Optional operator note (not used at answer time).
+    pub comment: String,
+    /// Optional tags for UI/MCP filtering (not used at answer time).
+    pub tags: Vec<String>,
 }
 
 /// Wire text of [`ViewOverride::Public`]; never valid record data.
@@ -128,6 +140,14 @@ pub enum ViewOverride {
     /// Not answered locally: the name (wildcards included) is resolved
     /// like any public name.
     Public,
+    /// Answer A and/or AAAA instead of the record's CNAME in this view.
+    /// Only valid on CNAME records (hairpin / split-horizon addresses).
+    Addresses {
+        /// IPv4 answers for this view (may be empty if `aaaa` is not).
+        a: Vec<Ipv4Addr>,
+        /// IPv6 answers for this view (may be empty if `a` is not).
+        aaaa: Vec<Ipv6Addr>,
+    },
 }
 
 /// One presentation string, or a list of them.
@@ -141,6 +161,27 @@ enum TextOrList {
     Many(Vec<String>),
 }
 
+/// Compact string/list or structured override object.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+enum OverrideWire {
+    Legacy(TextOrList),
+    Structured(StructuredOverride),
+}
+
+/// Structured override write/read form (`mode` + optional fields).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StructuredOverride {
+    mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rdata: Option<TextOrList>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    a: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    aaaa: Option<Vec<String>>,
+}
+
 /// Presentation-text wire form of [`ViewRecordConfig`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -152,7 +193,11 @@ struct RecordWire {
     ttl: u32,
     rdata: TextOrList,
     #[serde(default)]
-    overrides: BTreeMap<String, TextOrList>,
+    overrides: BTreeMap<String, OverrideWire>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    comment: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tags: Vec<String>,
 }
 
 fn default_record_ttl() -> u32 {
@@ -200,7 +245,7 @@ fn parse_values(
     Ok(out)
 }
 
-fn override_from_wire(
+fn override_from_legacy(
     owner: &str,
     view: &str,
     rtype: RecordType,
@@ -229,12 +274,132 @@ fn override_from_wire(
     )?))
 }
 
-fn override_wire(value: &ViewOverride) -> TextOrList {
-    match value {
-        ViewOverride::Data(data) => wire_of(data.iter().map(format_rdata).collect()),
-        ViewOverride::NoAnswer => TextOrList::One(String::new()),
-        ViewOverride::Public => TextOrList::One(PUBLIC_OVERRIDE.to_owned()),
+fn parse_address_lists(
+    owner: &str,
+    view: &str,
+    a: Option<Vec<String>>,
+    aaaa: Option<Vec<String>>,
+) -> Result<ViewOverride, String> {
+    let mut v4 = Vec::new();
+    for text in a.unwrap_or_default() {
+        let ip: Ipv4Addr = text.parse().map_err(|_| {
+            format!("record `{owner}` override `{view}`: invalid IPv4 `{text}`")
+        })?;
+        if !v4.contains(&ip) {
+            v4.push(ip);
+        }
     }
+    let mut v6 = Vec::new();
+    for text in aaaa.unwrap_or_default() {
+        let ip: Ipv6Addr = text.parse().map_err(|_| {
+            format!("record `{owner}` override `{view}`: invalid IPv6 `{text}`")
+        })?;
+        if !v6.contains(&ip) {
+            v6.push(ip);
+        }
+    }
+    if v4.is_empty() && v6.is_empty() {
+        return Err(format!(
+            "record `{owner}` override `{view}`: addresses mode needs at least one A or AAAA"
+        ));
+    }
+    Ok(ViewOverride::Addresses { a: v4, aaaa: v6 })
+}
+
+fn override_from_wire(
+    owner: &str,
+    view: &str,
+    rtype: RecordType,
+    wire: OverrideWire,
+) -> Result<ViewOverride, String> {
+    match wire {
+        OverrideWire::Legacy(legacy) => override_from_legacy(owner, view, rtype, legacy),
+        OverrideWire::Structured(structured) => match structured.mode.as_str() {
+            "public" => Ok(ViewOverride::Public),
+            "no_answer" => Ok(ViewOverride::NoAnswer),
+            "data" => {
+                let rdata = structured.rdata.ok_or_else(|| {
+                    format!("record `{owner}` override `{view}`: data mode needs `rdata`")
+                })?;
+                override_from_legacy(owner, view, rtype, rdata)
+            }
+            "addresses" => {
+                if rtype != RecordType::CNAME {
+                    return Err(format!(
+                        "record `{owner}` override `{view}`: addresses mode is only valid on CNAME"
+                    ));
+                }
+                parse_address_lists(owner, view, structured.a, structured.aaaa)
+            }
+            other => Err(format!(
+                "record `{owner}` override `{view}`: unknown mode `{other}`"
+            )),
+        },
+    }
+}
+
+fn override_wire(value: &ViewOverride) -> OverrideWire {
+    match value {
+        ViewOverride::Data(data) => {
+            OverrideWire::Legacy(wire_of(data.iter().map(format_rdata).collect()))
+        }
+        ViewOverride::NoAnswer => OverrideWire::Legacy(TextOrList::One(String::new())),
+        ViewOverride::Public => {
+            OverrideWire::Legacy(TextOrList::One(PUBLIC_OVERRIDE.to_owned()))
+        }
+        ViewOverride::Addresses { a, aaaa } => OverrideWire::Structured(StructuredOverride {
+            mode: "addresses".to_owned(),
+            rdata: None,
+            a: if a.is_empty() {
+                None
+            } else {
+                Some(a.iter().map(ToString::to_string).collect())
+            },
+            aaaa: if aaaa.is_empty() {
+                None
+            } else {
+                Some(aaaa.iter().map(ToString::to_string).collect())
+            },
+        }),
+    }
+}
+
+fn normalize_comment(owner: &str, comment: String) -> Result<String, String> {
+    if comment.chars().count() > MAX_RECORD_COMMENT_CHARS {
+        return Err(format!(
+            "record `{owner}`: comment longer than {MAX_RECORD_COMMENT_CHARS} characters"
+        ));
+    }
+    if comment.contains('\n') || comment.contains('\r') {
+        return Err(format!("record `{owner}`: comment must not contain newlines"));
+    }
+    Ok(comment)
+}
+
+fn normalize_tags(owner: &str, tags: Vec<String>) -> Result<Vec<String>, String> {
+    if tags.len() > MAX_RECORD_TAGS {
+        return Err(format!(
+            "record `{owner}`: more than {MAX_RECORD_TAGS} tags"
+        ));
+    }
+    let mut out = Vec::with_capacity(tags.len());
+    for tag in tags {
+        let normalized = tag.to_ascii_lowercase();
+        if normalized.is_empty()
+            || normalized.len() > MAX_RECORD_TAG_CHARS
+            || !normalized
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return Err(format!(
+                "record `{owner}`: tag `{tag}` must match [a-z0-9-]{{1,{MAX_RECORD_TAG_CHARS}}}"
+            ));
+        }
+        if !out.iter().any(|existing| existing == &normalized) {
+            out.push(normalized);
+        }
+    }
+    Ok(out)
 }
 
 impl TryFrom<RecordWire> for ViewRecordConfig {
@@ -257,6 +422,8 @@ impl TryFrom<RecordWire> for ViewRecordConfig {
             ttl: wire.ttl,
             rdata,
             overrides,
+            comment: normalize_comment(&wire.name, wire.comment)?,
+            tags: normalize_tags(&wire.name, wire.tags)?,
         })
     }
 }
@@ -273,6 +440,8 @@ impl From<ViewRecordConfig> for RecordWire {
                 .iter()
                 .map(|(view, ov)| (view.to_string(), override_wire(ov)))
                 .collect(),
+            comment: record.comment,
+            tags: record.tags,
         }
     }
 }
@@ -282,26 +451,43 @@ impl ViewOverride {
     ///
     /// A multi-value override returns its first value. Wire encoding of the
     /// full list goes through the record serde, not this helper.
+    /// [`Self::Addresses`] returns the first A, else the first AAAA.
     pub fn to_text(&self) -> String {
         match self {
             Self::Data(rdata) => rdata.first().map(format_rdata).unwrap_or_default(),
             Self::NoAnswer => String::new(),
             Self::Public => PUBLIC_OVERRIDE.to_owned(),
+            Self::Addresses { a, aaaa } => a
+                .first()
+                .map(ToString::to_string)
+                .or_else(|| aaaa.first().map(ToString::to_string))
+                .unwrap_or_default(),
         }
     }
 }
 
 impl ViewRecordConfig {
-    /// Record data this record has in `view`.
+    /// Record data this record has in `view` when the type is unchanged.
     ///
     /// - missing override → [`Some`] of the default [`Self::rdata`]
     /// - override with data → [`Some`] of that data
-    /// - no answer / public → [`None`] (see [`Self::is_public_in`])
+    /// - no answer / public / addresses → [`None`] (see [`Self::is_public_in`],
+    ///   [`Self::addresses_for`])
     pub fn rdata_for(&self, view: &ViewId) -> Option<&[RData]> {
         match self.overrides.get(view) {
-            Some(ViewOverride::NoAnswer | ViewOverride::Public) => None,
+            Some(
+                ViewOverride::NoAnswer | ViewOverride::Public | ViewOverride::Addresses { .. },
+            ) => None,
             Some(ViewOverride::Data(rdata)) => Some(rdata.as_slice()),
             None => Some(self.rdata.as_slice()),
+        }
+    }
+
+    /// A+AAAA replacement for a CNAME record in `view`, when set.
+    pub fn addresses_for(&self, view: &ViewId) -> Option<(&[Ipv4Addr], &[Ipv6Addr])> {
+        match self.overrides.get(view) {
+            Some(ViewOverride::Addresses { a, aaaa }) => Some((a.as_slice(), aaaa.as_slice())),
+            _ => None,
         }
     }
 
@@ -729,6 +915,8 @@ mod tests {
             ttl: 60,
             rdata: vec![RData::A(Ipv4Addr::new(192, 0, 2, 10))],
             overrides: BTreeMap::new(),
+            comment: String::new(),
+            tags: vec![],
         };
         assert_eq!(rec.rtype(), RecordType::A);
     }
@@ -760,6 +948,8 @@ mod tests {
                         ViewId::new("lan").unwrap(),
                         ViewOverride::Data(vec![RData::A(Ipv4Addr::new(192, 0, 2, 50))]),
                     )]),
+                    comment: String::new(),
+                    tags: vec![],
                 },
                 ViewRecordConfig {
                     name: Name::from_ascii("alias.lan.example.com").unwrap(),
@@ -768,12 +958,16 @@ mod tests {
                         Name::from_ascii("nas.lan.example.com").unwrap(),
                     )],
                     overrides: BTreeMap::new(),
+                    comment: String::new(),
+                    tags: vec![],
                 },
                 ViewRecordConfig {
                     name: Name::from_ascii("txt.lan.example.com").unwrap(),
                     ttl: 60,
                     rdata: vec![RData::TXT(vec![b"hello world".to_vec().into_boxed_slice()])],
                     overrides: BTreeMap::new(),
+                    comment: String::new(),
+                    tags: vec![],
                 },
             ],
             profiles: vec![ProfileConfig {
@@ -933,5 +1127,54 @@ mod tests {
             "rdata": [],
         });
         assert!(serde_json::from_value::<ViewRecordConfig>(empty).is_err());
+    }
+
+    #[test]
+    fn record_config_addresses_override_round_trips_on_cname() {
+        let value = serde_json::json!({
+            "name": "app.example.com",
+            "type": "CNAME",
+            "rdata": "cdn.example.net.",
+            "comment": "hairpin for home",
+            "tags": ["Split-DNS", "home"],
+            "overrides": {
+                "lan": { "mode": "addresses", "a": ["10.0.0.5"], "aaaa": ["fd00::5"] },
+                "guests": { "mode": "public" },
+            },
+        });
+        let rec: ViewRecordConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(rec.comment, "hairpin for home");
+        assert_eq!(rec.tags, vec!["split-dns".to_owned(), "home".to_owned()]);
+        let lan = ViewId::new("lan").unwrap();
+        let guests = ViewId::new("guests").unwrap();
+        assert_eq!(
+            rec.overrides[&lan],
+            ViewOverride::Addresses {
+                a: vec![Ipv4Addr::new(10, 0, 0, 5)],
+                aaaa: vec!["fd00::5".parse().unwrap()],
+            }
+        );
+        assert!(rec.is_public_in(&guests));
+        let (a, aaaa) = rec.addresses_for(&lan).unwrap();
+        assert_eq!(a, &[Ipv4Addr::new(10, 0, 0, 5)]);
+        assert_eq!(aaaa.len(), 1);
+        let wire = serde_json::to_value(&rec).unwrap();
+        assert_eq!(wire["overrides"]["lan"]["mode"], "addresses");
+        assert_eq!(wire["overrides"]["guests"], "@public");
+        assert_eq!(wire["tags"], serde_json::json!(["split-dns", "home"]));
+    }
+
+    #[test]
+    fn record_config_rejects_addresses_on_non_cname() {
+        let value = serde_json::json!({
+            "name": "app.example.com",
+            "type": "A",
+            "rdata": "192.0.2.10",
+            "overrides": {
+                "lan": { "mode": "addresses", "a": ["10.0.0.5"] },
+            },
+        });
+        let err = serde_json::from_value::<ViewRecordConfig>(value).unwrap_err();
+        assert!(err.to_string().contains("addresses mode"), "{err}");
     }
 }

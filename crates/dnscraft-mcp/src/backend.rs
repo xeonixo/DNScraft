@@ -14,17 +14,18 @@ use serde_json::Value;
 
 use crate::dto::{
     AddRuleParams, AddRuleResult, AuditEntry, CancelTempAllowParams, CancelTempAllowResult,
-    ClassifyDomainResult, ClientListParams, ClientListResult, DeleteZoneRecordParams,
-    DeleteZoneRecordResult, DomainStatsParams, ExplainBlockResult, FlushCacheParams,
-    FlushCacheResult, ListAlertsResult, ListBlockedServicesResult, ListDomainZonesResult,
-    ListFilterListsResult, ListFilterSetsResult, ListListenersResult, ListPolicyRecordsResult,
-    ListPolicyViewsResult, ListResolverUpstreamsResult, ListRulesParams, ListRulesResult,
-    ListZoneRecordsResult, McpRuleInfo, NodeStatus, PauseParams, PauseResult,
-    ProposeExceptionParams, ProposeExceptionResult, QType, QueryDetail, QueryLogResult,
-    QueryLogSearch, RemoveRuleParams, RemoveRuleResult, ResolveClientParams, ResumeResult,
-    SetBlockedServiceParams, SetBlockedServiceResult, StatsParams, StatsResult,
-    StatsTimeseriesParams, TempAllowParams, TempAllowResult, TestQueryParams, TestQueryResult,
-    TokenInfo, ZoneRecordWriteParams, ZoneRecordWriteResult,
+    ClassifyDomainResult, ClientListParams, ClientListResult, DeletePolicyRecordParams,
+    DeletePolicyRecordResult, DeleteZoneRecordParams, DeleteZoneRecordResult, DomainStatsParams,
+    ExplainBlockResult, FlushCacheParams, FlushCacheResult, ListAlertsResult,
+    ListBlockedServicesResult, ListDomainZonesResult, ListFilterListsResult, ListFilterSetsResult,
+    ListListenersResult, ListPolicyRecordsResult, ListPolicyViewsResult,
+    ListResolverUpstreamsResult, ListRulesParams, ListRulesResult, ListZoneRecordsResult,
+    McpRuleInfo, NodeStatus, PauseParams, PauseResult, ProposeExceptionParams,
+    ProposeExceptionResult, QType, QueryDetail, QueryLogResult, QueryLogSearch, RemoveRuleParams,
+    RemoveRuleResult, ResolveClientParams, ResumeResult, SetBlockedServiceParams,
+    SetBlockedServiceResult, StatsParams, StatsResult, StatsTimeseriesParams, TempAllowParams,
+    TempAllowResult, TestQueryParams, TestQueryResult, TokenInfo, UpsertPolicyRecordParams,
+    UpsertPolicyRecordResult, ZoneRecordWriteParams, ZoneRecordWriteResult,
 };
 
 /// An error returned by an [`McpBackend`] implementation.
@@ -153,6 +154,18 @@ pub trait McpBackend: Send + Sync {
 
     /// Static policy records from config.
     async fn list_policy_records(&self) -> Result<ListPolicyRecordsResult, BackendError>;
+
+    /// Create or replace a local policy DNS record.
+    async fn upsert_policy_record(
+        &self,
+        params: UpsertPolicyRecordParams,
+    ) -> Result<UpsertPolicyRecordResult, BackendError>;
+
+    /// Delete a local policy DNS record.
+    async fn delete_policy_record(
+        &self,
+        params: DeletePolicyRecordParams,
+    ) -> Result<DeletePolicyRecordResult, BackendError>;
 
     /// Per-domain stats from the query log.
     async fn get_domain_stats(

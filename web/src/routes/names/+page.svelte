@@ -31,12 +31,14 @@
 	import { zoneOfName } from '$lib/names-zones';
 	import {
 		deleteRecord,
+		isAddressesOverride,
 		listRecords,
 		listViews,
 		rdataLabel,
 		rdataTexts,
 		rdataWire,
 		saveRecord,
+		type OverrideValue,
 		type PolicyRecord,
 		type PolicyView,
 		type RdataValue,
@@ -46,10 +48,21 @@
 	import { auth } from '$lib/auth/state.svelte';
 	import Switch from '$lib/components/Switch.svelte';
 	import { toDomainName } from '$lib/domain-name';
+	import {
+		overridesFromRows,
+		rowsForViews,
+		type OverrideRowState,
+		PUBLIC_OVERRIDE,
+	} from '$lib/names/override-mode';
+	import { cnameChainPreview } from '$lib/names/resolve-answers';
 	import { parseIp } from '$lib/policy/cidr';
 	import { domainLabel } from '$lib/policy/display';
 	import { displayText } from '$lib/safe-text';
 	import { m } from '$lib/paraglide/messages';
+	import NameRowMeta from './NameRowMeta.svelte';
+	import NamesFilters from './NamesFilters.svelte';
+	import PublicZonesSheet from './PublicZonesSheet.svelte';
+	import ViewAnswerMatrix from './ViewAnswerMatrix.svelte';
 
 	const RECORD_TYPES = ['A', 'AAAA', 'CNAME', 'TXT', 'SRV', 'MX', 'PTR'];
 	const isAdmin = $derived(auth.role === 'admin');
@@ -89,10 +102,13 @@
 		recordId: null,
 	});
 
-	/** One editable deviation row. `noAnswer` → empty override string (NODATA). */
-	type OverrideRow = { key: number; view: string; values: string[]; noAnswer: boolean };
-	let overrideRows = $state<OverrideRow[]>([]);
-	let nextOverrideKey = 0;
+	let overrideRows = $state<OverrideRowState[]>([]);
+	let formComment = $state('');
+	let formTags = $state('');
+	let typeFilter = $state('');
+	let tagFilter = $state('');
+	let deviationsOnly = $state(false);
+	let publicOnly = $state(false);
 
 	type PublicLookup =
 		| { kind: 'idle' }
@@ -197,9 +213,19 @@
 		const byOwner = new SvelteMap<string, { name: string; records: NameRow[] }>();
 		for (const row of allRows) {
 			if (activeZone !== '' && row.zone !== activeZone) continue;
-			if (needle && !`${row.owner} ${row.type} ${row.rdata}`.toLowerCase().includes(needle)) {
+			if (typeFilter !== '' && row.type !== typeFilter) continue;
+			if (publicOnly && !(row.cf || (row.local && hasPublic(row.local)))) continue;
+			if (deviationsOnly && !(row.local && Object.keys(row.local.overrides).length > 0)) {
 				continue;
 			}
+			if (
+				tagFilter !== '' &&
+				!(row.local?.tags ?? []).some((tag) => tag.toLowerCase() === tagFilter)
+			) {
+				continue;
+			}
+			const haystack = `${row.owner} ${row.type} ${row.rdata} ${row.local?.comment ?? ''} ${(row.local?.tags ?? []).join(' ')}`;
+			if (needle && !haystack.toLowerCase().includes(needle)) continue;
 			const owner = normalizeDnsName(row.owner);
 			const group = byOwner.get(owner) ?? { name: row.owner, records: [] };
 			group.records.push(row);
@@ -212,10 +238,6 @@
 				records: group.records.sort((a, b) => a.type.localeCompare(b.type)),
 			}));
 	});
-
-	const canAddOverride = $derived(
-		views.some((view) => !overrideRows.some((row) => row.view === view.id)),
-	);
 
 	const publicTypeSupported = $derived(
 		(PUBLIC_RECORD_TYPES as readonly string[]).includes(formType.trim().toUpperCase()),
@@ -245,14 +267,6 @@
 				formName,
 				attachedZones.map((zone) => zone.name),
 			),
-	);
-
-	const inheritPlaceholder = $derived(m.names_overrides_inherit_public());
-
-	const overridesEmptyText = $derived(
-		publicLookup.kind === 'found' || formPublicContent.trim() !== ''
-			? m.names_overrides_empty()
-			: m.names_overrides_empty_standard(),
 	);
 
 	const sheetTitle = $derived(
@@ -386,10 +400,13 @@
 		return page.records;
 	}
 
-	/** Loads every record of every attached zone that is not cached yet. */
+	/** Loads CF records for attached zones. Prefer the active zone filter; otherwise all. */
 	async function loadCloudflareRecords(): Promise<void> {
 		if (!hasCloudflareToken) return;
-		const ids = attachedZones
+		const preferred = activeZone
+			? attachedZones.filter((zone) => normalizeDnsName(zone.name) === activeZone)
+			: attachedZones;
+		const ids = preferred
 			.map((zone) => zone.id)
 			.filter((id): id is string => id !== null && !recordsByZone.has(id));
 		if (ids.length === 0) return;
@@ -558,66 +575,22 @@
 		return validateRdata(data, false);
 	});
 
-	const PUBLIC_OVERRIDE = '@public';
-	const isOverrideData = (value: RdataValue): boolean =>
-		rdataTexts(value).some((text) => text !== PUBLIC_OVERRIDE);
-
-	function rowsFromOverrides(map: Record<string, RdataValue>): OverrideRow[] {
-		return Object.entries(map).map(([view, value]) => {
-			if (value === '') {
-				return { key: nextOverrideKey++, view, values: [''], noAnswer: true };
-			}
-			const texts = value === PUBLIC_OVERRIDE ? [''] : rdataTexts(value);
-			return {
-				key: nextOverrideKey++,
-				view,
-				values: texts.length > 0 ? texts : [''],
-				noAnswer: false,
-			};
-		});
-	}
-
-	/**
-	 * Missing key = inherit the answer above. Empty string = no answer (NODATA).
-	 * Non-empty = replacement. A row with a view but neither value nor noAnswer
-	 * resolves publicly ("wie öffentlich"); rows without a view are dropped.
-	 */
-	function overridesFromRows(list: OverrideRow[]): Record<string, RdataValue> {
-		const map: Record<string, RdataValue> = {};
-		for (const row of list) {
-			const view = row.view.trim();
-			if (view === '') continue;
-			if (row.noAnswer) {
-				map[view] = '';
-				continue;
-			}
-			const texts = row.values.map((value) => value.trim()).filter((value) => value !== '');
-			map[view] = texts.length === 0 ? PUBLIC_OVERRIDE : rdataWire(texts);
+	const isOverrideData = (value: OverrideValue): boolean => {
+		if (isAddressesOverride(value)) return true;
+		if (typeof value === 'string') return value !== '' && value !== PUBLIC_OVERRIDE;
+		if (Array.isArray(value)) return rdataTexts(value).length > 0;
+		if (typeof value === 'object' && value !== null && 'mode' in value) {
+			const mode = (value as { mode: string }).mode;
+			return mode === 'data' || mode === 'addresses';
 		}
-		return map;
-	}
+		return false;
+	};
 
-	function viewOptionsFor(row: OverrideRow): string[] {
-		const taken = new SvelteSet(
-			overrideRows.filter((other) => other.key !== row.key && other.view !== '').map((o) => o.view),
-		);
-		const ids = new SvelteSet(views.map((view) => view.id));
-		if (row.view !== '') ids.add(row.view);
-		return [...ids].filter((id) => !taken.has(id)).sort((a, b) => a.localeCompare(b));
-	}
-
-	function addOverrideRow(): void {
-		const taken = new SvelteSet(overrideRows.map((row) => row.view));
-		const next = views.find((view) => !taken.has(view.id));
-		if (!next) return;
-		overrideRows = [
-			...overrideRows,
-			{ key: nextOverrideKey++, view: next.id, values: [''], noAnswer: false },
-		];
-	}
-
-	function removeOverrideRow(key: number): void {
-		overrideRows = overrideRows.filter((row) => row.key !== key);
+	function parseTagsInput(text: string): string[] {
+		return text
+			.split(/[,\s]+/)
+			.map((tag) => tag.trim().toLowerCase())
+			.filter((tag) => tag !== '');
 	}
 
 	function openCreate(): void {
@@ -628,8 +601,13 @@
 		formValues = [{ key: nextValueKey++, text: '' }];
 		formPublicContent = '';
 		formPublicProxied = false;
+		formComment = '';
+		formTags = '';
 		publicBaseline = { content: '', proxied: false, ttl: '60', recordId: null };
-		overrideRows = [];
+		overrideRows = rowsForViews(
+			views.map((view) => view.id),
+			{},
+		);
 		confirmDelete = false;
 		failure = null;
 		submitted = false;
@@ -645,13 +623,18 @@
 		formValues = valuesFrom(record.rdata);
 		formPublicContent = '';
 		formPublicProxied = false;
+		formComment = record.comment ?? '';
+		formTags = (record.tags ?? []).join(', ');
 		publicBaseline = {
 			content: '',
 			proxied: false,
 			ttl: String(record.ttl),
 			recordId: null,
 		};
-		overrideRows = rowsFromOverrides(record.overrides);
+		overrideRows = rowsForViews(
+			views.map((view) => view.id),
+			record.overrides,
+		);
 		confirmDelete = false;
 		failure = null;
 		submitted = false;
@@ -684,8 +667,13 @@
 		formValues = valuesFrom(record.content);
 		formPublicContent = '';
 		formPublicProxied = false;
+		formComment = '';
+		formTags = '';
 		publicBaseline = { content: '', proxied: false, ttl: formTtl, recordId: null };
-		overrideRows = [];
+		overrideRows = rowsForViews(
+			views.map((view) => view.id),
+			{},
+		);
 		confirmDelete = false;
 		failure = null;
 		submitted = false;
@@ -737,28 +725,11 @@
 		formValues = next.length > 0 ? next : [{ key: nextValueKey++, text: '' }];
 	}
 
-	function addOverrideValue(key: number): void {
-		overrideRows = overrideRows.map((row) =>
-			row.key === key ? { ...row, values: [...row.values, ''] } : row,
-		);
-	}
-
-	function removeOverrideValue(key: number, index: number): void {
-		overrideRows = overrideRows.map((row) => {
-			if (row.key !== key || row.values.length < 2) return row;
-			return { ...row, values: row.values.filter((_, i) => i !== index) };
-		});
-	}
-
 	function onPublicContentInput(): void {
 		const next = formPublicContent.trim();
 		if (next !== '' && publicEditable && formValues[0]) {
 			formValues[0].text = formPublicContent;
 		}
-	}
-
-	function overrideCount(record: PolicyRecord): number {
-		return Object.keys(record.overrides).length;
 	}
 
 	function hasPublic(record: PolicyRecord): boolean {
@@ -779,10 +750,14 @@
 				? [publicContent, ...localTexts.slice(1)]
 				: [...localTexts];
 		if (values.length === 0 && editing) values = rdataTexts(editing.rdata);
-		// Local-only record without a default answer: the backend needs a base value, so reuse an override.
+		// Local-only record without a default answer: reuse a same-type override (not addresses).
 		if (values.length === 0) {
-			const fallback = Object.values(overrides).find(isOverrideData);
-			values = fallback ? rdataTexts(fallback) : [];
+			const fallback = Object.values(overrides).find(
+				(value) => isOverrideData(value) && !isAddressesOverride(value),
+			);
+			values = fallback && (typeof fallback === 'string' || Array.isArray(fallback))
+				? rdataTexts(fallback)
+				: [];
 		}
 		if (values.length === 0 || values.some((value) => validateRdata(value, true))) return;
 		const rdata = rdataWire(values);
@@ -822,6 +797,8 @@
 				ttl: localTtl(formTtl),
 				rdata,
 				overrides,
+				comment: formComment.trim() || undefined,
+				tags: parseTagsInput(formTags),
 			});
 			closeSheet();
 			await load();
@@ -849,8 +826,28 @@
 		}
 	}
 
+	const availableTypes = $derived(
+		[...new SvelteSet(allRows.map((row) => row.type))].sort((a, b) => a.localeCompare(b)),
+	);
+	const availableTags = $derived(
+		[
+			...new SvelteSet(
+				rows.flatMap((record) => record.tags ?? []).map((tag) => tag.toLowerCase()),
+			),
+		].sort((a, b) => a.localeCompare(b)),
+	);
+
+	const chainByView = $derived.by(() => {
+		if (formType.trim().toUpperCase() !== 'CNAME' || formName.trim() === '') return {};
+		const out: Record<string, string> = {};
+		for (const view of views) {
+			const chain = cnameChainPreview(formName.trim(), view.id, rows);
+			if (chain.length > 0) out[view.id] = chain.join(' → ');
+		}
+		return out;
+	});
+
 	onMount(() => {
-		zoneKey = new URLSearchParams(window.location.search).get('zone') ?? '';
 		zoneKey = new URLSearchParams(window.location.search).get('zone') ?? '';
 		void Promise.all([load(), loadDomainZones()]);
 	});
@@ -891,6 +888,15 @@
 			bind:value={query}
 			placeholder={m.names_search_placeholder()}
 			autocomplete="off"
+		/>
+
+		<NamesFilters
+			types={availableTypes}
+			tags={availableTags}
+			bind:typeFilter
+			bind:tagFilter
+			bind:deviationsOnly
+			bind:publicOnly
 		/>
 
 		{#if zoneChips.length > 0}
@@ -934,20 +940,20 @@
 			{#snippet rowBody(row: NameRow)}
 				<span class="type">{row.type}</span>
 				<span class="rdata mono">{row.rdata}</span>
-				<span class="meta">
-					{#if row.local}
-						{m.names_ttl_short({ ttl: row.ttl })}{#if hasPublic(row.local)}
-							· {m.names_public_badge()}{/if}{#if overrideCount(row.local) > 0}
-							· {overrideCount(row.local) === 1
-								? m.names_overrides_badge_one({ count: '1' })
-								: m.names_overrides_badge_other({ count: String(overrideCount(row.local)) })}{/if}
-					{:else}
+				{#if row.local}
+					<NameRowMeta
+						local={row.local}
+						viewIds={views.map((view) => view.id)}
+						showPublicBadge={hasPublic(row.local)}
+					/>
+				{:else}
+					<span class="meta">
 						{m.names_public_only()} · {m.names_ttl_short({
 							ttl: ttlFieldFor(row.ttl),
 						})}{#if row.cf?.proxied}
 							· {m.names_public_proxied()}{/if}
-					{/if}
-				</span>
+					</span>
+				{/if}
 				{#if canOpen(row)}
 					<span class="chevron" aria-hidden="true">
 						<Icon name="chevron-right" size="1rem" />
@@ -1136,97 +1142,32 @@
 		<section class="sheet-section" aria-labelledby="rec-overrides-label">
 			<p class="section-label" id="rec-overrides-label">{m.names_section_overrides()}</p>
 			<p class="hint" id="rec-overrides-hint">{m.names_overrides_hint()}</p>
-			{#if overrideRows.length === 0}
-				<p class="hint muted">{overridesEmptyText}</p>
-			{:else}
-				<ul
-					class="override-list"
-					aria-labelledby="rec-overrides-label"
-					aria-describedby="rec-overrides-hint"
-				>
-					{#each overrideRows as row, i (row.key)}
-						<li class="override-row">
-							<label class="sr-only" for="ov-view-{row.key}">{m.names_overrides_view()}</label>
-							<select
-								id="ov-view-{row.key}"
-								class="field"
-								bind:value={overrideRows[i].view}
-								disabled={!isAdmin}
-							>
-								<option value="">{m.names_overrides_choose()}</option>
-								{#each viewOptionsFor(row) as viewId (viewId)}
-									<option value={viewId}>{viewId}</option>
-								{/each}
-							</select>
-							<div class="override-values">
-								{#each row.values as text, j (`${row.key}-${j}`)}
-									<label class="sr-only" for="ov-value-{row.key}-{j}"
-										>{j === 0
-											? m.names_overrides_value()
-											: m.names_value_extra({ n: String(j + 1) })}</label
-									>
-									<input
-										id="ov-value-{row.key}-{j}"
-										class="field mono"
-										value={text}
-										oninput={(event) => {
-											overrideRows[i].values[j] = event.currentTarget.value;
-										}}
-										placeholder={j === 0
-											? row.noAnswer
-												? m.names_overrides_no_answer()
-												: inheritPlaceholder
-											: ''}
-										autocomplete="off"
-										disabled={!isAdmin || row.noAnswer}
-									/>
-								{/each}
-								{#if isAdmin && !row.noAnswer}
-									<button
-										type="button"
-										class="text-action"
-										onclick={() => addOverrideValue(row.key)}
-									>
-										{m.names_value_add()}
-									</button>
-								{/if}
-								{#if isAdmin && row.values.length > 1}
-									<button
-										type="button"
-										class="text-action"
-										onclick={() => removeOverrideValue(row.key, row.values.length - 1)}
-									>
-										{m.names_value_remove()}
-									</button>
-								{/if}
-							</div>
-							<div class="no-answer-row">
-								<span class="no-answer-label">{m.names_overrides_no_answer()}</span>
-								<Switch
-									bind:checked={overrideRows[i].noAnswer}
-									disabled={!isAdmin}
-									aria-label={m.names_overrides_no_answer()}
-								/>
-							</div>
-							{#if isAdmin}
-								<button
-									type="button"
-									class="remove-override"
-									aria-label={m.names_overrides_remove()}
-									onclick={() => removeOverrideRow(row.key)}
-								>
-									<Icon name="x" size="1rem" />
-								</button>
-							{/if}
-						</li>
-					{/each}
-				</ul>
-			{/if}
-			{#if isAdmin && canAddOverride}
-				<button type="button" class="add-override" onclick={addOverrideRow}
-					>{m.names_overrides_add()}</button
-				>
-			{/if}
+			<ViewAnswerMatrix
+				bind:rows={overrideRows}
+				recordType={formType}
+				readonly={!isAdmin}
+				{chainByView}
+			/>
+		</section>
+
+		<section class="sheet-section" aria-labelledby="rec-notes-label">
+			<p class="section-label" id="rec-notes-label">{m.names_section_notes()}</p>
+			<label class="field-label" for="rec-comment">{m.names_field_comment()}</label>
+			<input
+				id="rec-comment"
+				class="field"
+				bind:value={formComment}
+				disabled={!isAdmin}
+				maxlength="200"
+			/>
+			<label class="field-label" for="rec-tags">{m.names_field_tags()}</label>
+			<input
+				id="rec-tags"
+				class="field mono"
+				bind:value={formTags}
+				disabled={!isAdmin}
+				placeholder={m.names_tags_hint()}
+			/>
 		</section>
 
 		{#snippet footer()}
@@ -1258,6 +1199,12 @@
 					</button>
 				{/if}
 				<div class="actions">
+					<a
+						class="cta-link"
+						href={resolve(
+							`/test-query?domain=${encodeURIComponent(formName.trim() || editing?.name || '')}`,
+						)}>{m.names_test_query()}</a
+					>
 					<Button variant="secondary" onclick={closeSheet}>{m.action_cancel()}</Button>
 					<Button variant="primary" disabled={busy} onclick={() => void submit()}
 						>{m.action_save()}</Button
@@ -1268,79 +1215,18 @@
 	</Sheet>
 {/if}
 
-{#if zonesSheetOpen}
-	<Sheet
-		open={zonesSheetOpen}
-		title={m.names_zones_title()}
-		onclose={closeZonesSheet}
-		centeredOnWide
-	>
-		<p class="hint">{m.names_zones_lead()}</p>
-		{#if !hasCloudflareToken}
-			<p class="hint">{m.names_zones_token_missing()}</p>
-			<a class="cta-link" href={resolve('/tls')}>{m.names_public_token_cta()}</a>
-		{:else if !zonesDiscoverReady}
-			<p class="hint muted">{m.names_zones_loading()}</p>
-		{:else}
-			<p class="field-label">{m.names_zones_attached()}</p>
-			{#if attachedZones.length === 0}
-				<p class="hint muted">{m.state_empty()}</p>
-			{:else}
-				<ul class="zone-list">
-					{#each attachedZones as zone (zone.name)}
-						<li class="zone-row">
-							<div class="zone-meta">
-								<span class="mono">{displayText(zone.name, 80).text}</span>
-								<span class="hint muted">
-									{zone.source === 'public_domain'
-										? m.names_zones_public_domain()
-										: (zone.status ?? '')}
-								</span>
-							</div>
-							{#if zone.source !== 'public_domain'}
-								<Button
-									variant="secondary"
-									disabled={zonesBusy}
-									onclick={() => void detachZone(zone)}>{m.names_zones_detach()}</Button
-								>
-							{/if}
-						</li>
-					{/each}
-				</ul>
-			{/if}
-
-			<p class="field-label">{m.names_zones_discoverable()}</p>
-			{#if attachCandidates.length === 0}
-				<p class="hint muted">{m.names_zones_empty_discover()}</p>
-			{:else}
-				<ul class="zone-list">
-					{#each attachCandidates as zone (zone.id ?? zone.name)}
-						<li class="zone-row">
-							<div class="zone-meta">
-								<span class="mono">{displayText(zone.name, 80).text}</span>
-								<span class="hint muted">{zone.status ?? ''}</span>
-							</div>
-							<Button variant="primary" disabled={zonesBusy} onclick={() => void attachZone(zone)}
-								>{m.names_zones_attach()}</Button
-							>
-						</li>
-					{/each}
-				</ul>
-			{/if}
-		{/if}
-
-		{#snippet footer()}
-			{#if zonesFailure}
-				<div class="footer-error">
-					<ErrorNotice code={zonesFailure.code} params={zonesFailure.params} />
-				</div>
-			{/if}
-			<div class="actions">
-				<Button variant="secondary" onclick={closeZonesSheet}>{m.action_cancel()}</Button>
-			</div>
-		{/snippet}
-	</Sheet>
-{/if}
+<PublicZonesSheet
+	open={zonesSheetOpen}
+	{hasCloudflareToken}
+	discoverReady={zonesDiscoverReady}
+	busy={zonesBusy}
+	attached={attachedZones}
+	candidates={attachCandidates}
+	failure={zonesFailure}
+	onclose={closeZonesSheet}
+	onattach={(zone) => void attachZone(zone)}
+	ondetach={(zone) => void detachZone(zone)}
+/>
 
 <style>
 	.names {
@@ -1396,31 +1282,6 @@
 	.proxied-label {
 		font-size: 0.8125rem;
 		color: var(--label-2);
-	}
-	.zone-list {
-		list-style: none;
-		margin: 0 0 0.75rem;
-		padding: 0;
-		display: flex;
-		flex-direction: column;
-		gap: 0.5rem;
-	}
-	.zone-row {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		justify-content: space-between;
-		gap: 0.5rem;
-		padding: 0.5rem 0.75rem;
-		border: 1px solid var(--separator);
-		border-radius: var(--r-ctl);
-		background: var(--surface);
-	}
-	.zone-meta {
-		display: flex;
-		flex-direction: column;
-		gap: 0.125rem;
-		min-width: 0;
 	}
 	.hint {
 		margin: 0.375rem 0 0;
@@ -1638,60 +1499,6 @@
 	.cta-link:hover {
 		text-decoration: underline;
 	}
-	.override-list {
-		list-style: none;
-		margin: 0;
-		padding: 0.375rem;
-		display: flex;
-		flex-direction: column;
-		gap: 0.375rem;
-		border: 1px solid var(--separator);
-		border-radius: var(--r-ctl);
-		background: var(--surface-2);
-	}
-	.override-row {
-		display: grid;
-		grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) auto auto;
-		gap: 0.375rem;
-		align-items: center;
-	}
-	@media (max-width: 36rem) {
-		.override-row {
-			grid-template-columns: minmax(0, 1fr) auto;
-		}
-		.override-row .field.mono {
-			grid-column: 1 / -1;
-		}
-	}
-	.no-answer-row {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.375rem;
-		min-height: 2.75rem;
-		cursor: pointer;
-	}
-	.no-answer-label {
-		font-size: 0.75rem;
-		color: var(--label-2);
-		white-space: nowrap;
-	}
-	.remove-override {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: 2.75rem;
-		height: 2.75rem;
-		padding: 0;
-		border: 1px solid var(--separator);
-		border-radius: var(--r-ctl);
-		background: var(--surface-2);
-		color: var(--label-2);
-		cursor: pointer;
-	}
-	.remove-override:hover {
-		color: var(--danger);
-	}
-	.add-override,
 	.text-action {
 		display: block;
 		margin: 0.5rem 0 0;
@@ -1712,12 +1519,6 @@
 	}
 	.value-row .field {
 		flex: 1;
-		min-width: 0;
-	}
-	.override-values {
-		display: flex;
-		flex-direction: column;
-		gap: 0.375rem;
 		min-width: 0;
 	}
 	.footer-error {

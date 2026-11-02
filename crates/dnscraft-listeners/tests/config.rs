@@ -397,6 +397,8 @@ async fn policy_engine_query_handler_answers_local_record() {
                 ttl: 60,
                 rdata: vec![RData::A(Ipv4Addr::new(192, 0, 2, 55))],
                 overrides: Default::default(),
+                comment: String::new(),
+                tags: vec![],
             }],
             default_rebind: true,
             ptr_prefixes: Vec::new(),

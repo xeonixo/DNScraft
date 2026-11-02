@@ -110,7 +110,7 @@ pub fn tool_definitions() -> Vec<Tool> {
         ),
         tool(
             "list_policy_records",
-            "List static local DNS records from policy configuration.",
+            "List local Split-DNS policy records (name, type, ttl, rdata, overrides, comment, tags). Overrides may be strings (@public, empty NODATA, rdata) or {mode:addresses,a,aaaa} on CNAME records.",
             json!({ "type": "object" }),
         ),
         tool(

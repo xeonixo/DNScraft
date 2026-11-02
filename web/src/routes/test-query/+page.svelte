@@ -22,7 +22,11 @@
 
 	let sourceIp = $state('192.0.2.10');
 	let clientId = $state('');
-	let domain = $state('www.example.com');
+	let domain = $state(
+		typeof window !== 'undefined'
+			? (new URLSearchParams(window.location.search).get('domain') ?? 'www.example.com')
+			: 'www.example.com',
+	);
 	let qtype = $state('A');
 	let protocol = $state('udp53');
 	let busy = $state(false);

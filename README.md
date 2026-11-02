@@ -25,7 +25,7 @@ cluster and an embedded web UI are part of the same binary.
 - **TLS** — ACME DNS-01 (Cloudflare), cert store, DynDNS
 - **Control plane** — REST `/api/v1`, OIDC + break-glass login, API tokens,
   audit log, backups
-- **MCP** — 34 tools, safe resources/prompts, and OAuth connectors on `/mcp/v1` (opt-in)
+- **MCP** — 36 tools, safe resources/prompts, and OAuth connectors on `/mcp/v1` (opt-in)
 - **Cluster** — master + sub-nodes, config sync, write relay, log aggregation
 - **Web UI** — SvelteKit SPA (en/de), embeddable into the binary (`web-ui` feature)
 
@@ -118,7 +118,7 @@ shares sockets with public DoH/DoT/DoQ listeners.
 | [`dnscraft-policy`](crates/dnscraft-policy/README.md) | Views/profiles and query pipeline |
 | [`dnscraft-listeners`](crates/dnscraft-listeners/README.md) | Do53 / DoT / DoH / DoQ |
 | [`dnscraft-api`](crates/dnscraft-api/README.md) | REST, auth, query log, stats, MCP/cluster wiring |
-| [`dnscraft-mcp`](crates/dnscraft-mcp/README.md) | MCP protocol + 34 tools, resources, prompts |
+| [`dnscraft-mcp`](crates/dnscraft-mcp/README.md) | MCP protocol + 36 tools, resources, prompts |
 | [`dnscraft-cluster`](crates/dnscraft-cluster/README.md) | Master/sub-node protocol (Prefer-QUIC → HTTP/2, reverse RPC; [ADR-0008](docs/adr/0008-cluster-transport-v2.md)) |
 | [`web/`](web/README.md) | SvelteKit SPA |
 

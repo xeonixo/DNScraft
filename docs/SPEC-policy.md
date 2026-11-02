@@ -202,13 +202,25 @@ pub struct FilterHit {
   present). A name exists across all zones; its records are **not** duplicated
   per view.
 - A record's `rdata` is the **default** for all zones. Optional `overrides`
-  keyed by view id (`{ view_id: rdata }`) replace the value in that zone; a
-  zone without an override uses the default.
-- `rdata` and each override value are one presentation string or a list of
-  presentation strings. A JSON string stays valid. One value is written back
-  as a string; several values are a JSON array. `""` is still no answer and
-  `"@public"` is still public resolution, and those two forms are only valid
-  as the sole override value.
+  keyed by view id replace the answer in that zone; a zone without an override
+  uses the default.
+- Optional metadata (ignored by the resolver): `comment` (Unicode string, max
+  200 characters, no newlines) and `tags` (up to 10 labels, each
+  `[a-z0-9-]{1,32}`, stored lowercase).
+- Override wire forms (additive):
+  - Compact: one presentation string or a list of them (same type as the
+    record); `""` = no answer (NODATA); `"@public"` = public resolution.
+    Those two forms are only valid as the sole override value.
+  - Structured: `{ "mode": "data"|"public"|"no_answer"|"addresses", … }`.
+    PUT accepts structured for all modes; GET keeps compact strings where
+    possible and emits structured objects only for `addresses`.
+  - `Addresses` (`{ "mode": "addresses", "a": [...], "aaaa": [...] }`) is
+    valid **only** on a CNAME record and requires at least one IPv4 or IPv6.
+    In that view the resolver answers A/AAAA instead of the CNAME (hairpin /
+    Split-Horizon type switch). Unknown override view ids are rejected
+    (`policy.config.invalid`). CNAME exclusivity is enforced **per view after
+    expansion** (no parallel A/AAAA **record** at the same owner globally;
+    address answers live only in the override).
 - A, AAAA, TXT, SRV, MX and PTR with several values are answered as one RRset.
 - CNAME may list several targets. Each answer contains exactly one CNAME;
   targets rotate (round-robin) per query for that name. A CNAME still cannot
@@ -542,7 +554,9 @@ Schedule time zones: ship UTC-only (current) or add a profile/timezone field lat
     default for every zone, with optional `overrides` keyed by view id (e.g.
     `nas.lan` resolves one way in Gäste, another in VPN). The UI keeps names and
     zones separate: **Zonen** = selection scopes, **Namen** = shared records with
-    per-zone overrides.
+    per-zone overrides. Later: `ViewOverride::Addresses` allows a CNAME record
+    to answer A/AAAA in selected views (hairpin); optional `comment`/`tags` are
+    metadata only.
 15. **Review 2026-10-28 (owner), narrows review 13:** a device keeps its profile on
     the road. A registered Client ID may be **pinned** to a view (`view` on its
     `policy.client_ids` entry). Selection order becomes subnet (longest prefix,

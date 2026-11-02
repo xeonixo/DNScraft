@@ -8,8 +8,9 @@ use serde_json::{Value, json};
 
 use super::{McpServer, invalid_input, parse_arguments, schema, token_from};
 use crate::dto::{
-    AuditResult, CancelTempAllowParams, DeleteZoneRecordParams, FlushCacheParams,
-    SetBlockedServiceParams, TokenInfo, TokenScope, ZoneRecordWriteParams,
+    AuditResult, CancelTempAllowParams, DeletePolicyRecordParams, DeleteZoneRecordParams,
+    FlushCacheParams, SetBlockedServiceParams, TokenInfo, TokenScope, UpsertPolicyRecordParams,
+    ZoneRecordWriteParams,
 };
 use crate::error::McpError;
 use crate::result::{tool_error, tool_ok};
@@ -17,13 +18,15 @@ use crate::sanitize::{CAP_CLIENT_NAME, CAP_DOMAIN, CAP_LIST_ID, sanitize};
 
 use super::write::{audit_failed, record, validate_domain};
 
-pub const V2_WRITE_TOOL_NAMES: [&str; 6] = [
+pub const V2_WRITE_TOOL_NAMES: [&str; 8] = [
     "cancel_temporary_allow",
     "flush_cache",
     "set_blocked_service",
     "create_zone_record",
     "update_zone_record",
     "delete_zone_record",
+    "upsert_policy_record",
+    "delete_policy_record",
 ];
 
 pub fn is_v2_write_tool(name: &str) -> bool {
@@ -95,6 +98,37 @@ pub fn tool_definitions() -> Vec<Tool> {
             })),
         )
         .with_annotations(ToolAnnotations::new().destructive(true).idempotent(true)),
+        Tool::new(
+            "upsert_policy_record",
+            "Create or replace a local Split-DNS policy record. Overrides may use string/@public/\"\" or structured {mode:data|public|no_answer|addresses}. addresses (A/AAAA) is only valid on CNAME records for hairpin answers.",
+            schema(json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                    "type": { "type": "string" },
+                    "ttl": { "type": "integer" },
+                    "rdata": {},
+                    "overrides": { "type": "object" },
+                    "comment": { "type": "string" },
+                    "tags": { "type": "array", "items": { "type": "string" } }
+                },
+                "required": ["name", "type", "rdata"]
+            })),
+        )
+        .with_annotations(ToolAnnotations::new().destructive(true).idempotent(true)),
+        Tool::new(
+            "delete_policy_record",
+            "Delete a local Split-DNS policy record by name and type.",
+            schema(json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                    "type": { "type": "string" }
+                },
+                "required": ["name", "type"]
+            })),
+        )
+        .with_annotations(ToolAnnotations::new().destructive(true).idempotent(true)),
     ]
 }
 
@@ -133,6 +167,11 @@ pub(crate) fn validate_arguments(name: &str, arguments: Option<JsonObject>) -> b
         "update_zone_record" => parse_arguments::<ZoneWriteArgs>(arguments)
             .is_ok_and(|a| a.record_id.as_ref().is_some_and(|id| !id.is_empty())),
         "delete_zone_record" => parse_arguments::<DeleteZoneArgs>(arguments).is_ok(),
+        "upsert_policy_record" => parse_arguments::<UpsertPolicyArgs>(arguments).is_ok_and(|a| {
+            !a.name.trim().is_empty() && !a.record_type.trim().is_empty() && !a.rdata.is_null()
+        }),
+        "delete_policy_record" => parse_arguments::<DeletePolicyArgs>(arguments)
+            .is_ok_and(|a| !a.name.trim().is_empty() && !a.record_type.trim().is_empty()),
         _ => false,
     }
 }
@@ -159,6 +198,8 @@ pub(crate) async fn call(
         "create_zone_record" => write_zone_record(arguments, server, &token, false).await,
         "update_zone_record" => write_zone_record(arguments, server, &token, true).await,
         "delete_zone_record" => delete_zone_record(arguments, server, &token).await,
+        "upsert_policy_record" => upsert_policy_record(arguments, server, &token).await,
+        "delete_policy_record" => delete_policy_record_tool(arguments, server, &token).await,
         other => tool_error(
             "control_api.internal",
             json!({ "reason": "not_implemented", "tool": other }),
@@ -427,6 +468,112 @@ async fn delete_zone_record(
             .is_err()
             {
                 return audit_failed("mcp.delete_zone_record");
+            }
+            tool_ok(after)
+        }
+        Err(error) => tool_error(error.code(), error.params().unwrap_or_else(|| json!({}))),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpsertPolicyArgs {
+    name: String,
+    #[serde(rename = "type")]
+    record_type: String,
+    ttl: Option<u32>,
+    rdata: Value,
+    overrides: Option<serde_json::Map<String, Value>>,
+    comment: Option<String>,
+    tags: Option<Vec<String>>,
+}
+
+async fn upsert_policy_record(
+    arguments: Option<JsonObject>,
+    server: &McpServer,
+    token: &TokenInfo,
+) -> CallToolResult {
+    let args = match parse_arguments::<UpsertPolicyArgs>(arguments) {
+        Ok(args) => args,
+        Err(error) => return error,
+    };
+    let params = UpsertPolicyRecordParams {
+        name: args.name,
+        r#type: args.record_type,
+        ttl: args.ttl,
+        rdata: args.rdata,
+        overrides: args.overrides.map(|map| map.into_iter().collect()),
+        comment: args.comment,
+        tags: args.tags,
+    };
+    match server.backend.upsert_policy_record(params).await {
+        Ok(result) => {
+            let after = json!({
+                "version": result.version,
+                "record": result.record,
+            });
+            if record(
+                server,
+                token,
+                "mcp.upsert_policy_record",
+                None,
+                Some(after.clone()),
+                AuditResult::Success,
+                None,
+            )
+            .await
+            .is_err()
+            {
+                return audit_failed("mcp.upsert_policy_record");
+            }
+            tool_ok(after)
+        }
+        Err(error) => tool_error(error.code(), error.params().unwrap_or_else(|| json!({}))),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeletePolicyArgs {
+    name: String,
+    #[serde(rename = "type")]
+    record_type: String,
+}
+
+async fn delete_policy_record_tool(
+    arguments: Option<JsonObject>,
+    server: &McpServer,
+    token: &TokenInfo,
+) -> CallToolResult {
+    let args = match parse_arguments::<DeletePolicyArgs>(arguments) {
+        Ok(args) => args,
+        Err(error) => return error,
+    };
+    let params = DeletePolicyRecordParams {
+        name: args.name,
+        r#type: args.record_type,
+    };
+    match server.backend.delete_policy_record(params).await {
+        Ok(result) => {
+            let after = json!({
+                "deleted": result.deleted,
+                "version": result.version,
+                "name": sanitize(&result.name, CAP_DOMAIN),
+                "type": sanitize(&result.r#type, CAP_LIST_ID),
+            });
+            if record(
+                server,
+                token,
+                "mcp.delete_policy_record",
+                None,
+                Some(after.clone()),
+                AuditResult::Success,
+                None,
+            )
+            .await
+            .is_err()
+            {
+                return audit_failed("mcp.delete_policy_record");
             }
             tool_ok(after)
         }

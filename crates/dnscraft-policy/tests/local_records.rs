@@ -66,6 +66,8 @@ fn rec(name: &str, rdata: RData) -> ViewRecordConfig {
         ttl: 60,
         rdata: vec![rdata],
         overrides: Default::default(),
+        comment: String::new(),
+        tags: vec![],
     }
 }
 

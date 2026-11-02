@@ -290,6 +290,8 @@ pub async fn local_policy_engine() -> Arc<PolicyEngine> {
             ttl: 60,
             rdata: vec![RData::A(Ipv4Addr::new(192, 0, 2, 77))],
             overrides: Default::default(),
+            comment: String::new(),
+            tags: vec![],
         }],
         views: vec![view],
         profiles: vec![profile],

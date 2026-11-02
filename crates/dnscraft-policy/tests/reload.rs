@@ -160,6 +160,8 @@ async fn apply_config_valid_takes_effect_next_query() {
         ttl: 60,
         rdata: vec![RData::A(Ipv4Addr::new(192, 0, 2, 50))],
         overrides: Default::default(),
+        comment: String::new(),
+        tags: vec![],
     });
     eng.apply_config(next).await.unwrap();
 
@@ -200,6 +202,8 @@ async fn counters_increment_and_survive_reload() {
         ttl: 60,
         rdata: vec![RData::A(Ipv4Addr::new(192, 0, 2, 7))],
         overrides: Default::default(),
+        comment: String::new(),
+        tags: vec![],
     });
     eng.apply_config(with_local).await.unwrap();
     eng.handle(ctx("lan.test.", RecordType::A)).await.unwrap();

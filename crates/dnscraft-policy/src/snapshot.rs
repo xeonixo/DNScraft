@@ -557,6 +557,24 @@ fn build_view_records(
             public.insert(record.name.clone());
             continue;
         }
+        if let Some((v4, v6)) = record.addresses_for(view) {
+            let entry = by_name.entry(record.name.clone()).or_default();
+            for ip in v4 {
+                entry.push(ExpandedRecord {
+                    name: record.name.clone(),
+                    ttl: record.ttl,
+                    rdata: RData::A(*ip),
+                });
+            }
+            for ip in v6 {
+                entry.push(ExpandedRecord {
+                    name: record.name.clone(),
+                    ttl: record.ttl,
+                    rdata: RData::AAAA(*ip),
+                });
+            }
+            continue;
+        }
         match record.rdata_for(view) {
             Some(values) if !values.is_empty() => {
                 for rdata in values {
@@ -702,6 +720,8 @@ mod tests {
                 ttl: 60,
                 rdata: vec![RData::A(Ipv4Addr::new(192, 0, 2, 10))],
                 overrides: Default::default(),
+                comment: String::new(),
+                tags: vec![],
             }],
         }
     }
@@ -809,12 +829,16 @@ mod tests {
                 Name::from_ascii("nas.lan.example.com").unwrap(),
             )],
             overrides: Default::default(),
+            comment: String::new(),
+            tags: vec![],
         });
         cfg.records.push(ViewRecordConfig {
             name,
             ttl: 60,
             rdata: vec![RData::A(Ipv4Addr::new(192, 0, 2, 11))],
             overrides: Default::default(),
+            comment: String::new(),
+            tags: vec![],
         });
         let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
         assert_eq!(err.code(), "policy.record.cname_conflict");
@@ -828,6 +852,8 @@ mod tests {
             ttl: 60,
             rdata: vec![RData::NS(Name::from_ascii("a.example.com").unwrap())],
             overrides: Default::default(),
+            comment: String::new(),
+            tags: vec![],
         });
         let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
         assert_eq!(err.code(), "policy.config.invalid");
@@ -847,6 +873,8 @@ mod tests {
             ttl: 60,
             rdata: vec![RData::CNAME(Name::from_ascii("proxy.example.com").unwrap())],
             overrides: Default::default(),
+            comment: String::new(),
+            tags: vec![],
         });
         PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap();
     }
@@ -859,6 +887,8 @@ mod tests {
             ttl: 60,
             rdata: vec![RData::A(Ipv4Addr::new(192, 0, 2, 99))],
             overrides: Default::default(),
+            comment: String::new(),
+            tags: vec![],
         });
         let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
         assert_eq!(err.code(), "policy.config.invalid");
@@ -1131,6 +1161,42 @@ mod tests {
     }
 
     #[test]
+    fn config_cname_addresses_override_expands_per_view() {
+        let mut cfg = spec_excerpt_config();
+        cfg.records.clear();
+        cfg.records.push(ViewRecordConfig {
+            name: Name::from_ascii("app.example.com").unwrap(),
+            ttl: 60,
+            rdata: vec![RData::CNAME(Name::from_ascii("cdn.example.net").unwrap())],
+            overrides: BTreeMap::from([
+                (
+                    ViewId::new("lan").unwrap(),
+                    ViewOverride::Addresses {
+                        a: vec![Ipv4Addr::new(10, 0, 0, 5)],
+                        aaaa: vec![],
+                    },
+                ),
+                (ViewId::new("default").unwrap(), ViewOverride::Public),
+            ]),
+            comment: String::new(),
+            tags: vec![],
+        });
+        let snap = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap();
+        let name = Name::from_ascii("app.example.com").unwrap();
+        let lan = snap.views.iter().find(|v| v.id.as_str() == "lan").unwrap();
+        let lan_rr = lan.records.get(&name).unwrap();
+        assert_eq!(lan_rr.records.len(), 1);
+        assert_eq!(lan_rr.records[0].rdata, RData::A(Ipv4Addr::new(10, 0, 0, 5)));
+        let default = snap
+            .views
+            .iter()
+            .find(|v| v.id.as_str() == "default")
+            .unwrap();
+        assert!(default.public.contains(&name));
+        assert!(!default.records.contains_key(&name));
+    }
+
+    #[test]
     fn config_applies_per_view_override_and_keeps_default_elsewhere() {
         let mut cfg = spec_excerpt_config();
         cfg.records[0].overrides.insert(
@@ -1159,6 +1225,8 @@ mod tests {
                 0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x10,
             ))],
             overrides: BTreeMap::from([(ViewId::new("lan").unwrap(), ViewOverride::NoAnswer)]),
+            comment: String::new(),
+            tags: vec![],
         });
         let snap = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap();
         let name = Name::from_ascii("nas.lan.example.com").unwrap();
@@ -1192,6 +1260,8 @@ mod tests {
                 Name::from_ascii("nas.lan.example.com").unwrap(),
             )],
             overrides: Default::default(),
+            comment: String::new(),
+            tags: vec![],
         });
         let snap = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap();
         let sets = snap.views[0].records.get(&name).unwrap();
@@ -1221,6 +1291,8 @@ mod tests {
                 RData::CNAME(Name::from_ascii("b.example.com").unwrap()),
             ],
             overrides: Default::default(),
+            comment: String::new(),
+            tags: vec![],
         });
         let snap = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap();
         let lan = snap.views[0].records.get(&nas).unwrap();
@@ -1251,6 +1323,8 @@ mod tests {
                 ttl: 60,
                 rdata: vec![RData::A(Ipv4Addr::new(192, 0, 2, 50))],
                 overrides: Default::default(),
+                comment: String::new(),
+                tags: vec![],
             });
         }
         let snap = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap();
@@ -1270,6 +1344,8 @@ mod tests {
                 ttl,
                 rdata: vec![RData::A(Ipv4Addr::new(192, 0, 2, last))],
                 overrides: Default::default(),
+                comment: String::new(),
+                tags: vec![],
             });
         }
         let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
@@ -1291,6 +1367,8 @@ mod tests {
                 ttl,
                 rdata: vec![RData::A(Ipv4Addr::new(192, 0, 2, 50))],
                 overrides: Default::default(),
+                comment: String::new(),
+                tags: vec![],
             });
         }
         let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();

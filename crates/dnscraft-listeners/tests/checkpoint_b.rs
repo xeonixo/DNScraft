@@ -89,6 +89,8 @@ async fn policy_engine() -> (Hierarchy, Arc<PolicyEngine>) {
             ttl: 60,
             rdata: vec![RData::A(Ipv4Addr::new(192, 0, 2, 99))],
             overrides: Default::default(),
+            comment: String::new(),
+            tags: vec![],
         }],
         views: vec![view],
         profiles: vec![profile],

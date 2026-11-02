@@ -280,6 +280,51 @@ async fn records_accept_a_list_and_keep_a_single_string() {
 }
 
 #[tokio::test]
+async fn records_accept_addresses_override_comment_and_tags() {
+    let h = harness().await;
+    seed_policy(&h.state).await;
+
+    let (status, response) = put(
+        &h.state,
+        "/api/v1/policy/records",
+        json!({
+            "name": "app.example.com",
+            "type": "CNAME",
+            "rdata": "cdn.example.net.",
+            "comment": "hairpin",
+            "tags": ["split-dns", "Home"],
+            "overrides": {
+                "guests": { "mode": "addresses", "a": ["10.0.0.5"], "aaaa": ["fd00::5"] },
+            },
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    let record = &response["data"]["record"];
+    assert_eq!(record["comment"], "hairpin");
+    assert_eq!(record["tags"], json!(["split-dns", "home"]));
+    assert_eq!(record["overrides"]["guests"]["mode"], "addresses");
+    assert_eq!(record["overrides"]["guests"]["a"], json!(["10.0.0.5"]));
+    assert_eq!(record["overrides"]["guests"]["aaaa"], json!(["fd00::5"]));
+
+    let (status, response) = put(
+        &h.state,
+        "/api/v1/policy/records",
+        json!({
+            "name": "a.example.com",
+            "type": "A",
+            "rdata": "192.0.2.10",
+            "overrides": {
+                "guests": { "mode": "addresses", "a": ["10.0.0.5"] },
+            },
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{response}");
+    assert_eq!(code(&response), "policy.config.invalid");
+}
+
+#[tokio::test]
 async fn records_reject_bad_types_and_values() {
     let h = harness().await;
     seed_policy(&h.state).await;

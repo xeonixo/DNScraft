@@ -993,6 +993,43 @@ pub struct ListPolicyRecordsResult {
     pub records: Vec<Value>,
 }
 
+/// Create or replace a local policy DNS record.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpsertPolicyRecordParams {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub r#type: String,
+    pub ttl: Option<u32>,
+    pub rdata: Value,
+    #[serde(default)]
+    pub overrides: Option<std::collections::BTreeMap<String, Value>>,
+    pub comment: Option<String>,
+    pub tags: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpsertPolicyRecordResult {
+    pub version: u64,
+    pub record: Value,
+}
+
+/// Delete a local policy DNS record by name and type.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeletePolicyRecordParams {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub r#type: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeletePolicyRecordResult {
+    pub deleted: bool,
+    pub version: u64,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub r#type: String,
+}
+
 /// Filters for `get_domain_stats`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DomainStatsParams {

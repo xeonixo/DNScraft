@@ -224,6 +224,8 @@ async fn golden_view_and_directory_never_hit_resolver() {
                 ttl: 60,
                 rdata: vec![RData::A(Ipv4Addr::new(10, 0, 0, 1))],
                 overrides: Default::default(),
+                comment: String::new(),
+                tags: vec![],
             }],
         ),
         empty_filter(),

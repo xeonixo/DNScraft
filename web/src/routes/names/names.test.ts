@@ -144,12 +144,11 @@ describe('names sheet Antwort then Abweichungen', () => {
 		await waitFor(() =>
 			expect(within(dialog).getByLabelText(m.names_field_public())).toHaveValue('203.0.113.10'),
 		);
-		expect(within(dialog).getByLabelText(m.names_overrides_view())).toHaveValue('lan');
-		expect(within(dialog).getByLabelText(m.names_overrides_value())).toHaveValue('192.0.2.50');
-		expect(within(dialog).getByLabelText(m.names_overrides_value())).toHaveAttribute(
-			'placeholder',
-			m.names_overrides_inherit_public(),
-		);
+		expect(within(dialog).getByText('lan')).toBeInTheDocument();
+		expect(within(dialog).getByDisplayValue('192.0.2.50')).toBeInTheDocument();
+		expect(
+			within(dialog).getAllByRole('radiogroup', { name: m.names_mode_label() }).length,
+		).toBeGreaterThan(0);
 	});
 
 	it('links to TLS when the Cloudflare token is missing', async () => {
@@ -181,7 +180,9 @@ describe('names sheet Antwort then Abweichungen', () => {
 			});
 		const user = userEvent.setup();
 		render(NamesPage);
-		await user.click(await screen.findByRole('button', { name: /192\.0\.2\.50/ }));
+		await user.click(
+			await screen.findByRole('button', { name: (n) => /^A\s+192\.0\.2\.50/.test(n) }),
+		);
 		const dialog = await screen.findByRole('dialog');
 		const add = within(dialog).getAllByRole('button', { name: m.names_value_add() })[0];
 		await user.click(add);
@@ -199,16 +200,15 @@ describe('names sheet Antwort then Abweichungen', () => {
 	it('allows purely internal names without a public row', async () => {
 		const user = userEvent.setup();
 		render(NamesPage);
-		await user.click(await screen.findByRole('button', { name: /192\.0\.2\.50/ }));
+		await user.click(
+			await screen.findByRole('button', { name: (n) => /^A\s+192\.0\.2\.50/.test(n) }),
+		);
 		const dialog = await screen.findByRole('dialog');
 		expect(within(dialog).getByText(m.names_public_internal())).toBeInTheDocument();
 		expect(within(dialog).queryByLabelText(m.names_field_public())).toBeNull();
 		expect(within(dialog).getByLabelText(m.names_field_rdata())).toHaveValue('192.0.2.50');
 		expect(within(dialog).getByText(m.names_section_overrides())).toBeInTheDocument();
-		expect(within(dialog).getByLabelText(m.names_overrides_value())).toHaveAttribute(
-			'placeholder',
-			m.names_overrides_inherit_public(),
-		);
+		expect(within(dialog).getByText('guest')).toBeInTheDocument();
 	});
 
 	it('keeps structured Netzbereich rows instead of freitext zone=value lines', async () => {
@@ -223,7 +223,7 @@ describe('names sheet Antwort then Abweichungen', () => {
 		expect(within(dialog).getByText(m.names_section_overrides())).toBeInTheDocument();
 	});
 
-	it('adds and removes override rows and saves the same overrides map shape', async () => {
+	it('sets a second Netzbereich to custom and saves the overrides map', async () => {
 		handlers['PUT /api/v1/policy/records'] = () =>
 			ok({
 				version: 4,
@@ -235,36 +235,18 @@ describe('names sheet Antwort then Abweichungen', () => {
 					overrides: { lan: '192.0.2.50', guest: '10.0.0.1' },
 				},
 			});
-		handlers['GET /api/v1/policy/records'] = (() => {
-			let n = 0;
-			return () => {
-				n += 1;
-				return ok({
-					records: [
-						{
-							name: 'nas.example.test.',
-							type: 'A',
-							ttl: 60,
-							rdata: '203.0.113.10',
-							overrides: n === 1 ? { lan: '192.0.2.50' } : { lan: '192.0.2.50', guest: '10.0.0.1' },
-						},
-					],
-				});
-			};
-		})();
 
 		const user = userEvent.setup();
 		render(NamesPage);
 		await user.click(await screen.findByRole('button', { name: /203\.0\.113\.10/ }));
 		const dialog = await screen.findByRole('dialog');
 
-		await user.click(within(dialog).getByRole('button', { name: m.names_overrides_add() }));
-		const selects = within(dialog).getAllByLabelText(m.names_overrides_view());
-		expect(selects).toHaveLength(2);
-		await user.selectOptions(selects[1]!, 'guest');
+		expect(within(dialog).getByText('guest')).toBeInTheDocument();
+		const guestRadios = within(dialog).getAllByRole('radio', { name: m.names_mode_custom() });
+		await user.click(guestRadios[1]!);
 		const values = within(dialog).getAllByLabelText(m.names_overrides_value());
-		await user.clear(values[1]!);
-		await user.type(values[1]!, '10.0.0.1');
+		await user.clear(values[values.length - 1]!);
+		await user.type(values[values.length - 1]!, '10.0.0.1');
 
 		await user.click(within(dialog).getByRole('button', { name: m.action_save() }));
 		await waitFor(() => expect(putBodies()).toHaveLength(1));
@@ -277,7 +259,7 @@ describe('names sheet Antwort then Abweichungen', () => {
 		});
 	});
 
-	it('omits empty override values so missing keys inherit the default', async () => {
+	it('omits inherit modes so missing keys inherit the default', async () => {
 		handlers['PUT /api/v1/policy/records'] = () =>
 			ok({
 				version: 5,
@@ -294,7 +276,8 @@ describe('names sheet Antwort then Abweichungen', () => {
 		render(NamesPage);
 		await user.click(await screen.findByRole('button', { name: /203\.0\.113\.10/ }));
 		const dialog = await screen.findByRole('dialog');
-		await user.clear(within(dialog).getByLabelText(m.names_overrides_value()));
+		const inherit = within(dialog).getAllByRole('radio', { name: m.names_mode_inherit() })[0]!;
+		await user.click(inherit);
 		await user.click(within(dialog).getByRole('button', { name: m.action_save() }));
 		await waitFor(() => expect(putBodies()).toHaveLength(1));
 		expect(putBodies()[0]).toMatchObject({ overrides: {} });
@@ -317,16 +300,14 @@ describe('names sheet Antwort then Abweichungen', () => {
 		render(NamesPage);
 		await user.click(await screen.findByRole('button', { name: /203\.0\.113\.10/ }));
 		const dialog = await screen.findByRole('dialog');
-		const noAnswer = within(dialog).getByRole('switch', { name: m.names_overrides_no_answer() });
-		await user.click(noAnswer.closest('label')!);
-		expect(noAnswer).toBeChecked();
-		expect(within(dialog).getByLabelText(m.names_overrides_value())).toBeDisabled();
+		const none = within(dialog).getAllByRole('radio', { name: m.names_mode_no_answer() })[0]!;
+		await user.click(none);
 		await user.click(within(dialog).getByRole('button', { name: m.action_save() }));
 		await waitFor(() => expect(putBodies()).toHaveLength(1));
 		expect(putBodies()[0]).toMatchObject({ overrides: { lan: '' } });
 	});
 
-	it('loads an empty override string as Keine Antwort', async () => {
+	it('loads an empty override string as Keine Antwort mode', async () => {
 		handlers['GET /api/v1/policy/records'] = () =>
 			ok({
 				records: [
@@ -344,14 +325,14 @@ describe('names sheet Antwort then Abweichungen', () => {
 		render(NamesPage);
 		await user.click(await screen.findByRole('button', { name: /2001:db8::10/ }));
 		const dialog = await screen.findByRole('dialog');
-		expect(
-			within(dialog).getByRole('switch', { name: m.names_overrides_no_answer() }),
-		).toBeChecked();
-		expect(within(dialog).getByLabelText(m.names_overrides_value())).toBeDisabled();
-		expect(within(dialog).getByLabelText(m.names_overrides_view())).toHaveValue('guest');
+		expect(within(dialog).getByText('guest')).toBeInTheDocument();
+		const guestNone = within(dialog)
+			.getAllByRole('radio', { name: m.names_mode_no_answer() })
+			.find((el) => el.getAttribute('aria-checked') === 'true');
+		expect(guestNone).toBeTruthy();
 	});
 
-	it('removes an override row before save', async () => {
+	it('resets a deviation to inherit before save', async () => {
 		handlers['PUT /api/v1/policy/records'] = () =>
 			ok({
 				version: 6,
@@ -368,9 +349,7 @@ describe('names sheet Antwort then Abweichungen', () => {
 		render(NamesPage);
 		await user.click(await screen.findByRole('button', { name: /203\.0\.113\.10/ }));
 		const dialog = await screen.findByRole('dialog');
-		await user.click(within(dialog).getByRole('button', { name: m.names_overrides_remove() }));
-		expect(within(dialog).queryByLabelText(m.names_overrides_view())).toBeNull();
-		expect(within(dialog).getByText(m.names_overrides_empty())).toBeInTheDocument();
+		await user.click(within(dialog).getAllByRole('radio', { name: m.names_mode_inherit() })[0]!);
 		await user.click(within(dialog).getByRole('button', { name: m.action_save() }));
 		await waitFor(() => expect(putBodies()).toHaveLength(1));
 		expect(putBodies()[0]).toMatchObject({ overrides: {} });
@@ -388,10 +367,10 @@ describe('names sheet Antwort then Abweichungen', () => {
 		const dialog = await screen.findByRole('dialog');
 		expect(within(dialog).getByText(m.names_view_title())).toBeInTheDocument();
 		expect(within(dialog).getByLabelText(m.names_field_public())).toHaveTextContent('203.0.113.10');
-		expect(within(dialog).getByLabelText(m.names_overrides_view())).toBeDisabled();
+		expect(within(dialog).getByText('lan')).toBeInTheDocument();
 		expect(within(dialog).queryByRole('textbox', { name: m.names_field_rdata() })).toBeNull();
 		expect(within(dialog).queryByRole('button', { name: m.action_save() })).toBeNull();
-		expect(within(dialog).queryByRole('button', { name: m.names_overrides_add() })).toBeNull();
+		expect(within(dialog).queryByRole('radio', { name: m.names_mode_custom() })).toBeNull();
 	});
 
 	it('saves Öffentlich to Cloudflare and aligns local default without wiping overrides', async () => {

@@ -121,6 +121,8 @@ async fn policy_engine(client_ids: &[&str]) -> (Hierarchy, Arc<PolicyEngine>) {
             ttl: 60,
             rdata: vec![RData::A(LOCAL_A)],
             overrides: Default::default(),
+            comment: String::new(),
+            tags: vec![],
         }],
         views: vec![view],
         profiles: vec![profile],

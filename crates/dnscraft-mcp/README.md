@@ -17,7 +17,7 @@ control-api
    │  implements McpBackend (all I/O: log, policy, filtering, audit)
    ▼
 dnscraft-mcp
-   ├── tools/       34 tool definitions + handlers (read and write)
+   ├── tools/       36 tool definitions + handlers (read and write)
    ├── transport     pure request pre-checks + rmcp Streamable HTTP wrapper
    ├── auth         bearer-token extraction and scope checks
    ├── protected    protected-domain matching
@@ -41,7 +41,7 @@ write-tools gate. The dependency decision is recorded in
 
 ## Tools
 
-All 34 tools are listed when `write_tools_enabled = true`; with the gate off,
+All 36 tools are listed when `write_tools_enabled = true`; with the gate off,
 `tools/list` returns only the 22 read tools and every write tool call fails
 with `mcp.write_tools_disabled`. Rows are in the order returned by `tools/list`
 (alphabetical).
@@ -53,6 +53,7 @@ with `mcp.write_tools_disabled`. Rows are in the order returned by `tools/list`
 | `cancel_temporary_allow` | `mcp:write` | Remove an active temporary allow for a domain. |
 | `classify_domain` | `mcp:read` | Classify a domain using the tracker database (tracking / functional / unknown). |
 | `create_zone_record` | `mcp:write` | Create a DNS record in an attached public zone. |
+| `delete_policy_record` | `mcp:write` | Delete a local Split-DNS policy record by name and type. |
 | `delete_zone_record` | `mcp:write` | Delete a DNS record from an attached public zone. |
 | `explain_block` | `mcp:read` | Explain why a domain is currently blocked for a profile, without a live DNS query. |
 | `flush_cache` | `mcp:write` | Flush the resolver cache for one domain or entirely. |
@@ -69,7 +70,7 @@ with `mcp.write_tools_disabled`. Rows are in the order returned by `tools/list`
 | `list_filter_sets` | `mcp:read` | List filter sets from configuration. |
 | `list_listeners` | `mcp:read` | List listener definitions from configuration. |
 | `list_mcp_rules` | `mcp:read` | List MCP-created rules, active temporary allows or active pauses for a filter set. |
-| `list_policy_records` | `mcp:read` | List static local DNS records from policy configuration. |
+| `list_policy_records` | `mcp:read` | List local Split-DNS policy records (incl. overrides, comment, tags). |
 | `list_policy_views` | `mcp:read` | List policy views and profile bindings. |
 | `list_resolver_upstreams` | `mcp:read` | Resolver upstream health. |
 | `list_zone_records` | `mcp:read` | List DNS records in one attached zone. |
@@ -82,6 +83,7 @@ with `mcp.write_tools_disabled`. Rows are in the order returned by `tools/list`
 | `set_blocked_service` | `mcp:write` | Enable or disable a blocked-service category in a filter set. |
 | `test_query` | `mcp:read` | Dry-run a query through the policy engine without writing to the log or cache. |
 | `update_zone_record` | `mcp:write` | Update a DNS record in an attached public zone. |
+| `upsert_policy_record` | `mcp:write` | Create or replace a local Split-DNS policy record (supports addresses overrides on CNAME). |
 
 Read tools carry `readOnlyHint: true`; write tools carry `destructiveHint: true`.
 Tool descriptions are static and are never built from runtime data.
@@ -226,7 +228,7 @@ AS advertises RFC 9207 `iss` support.
    ```
 
    Expect `200 OK` with `application/json` and a `result.tools` array of 22
-   read tools (34 with the write gate on).
+   read tools (36 with the write gate on).
 
 3. Call `get_status` (not run):
 

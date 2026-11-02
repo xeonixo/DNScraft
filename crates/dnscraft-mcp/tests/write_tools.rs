@@ -1258,7 +1258,7 @@ async fn tools_list_shows_thirteen_with_write_tools_and_eight_without() {
     let client = reqwest::Client::new();
     let body = harness::list_tools(&client, &enabled).await;
     let tools = body["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 34, "write gate on: 22 read + 12 write tools");
+    assert_eq!(tools.len(), 36, "write gate on: 22 read + 14 write tools");
     let names: Vec<&str> = tools
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
@@ -1352,7 +1352,7 @@ async fn write_tool_matrix_gate_scope_and_backend_isolation() {
                 .collect();
             assert_eq!(
                 listed.len(),
-                if gate { 34 } else { 22 },
+                if gate { 36 } else { 22 },
                 "gate={gate} scope={write_scope}"
             );
             for name in WRITE_TOOL_NAMES {

@@ -2680,8 +2680,78 @@ impl McpBackend for ControlMcpBackend {
             .and_then(|p| p.get("records"))
             .and_then(Value::as_array)
             .cloned()
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|item| {
+                serde_json::from_value::<dnscraft_policy::ViewRecordConfig>(item)
+                    .ok()
+                    .and_then(|record| serde_json::to_value(record).ok())
+            })
+            .collect();
         Ok(ListPolicyRecordsResult { records })
+    }
+
+    async fn upsert_policy_record(
+        &self,
+        params: dnscraft_mcp::dto::UpsertPolicyRecordParams,
+    ) -> Result<dnscraft_mcp::dto::UpsertPolicyRecordResult, BackendError> {
+        use crate::api::policy_routes::{RecordBody, upsert_policy_record};
+        use std::sync::{Arc, Mutex};
+        let service = self.config_service()?;
+        let body = RecordBody {
+            name: params.name,
+            rtype: params.r#type,
+            ttl: params.ttl,
+            rdata: params.rdata,
+            overrides: params.overrides.unwrap_or_default(),
+            comment: params.comment,
+            tags: params.tags,
+        };
+        let actor = ConfigActor::new("mcp", "token");
+        let stored = Arc::new(Mutex::new(Value::Null));
+        let stored_slot = Arc::clone(&stored);
+        let version = service
+            .mutate(&actor, "mcp.upsert_policy_record", move |snapshot| {
+                let record = upsert_policy_record(snapshot, body)?;
+                *stored_slot.lock().unwrap_or_else(|e| e.into_inner()) = record;
+                Ok(true)
+            })
+            .await
+            .map_err(backend_error)?;
+        let record = stored
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        Ok(dnscraft_mcp::dto::UpsertPolicyRecordResult {
+            version: version.unwrap_or(0) as u64,
+            record,
+        })
+    }
+
+    async fn delete_policy_record(
+        &self,
+        params: dnscraft_mcp::dto::DeletePolicyRecordParams,
+    ) -> Result<dnscraft_mcp::dto::DeletePolicyRecordResult, BackendError> {
+        use crate::api::policy_routes::{RecordKey, delete_policy_record};
+        let service = self.config_service()?;
+        let key = RecordKey {
+            name: params.name.clone(),
+            rtype: params.r#type.clone(),
+        };
+        let actor = ConfigActor::new("mcp", "token");
+        let version = service
+            .mutate(&actor, "mcp.delete_policy_record", move |snapshot| {
+                delete_policy_record(snapshot, key)?;
+                Ok(true)
+            })
+            .await
+            .map_err(backend_error)?;
+        Ok(dnscraft_mcp::dto::DeletePolicyRecordResult {
+            deleted: true,
+            version: version.unwrap_or(0) as u64,
+            name: params.name,
+            r#type: params.r#type,
+        })
     }
 
     async fn get_domain_stats(&self, params: DomainStatsParams) -> Result<Value, BackendError> {

@@ -12,8 +12,8 @@ Expose DNScraft's query log, configuration, and real-time DNS testing capabiliti
 - MCP server implementation over **Streamable HTTP**, revision **2026-07-28**, on the internal API listener only.
 - Single endpoint `/mcp/v1` (POST only; GET/DELETE → 405); every JSON-RPC message is its own stateless POST.
 - **v2 surface:** tools (read freely / write after user confirmation), safe server-authored **resources**, static **prompts**, and server **instructions** (clarify-first, no hallucination, ads/tracker policy).
-- Read tools (`mcp:read`): query log, explain/test, stats, clients, status, MCP rules, alerts, policy/filter inventory, domain classification, domain zones (read), and related ops reads.
-- Write tools (`mcp:write` + gate): temporary allow/cancel, block rules, propose exception, pause/resume, cache flush, blocked-service toggle, domain-zone record CRUD — all with `destructiveHint` except non-mutating propose.
+- Read tools (`mcp:read`): query log, explain/test, stats, clients, status, MCP rules, alerts, policy/filter inventory (incl. `list_policy_records` with `comment`/`tags` and structured `addresses` overrides), domain classification, domain zones (read), and related ops reads.
+- Write tools (`mcp:write` + gate): temporary allow/cancel, block rules, propose exception, pause/resume, cache flush, blocked-service toggle, domain-zone record CRUD, and local Split-DNS `upsert_policy_record` / `delete_policy_record` — all with `destructiveHint` except non-mutating propose. CF zone writes and policy-record writes stay separate tools (no combined CF+policy mutation).
 - Separate token scopes (`mcp:read`, `mcp:write`) valid only on MCP endpoints; normal API tokens rejected on MCP unless explicitly scoped.
 - Server-side write-tools gate: `control_api.mcp.write_tools_enabled` (default false) independent of token scope; with it off, write tools are not listed.
 - **Ads/tracker policy:** before allow/propose, assistants must call `classify_domain`; tracking/advertising domains are refused unless `acknowledge_tracking: true` is set after an explicit user override.
@@ -647,6 +647,14 @@ All write tools require `mcp:write` scope on the bearer token **and** `control_a
 **Human confirmation via `destructiveHint`:** The `destructiveHint: true` annotation signals MCP clients to ask the user "Allow example.com for 1 hour?" before executing. This is an **advisory hint**, not a security control. The server-side controls are: (1) token scope (`mcp:write`), (2) the `write_tools_enabled` config switch, (3) hard caps (duration limits, rule caps, input validation, protected domains), and (4) the audit log. The hint ensures the user sees the exact action before approval, but a malicious or buggy client could skip it. The server must not rely on client-side confirmation for authorization.
 
 **No server-side propose→confirm step in v1:** Some MCP servers implement a two-step flow where the tool returns a one-time confirmation token and the client sends it back to execute. DNScraft does **not** implement this in v1. Justification: (1) the `destructiveHint` is sufficient for legitimate clients; (2) the bearer token already authorizes the action (the user issued the token knowing its scope); (3) a compromised assistant with a valid `mcp:write` token can execute writes regardless of a confirmation step (the user already trusted the assistant by issuing the token); (4) the audit log provides accountability after the fact. If phishing-like abuse is observed in practice, this can be added in v2.
+
+#### Policy records (Split-DNS)
+
+**`list_policy_records` (mcp:read):** Returns local Split-DNS records from the policy snapshot. Each item exposes `name`, `type`, `ttl`, `rdata`, `overrides`, optional `comment`/`tags`. Override values may be compact strings/lists (`""`, `"@public"`, rdata) or structured `{ "mode": "addresses", "a": [...], "aaaa": [...] }` for CNAME hairpin views. Clients must tolerate unknown override objects.
+
+**`upsert_policy_record` (mcp:write):** Idempotent create/replace matching `PUT /api/v1/policy/records`. Args: `name`, `type`, `ttl?`, `rdata`, `overrides?` (incl. `addresses` only on CNAME), `comment?`, `tags?`. Same validation as the Control API (view existence, CNAME exclusivity, Addresses only on CNAME). Audit `mcp.upsert_policy_record`. `destructiveHint: true`. Does **not** write Cloudflare; pair with `create_zone_record` / `update_zone_record` when a public row is needed. Protected-domain rules do **not** apply (local records on owned names are expected).
+
+**`delete_policy_record` (mcp:write):** Deletes by `name` + `type` (`DELETE /api/v1/policy/records`). Audit `mcp.delete_policy_record`. `destructiveHint: true`.
 
 #### `allow_temporarily`
 

@@ -40,15 +40,21 @@ use crate::server::AppState;
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RecordBody {
-    name: String,
+    pub(crate) name: String,
     #[serde(rename = "type")]
-    rtype: String,
+    pub(crate) rtype: String,
     #[serde(default)]
-    ttl: Option<u32>,
-    rdata: Value,
+    pub(crate) ttl: Option<u32>,
+    pub(crate) rdata: Value,
     /// Per-view replacement values, keyed by view id.
     #[serde(default)]
-    overrides: BTreeMap<String, Value>,
+    pub(crate) overrides: BTreeMap<String, Value>,
+    /// Optional operator note (metadata only).
+    #[serde(default)]
+    pub(crate) comment: Option<String>,
+    /// Optional tags for filtering (metadata only).
+    #[serde(default)]
+    pub(crate) tags: Option<Vec<String>>,
 }
 
 /// Body of `DELETE /api/v1/policy/records`: the record key.
@@ -557,13 +563,19 @@ fn build_record(body: RecordBody) -> Result<ViewRecordConfig, ControlApiError> {
             return Err(invalid(&format!("invalid override view id `{view}`")));
         }
     }
-    let value = json!({
+    let mut value = json!({
         "name": name.to_string(),
         "type": body.rtype,
         "ttl": body.ttl.unwrap_or(DEFAULT_RECORD_TTL),
         "rdata": body.rdata,
         "overrides": body.overrides,
     });
+    if let Some(comment) = body.comment {
+        value["comment"] = json!(comment);
+    }
+    if let Some(tags) = body.tags {
+        value["tags"] = json!(tags);
+    }
     serde_json::from_value(value).map_err(|err| invalid(&err.to_string()))
 }
 

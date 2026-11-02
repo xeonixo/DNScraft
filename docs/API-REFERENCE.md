@@ -2,7 +2,7 @@
 
 Every API function DNScraft exposes, in one place. Covers the two surfaces the
 control plane offers: the **REST control API** (`/api/v1`, implemented in
-`crates/dnscraft-api`) and the **MCP tool API** (34 tools implemented in
+`crates/dnscraft-api`) and the **MCP tool API** (36 tools implemented in
 `crates/dnscraft-mcp`, mounted under `/mcp/v1` when
 `[control_api.mcp] enabled = true`).
 
@@ -95,8 +95,8 @@ Secrets, accounts and bind settings are never in the snapshot.
 |---|---|---|
 | GET | `/api/v1/policy/views` | List views. |
 | GET / PUT / POST / DELETE | `/api/v1/policy/views/{id}` | Read / create-or-replace / delete one view. A view carries `subnets`, `nodes` (empty = every node; the default view must be empty) and `profile`. Deleting a view that a Client ID is pinned to: `policy.config.invalid` with `params` `{ "reason": "view_in_use", "view": "<id>", "client_ids": ["…"] }`; clear the pins first. |
-| GET | `/api/v1/policy/records` | Local records: one global name space. Each entry has `name`, `type` (A, AAAA, CNAME, TXT, SRV, MX, PTR), `ttl`, `rdata` and per-view `overrides`. `rdata` and each override are one presentation string or a list of them (e.g. `192.0.2.10` or `["192.0.2.10", "192.0.2.11"]`). An empty override string means no answer for that type in the view (NODATA); a missing key inherits `rdata`. Several local values are one RRset for address, TXT, MX and SRV. Several CNAME targets rotate, one per answer, and stay local — a public provider stores one CNAME. |
-| PUT / POST | `/api/v1/policy/records` | Create or replace the record `{ "name", "type", "ttl"?, "rdata", "overrides"? }`. `rdata` and override values accept a string or a list of presentation strings. One entry per name and type through this API; `policy.config.invalid` on bad type or value. Empty `overrides` values are stored and mean no answer for that view. |
+| GET | `/api/v1/policy/records` | Local records: one global name space. Each entry has `name`, `type` (A, AAAA, CNAME, TXT, SRV, MX, PTR), `ttl`, `rdata`, optional `comment`/`tags`, and per-view `overrides`. `rdata` and most overrides are one presentation string or a list (e.g. `192.0.2.10` or `["192.0.2.10", "192.0.2.11"]`). Compact overrides: `""` = NODATA, `"@public"` = public resolution; a missing key inherits `rdata`. CNAME hairpin overrides use structured `{ "mode": "addresses", "a": [...], "aaaa": [...] }` (clients must tolerate unknown override objects). Several local values are one RRset for address, TXT, MX and SRV. Several CNAME targets rotate, one per answer, and stay local — a public provider stores one CNAME. |
+| PUT / POST | `/api/v1/policy/records` | Create or replace `{ "name", "type", "ttl"?, "rdata", "overrides"?, "comment"?, "tags"? }`. Override values accept compact strings/lists or structured `{ "mode": "data"|"public"|"no_answer"|"addresses", … }`. `addresses` only on CNAME with ≥1 IP; unknown view ids → `policy.config.invalid`. One entry per name and type; empty string overrides mean NODATA for that view. |
 | DELETE | `/api/v1/policy/records` | Remove the record with body `{ "name", "type" }`. `control_api.not_found` if absent. |
 | GET | `/api/v1/policy/client-ids` | DoH/DoT Client-ID registry. Returns `{ "client_ids": [ { "id", "label", "device", "view" } ] }` in stored order; bare-string entries show `label`, `device` and `view` as `null`. Admission only; a `view` pin is the only way a Client ID selects a view (see below). |
 | POST | `/api/v1/policy/client-ids` | Register `{ "id", "label"?, "device"?, "view"? }` (`id` matches `[a-z0-9-]{1,63}`; `view` is an existing view id). Returns `{ "version", "client_id": "<id>" }`. Duplicate id: `policy.config.invalid`. Duplicate or malformed label/device: `policy.config.invalid` with `params.field` set to `label` or `device`. Unknown view: `policy.config.invalid` with `params.field = "view"`. |
@@ -344,7 +344,7 @@ above. Sessions are under Auth; domain stats under Stats.
 
 ## MCP tools
 
-The `dnscraft-mcp` crate implements all 34 tools (22 read, 12 write) and exposes a
+The `dnscraft-mcp` crate implements all 36 tools (22 read, 14 write) and exposes a
 stateless `service()` mounted by `control-api` under `/mcp/v1` when
 `[control_api.mcp] enabled = true`. OAuth sign-in and server
 instructions/prompts/resources are part of the v2 surface. Tools use the same
@@ -354,7 +354,7 @@ tokens/roles/audit family as the REST API; write tools are additionally gated by
 v2 adds inventory reads (`classify_domain`, `list_alerts`, filter/policy/zone
 lists, `resolve_client`, stats extras), writes (`cancel_temporary_allow`,
 `flush_cache`, `set_blocked_service`, zone record CRUD), static prompts/resources,
-and server instructions. See [`crates/dnscraft-mcp/README.md`](../crates/dnscraft-mcp/README.md) for the full alphabetical catalog (34 tools).
+and server instructions. See [`crates/dnscraft-mcp/README.md`](../crates/dnscraft-mcp/README.md) for the full alphabetical catalog (36 tools).
 
 ### Read tools (`mcp:read` or `mcp:write`)
 
@@ -380,7 +380,7 @@ and server instructions. See [`crates/dnscraft-mcp/README.md`](../crates/dnscraf
 | `remove_rule` | Remove an MCP-created rule (exact domain match). |
 | `pause_filter_set` | Pause filtering for a set for a fixed duration. |
 | `resume_filter_set` | Resume a paused set (no-op if not paused). |
-| *(v2)* | `cancel_temporary_allow`, `flush_cache`, `set_blocked_service`, `create_zone_record`, `update_zone_record`, `delete_zone_record`. |
+| *(v2)* | `cancel_temporary_allow`, `flush_cache`, `set_blocked_service`, `create_zone_record`, `update_zone_record`, `delete_zone_record`, `upsert_policy_record`, `delete_policy_record`. |
 
 All write tools are destructive and require client confirmation; every call is
 audited. Input domains are validated (no wildcards, IPs, or single-label names)

@@ -13,17 +13,19 @@ use dnscraft_mcp::McpConfig;
 use dnscraft_mcp::backend::{BackendError, McpBackend};
 use dnscraft_mcp::dto::{
     AddRuleParams, AddRuleResult, AuditEntry, CancelTempAllowParams, CancelTempAllowResult,
-    ClassifyDomainResult, ClientInfo, ClientListParams, ClientListResult, DeleteZoneRecordParams,
-    DeleteZoneRecordResult, DomainStatsParams, ExplainBlockResult, FlushCacheParams,
-    FlushCacheResult, ListAlertsResult, ListBlockedServicesResult, ListDomainZonesResult,
-    ListFilterListsResult, ListFilterSetsResult, ListListenersResult, ListPolicyRecordsResult,
-    ListPolicyViewsResult, ListResolverUpstreamsResult, ListRulesParams, ListRulesResult,
-    ListZoneRecordsResult, McpRuleInfo, NodeStatus, PauseInfo, PauseParams, PauseResult,
-    ProposeExceptionParams, ProposeExceptionResult, QType, QueryDetail, QueryLogEntry,
-    QueryLogResult, QueryLogSearch, RemoveRuleParams, RemoveRuleResult, ResolveClientParams,
-    ResumeResult, SetBlockedServiceParams, SetBlockedServiceResult, StatsParams, StatsResult,
-    StatsTimeseriesParams, TempAllowInfo, TempAllowParams, TempAllowResult, TestQueryParams,
-    TestQueryResult, TokenInfo, TokenScope, ZoneRecordWriteParams, ZoneRecordWriteResult,
+    ClassifyDomainResult, ClientInfo, ClientListParams, ClientListResult, DeletePolicyRecordParams,
+    DeletePolicyRecordResult, DeleteZoneRecordParams, DeleteZoneRecordResult, DomainStatsParams,
+    ExplainBlockResult, FlushCacheParams, FlushCacheResult, ListAlertsResult,
+    ListBlockedServicesResult, ListDomainZonesResult, ListFilterListsResult, ListFilterSetsResult,
+    ListListenersResult, ListPolicyRecordsResult, ListPolicyViewsResult,
+    ListResolverUpstreamsResult, ListRulesParams, ListRulesResult, ListZoneRecordsResult,
+    McpRuleInfo, NodeStatus, PauseInfo, PauseParams, PauseResult, ProposeExceptionParams,
+    ProposeExceptionResult, QType, QueryDetail, QueryLogEntry, QueryLogResult, QueryLogSearch,
+    RemoveRuleParams, RemoveRuleResult, ResolveClientParams, ResumeResult, SetBlockedServiceParams,
+    SetBlockedServiceResult, StatsParams, StatsResult, StatsTimeseriesParams, TempAllowInfo,
+    TempAllowParams, TempAllowResult, TestQueryParams, TestQueryResult, TokenInfo, TokenScope,
+    UpsertPolicyRecordParams, UpsertPolicyRecordResult, ZoneRecordWriteParams,
+    ZoneRecordWriteResult,
 };
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -782,6 +784,36 @@ impl McpBackend for MockBackend {
 
     async fn list_policy_records(&self) -> Result<ListPolicyRecordsResult, BackendError> {
         Ok(ListPolicyRecordsResult::default())
+    }
+
+    async fn upsert_policy_record(
+        &self,
+        params: UpsertPolicyRecordParams,
+    ) -> Result<UpsertPolicyRecordResult, BackendError> {
+        Ok(UpsertPolicyRecordResult {
+            version: 1,
+            record: json!({
+                "name": params.name,
+                "type": params.r#type,
+                "ttl": params.ttl.unwrap_or(60),
+                "rdata": params.rdata,
+                "overrides": params.overrides.unwrap_or_default(),
+                "comment": params.comment.unwrap_or_default(),
+                "tags": params.tags.unwrap_or_default(),
+            }),
+        })
+    }
+
+    async fn delete_policy_record(
+        &self,
+        params: DeletePolicyRecordParams,
+    ) -> Result<DeletePolicyRecordResult, BackendError> {
+        Ok(DeletePolicyRecordResult {
+            deleted: true,
+            version: 1,
+            name: params.name,
+            r#type: params.r#type,
+        })
     }
 
     async fn get_domain_stats(&self, _params: DomainStatsParams) -> Result<Value, BackendError> {

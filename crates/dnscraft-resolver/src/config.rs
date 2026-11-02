@@ -307,7 +307,7 @@ impl Default for ResolverConfig {
             root_hints: default_root_hints(),
             query_timeout: Duration::from_millis(1500),
             max_referral_depth: 16,
-            max_queries_per_resolve: 64,
+            max_queries_per_resolve: 200,
             max_nested_depth: 4,
             max_cname_chain: 16,
             qname_minimisation: true,

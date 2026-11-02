@@ -71,7 +71,7 @@
 		formQueryTimeout = strField(resolver, 'query_timeout', '1500ms');
 		formResolveDeadline = strField(resolver, 'resolve_deadline', '10s');
 		formMaxReferralDepth = numField(resolver, 'max_referral_depth', 16);
-		formMaxQueriesPerResolve = numField(resolver, 'max_queries_per_resolve', 64);
+		formMaxQueriesPerResolve = numField(resolver, 'max_queries_per_resolve', 200);
 		formMaxNestedDepth = numField(resolver, 'max_nested_depth', 4);
 		formMaxCnameChain = numField(resolver, 'max_cname_chain', 16);
 		formQnameMin = boolField(resolver, 'qname_minimisation', true);

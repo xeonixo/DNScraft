@@ -185,7 +185,7 @@ and client query logs. A profile chooses the allow-list and passes it as
 | `serve_stale` | 1 day | `Duration::ZERO` disables |
 | `prefetch` | `true` | Background refresh |
 | `max_cname_chain` | `16` | Loop / amplification guard |
-| `max_queries_per_resolve` | `64` | Budget per question |
+| `max_queries_per_resolve` | `200` | Budget per question |
 | `max_nested_depth` | `4` | Nesting of name server address lookups |
 | `max_concurrent_resolutions` | `1024` | Cap on parallel upstream resolutions |
 | `resolve_deadline` | 10 s | Upper bound on one upstream resolution; expiry is `resolver.unreachable` (serve-stale may apply) |

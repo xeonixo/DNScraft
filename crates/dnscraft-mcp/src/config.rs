@@ -106,6 +106,18 @@ pub struct McpConfig {
     /// Browser origins allowed to reach the endpoint (runtime-only, supplied by
     /// control-api).
     pub allowed_origins: Vec<String>,
+    /// Stable public base URL for OAuth discovery (no trailing slash). When set,
+    /// preferred over the first `allowed_origins` entry and the request Host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_url: Option<String>,
+    /// Extra OAuth redirect URIs the owner accepts beyond the built-in vendor
+    /// allowlist and loopback (exact match).
+    #[serde(default)]
+    pub oauth_extra_redirect_uris: Vec<String>,
+    /// Optional path for persisting dynamic OAuth client registrations as JSON.
+    /// When unset, registrations stay in process memory only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth_clients_path: Option<String>,
 }
 
 impl Default for McpConfig {
@@ -127,6 +139,9 @@ impl Default for McpConfig {
             max_block_rule_lifetime: DEFAULT_MAX_BLOCK_RULE_LIFETIME,
             protected_domains: Vec::new(),
             allowed_origins: Vec::new(),
+            public_url: None,
+            oauth_extra_redirect_uris: Vec::new(),
+            oauth_clients_path: None,
         }
     }
 }
@@ -188,6 +203,25 @@ impl McpConfig {
             MAX_BLOCK_RULE_LIFETIME,
         )?;
         ProtectedDomains::new(self.protected_domains.iter().cloned())?;
+        if let Some(url) = self.public_url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
+            if !(url.starts_with("https://") || url.starts_with("http://")) {
+                return Err(invalid(
+                    "public_url",
+                    "must be an absolute http(s) URL without a path, or empty",
+                ));
+            }
+            if url.contains(' ') {
+                return Err(invalid("public_url", "must not contain spaces"));
+            }
+        }
+        for uri in &self.oauth_extra_redirect_uris {
+            if uri.is_empty() || !(uri.starts_with("https://") || uri.starts_with("http://")) {
+                return Err(invalid(
+                    "oauth_extra_redirect_uris",
+                    format!("invalid redirect URI: {uri}"),
+                ));
+            }
+        }
         Ok(())
     }
 }

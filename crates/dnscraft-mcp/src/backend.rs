@@ -13,11 +13,18 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::dto::{
-    AddRuleParams, AddRuleResult, AuditEntry, ClientListParams, ClientListResult,
-    ExplainBlockResult, ListRulesParams, ListRulesResult, McpRuleInfo, NodeStatus, PauseParams,
-    PauseResult, ProposeExceptionParams, ProposeExceptionResult, QType, QueryDetail,
-    QueryLogResult, QueryLogSearch, RemoveRuleParams, RemoveRuleResult, ResumeResult, StatsParams,
-    StatsResult, TempAllowParams, TempAllowResult, TestQueryParams, TestQueryResult, TokenInfo,
+    AddRuleParams, AddRuleResult, AuditEntry, CancelTempAllowParams, CancelTempAllowResult,
+    ClassifyDomainResult, ClientListParams, ClientListResult, DeleteZoneRecordParams,
+    DeleteZoneRecordResult, DomainStatsParams, ExplainBlockResult, FlushCacheParams,
+    FlushCacheResult, ListAlertsResult, ListBlockedServicesResult, ListDomainZonesResult,
+    ListFilterListsResult, ListFilterSetsResult, ListListenersResult, ListPolicyRecordsResult,
+    ListPolicyViewsResult, ListResolverUpstreamsResult, ListRulesParams, ListRulesResult,
+    ListZoneRecordsResult, McpRuleInfo, NodeStatus, PauseParams, PauseResult,
+    ProposeExceptionParams, ProposeExceptionResult, QType, QueryDetail, QueryLogResult,
+    QueryLogSearch, RemoveRuleParams, RemoveRuleResult, ResolveClientParams, ResumeResult,
+    SetBlockedServiceParams, SetBlockedServiceResult, StatsParams, StatsResult,
+    StatsTimeseriesParams, TempAllowParams, TempAllowResult, TestQueryParams, TestQueryResult,
+    TokenInfo, ZoneRecordWriteParams, ZoneRecordWriteResult,
 };
 
 /// An error returned by an [`McpBackend`] implementation.
@@ -113,6 +120,58 @@ pub trait McpBackend: Send + Sync {
     /// Current node status.
     async fn get_status(&self) -> Result<NodeStatus, BackendError>;
 
+    /// Classify a domain using the tracker database when available.
+    async fn classify_domain(&self, domain: &str) -> Result<ClassifyDomainResult, BackendError>;
+
+    /// Active operational alerts.
+    async fn list_alerts(&self) -> Result<ListAlertsResult, BackendError>;
+
+    /// Configured filter lists.
+    async fn list_filter_lists(&self) -> Result<ListFilterListsResult, BackendError>;
+
+    /// Configured filter sets.
+    async fn list_filter_sets(&self) -> Result<ListFilterSetsResult, BackendError>;
+
+    /// Policy views from the stored config.
+    async fn list_policy_views(&self) -> Result<ListPolicyViewsResult, BackendError>;
+
+    /// Resolver upstream health.
+    async fn list_resolver_upstreams(&self) -> Result<ListResolverUpstreamsResult, BackendError>;
+
+    /// Blocked-services catalog and per-set state.
+    async fn list_blocked_services(&self, locale: Option<&str>)
+        -> Result<ListBlockedServicesResult, BackendError>;
+
+    /// Attached domain zones (no discovery).
+    async fn list_domain_zones(&self) -> Result<ListDomainZonesResult, BackendError>;
+
+    /// Records in one attached zone.
+    async fn list_zone_records(&self, zone_id: &str) -> Result<ListZoneRecordsResult, BackendError>;
+
+    /// Listener definitions from config.
+    async fn list_listeners(&self) -> Result<ListListenersResult, BackendError>;
+
+    /// Static policy records from config.
+    async fn list_policy_records(&self) -> Result<ListPolicyRecordsResult, BackendError>;
+
+    /// Per-domain stats from the query log.
+    async fn get_domain_stats(
+        &self,
+        params: DomainStatsParams,
+    ) -> Result<Value, BackendError>;
+
+    /// Query-volume timeseries.
+    async fn get_stats_timeseries(
+        &self,
+        params: StatsTimeseriesParams,
+    ) -> Result<Value, BackendError>;
+
+    /// Resolve one client by exact display name or address.
+    async fn resolve_client(
+        &self,
+        params: ResolveClientParams,
+    ) -> Result<ClientListResult, BackendError>;
+
     /// List MCP-managed rules, temporary allows or pauses.
     async fn list_mcp_rules(
         &self,
@@ -163,6 +222,39 @@ pub trait McpBackend: Send + Sync {
         &self,
         filter_set_id: Option<&str>,
     ) -> Result<ResumeResult, BackendError>;
+
+    /// Remove an active temporary allow.
+    async fn cancel_temporary_allow(
+        &self,
+        params: CancelTempAllowParams,
+    ) -> Result<CancelTempAllowResult, BackendError>;
+
+    /// Flush the resolver cache globally or for one domain.
+    async fn flush_cache(&self, params: FlushCacheParams) -> Result<FlushCacheResult, BackendError>;
+
+    /// Toggle a blocked-service entry in a filter set.
+    async fn set_blocked_service(
+        &self,
+        params: SetBlockedServiceParams,
+    ) -> Result<SetBlockedServiceResult, BackendError>;
+
+    /// Create a public DNS record in an attached zone.
+    async fn create_zone_record(
+        &self,
+        params: ZoneRecordWriteParams,
+    ) -> Result<ZoneRecordWriteResult, BackendError>;
+
+    /// Update an existing zone record.
+    async fn update_zone_record(
+        &self,
+        params: ZoneRecordWriteParams,
+    ) -> Result<ZoneRecordWriteResult, BackendError>;
+
+    /// Delete a zone record by id.
+    async fn delete_zone_record(
+        &self,
+        params: DeleteZoneRecordParams,
+    ) -> Result<DeleteZoneRecordResult, BackendError>;
 
     /// Persist an audit entry for a completed write.
     async fn record_audit(&self, entry: AuditEntry) -> Result<(), BackendError>;

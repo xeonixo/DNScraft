@@ -2,7 +2,7 @@
 
 Every API function DNScraft exposes, in one place. Covers the two surfaces the
 control plane offers: the **REST control API** (`/api/v1`, implemented in
-`crates/dnscraft-api`) and the **MCP tool API** (14 tools implemented in
+`crates/dnscraft-api`) and the **MCP tool API** (34 tools implemented in
 `crates/dnscraft-mcp`, mounted under `/mcp/v1` when
 `[control_api.mcp] enabled = true`).
 
@@ -327,11 +327,17 @@ above. Sessions are under Auth; domain stats under Stats.
 
 ## MCP tools
 
-The `dnscraft-mcp` crate implements all 14 tools and exposes a stateless
-`service()` meant to be mounted by `control-api` under `/mcp/v1`. The mount is
-not wired yet (`dnscraft-api` has no `dnscraft-mcp` dependency); it lands in
-Phase 3 (M20–M27). Tools use the same tokens/roles/audit as the REST API;
-write tools are additionally gated by `write_tools_enabled` (default off).
+The `dnscraft-mcp` crate implements all 34 tools (22 read, 12 write) and exposes a
+stateless `service()` mounted by `control-api` under `/mcp/v1` when
+`[control_api.mcp] enabled = true`. OAuth sign-in and server
+instructions/prompts/resources are part of the v2 surface. Tools use the same
+tokens/roles/audit family as the REST API; write tools are additionally gated by
+`write_tools_enabled` (default off).
+
+v2 adds inventory reads (`classify_domain`, `list_alerts`, filter/policy/zone
+lists, `resolve_client`, stats extras), writes (`cancel_temporary_allow`,
+`flush_cache`, `set_blocked_service`, zone record CRUD), static prompts/resources,
+and server instructions. See [`crates/dnscraft-mcp/README.md`](../crates/dnscraft-mcp/README.md) for the full alphabetical catalog (34 tools).
 
 ### Read tools (`mcp:read` or `mcp:write`)
 
@@ -345,16 +351,19 @@ write tools are additionally gated by `write_tools_enabled` (default off).
 | `get_stats` | Aggregated statistics for a period. |
 | `list_clients` | Known clients with names, IPs, VLANs and source (UniFi/manual). |
 | `list_mcp_rules` | MCP-managed rules, active temporary allows, or active pauses for a filter set. |
+| *(v2)* | `classify_domain`, `list_alerts`, `list_filter_*`, `list_policy_*`, `list_domain_zones`, `list_zone_records`, `list_listeners`, `list_resolver_upstreams`, `list_blocked_services`, `get_domain_stats`, `get_stats_timeseries`, `resolve_client`. |
 
 ### Write tools (`mcp:write` + `write_tools_enabled`)
 
 | Tool | Summary |
 |---|---|
-| `allow_temporarily` | Temporarily allow a blocked domain (`PT5M`/`PT15M`/`PT1H`); expires automatically. |
+| `allow_temporarily` | Temporarily allow a blocked domain (`PT5M`/`PT15M`/`PT1H`); call `classify_domain` first; tracking domains need `acknowledge_tracking`. |
 | `add_rule` | Add a custom block rule built from structured input (no raw AdGuard syntax). |
+| `propose_exception` | Propose a permanent exception; owner confirms in the web UI; classify + tracking rules like `allow_temporarily`. |
 | `remove_rule` | Remove an MCP-created rule (exact domain match). |
 | `pause_filter_set` | Pause filtering for a set for a fixed duration. |
 | `resume_filter_set` | Resume a paused set (no-op if not paused). |
+| *(v2)* | `cancel_temporary_allow`, `flush_cache`, `set_blocked_service`, `create_zone_record`, `update_zone_record`, `delete_zone_record`. |
 
 All write tools are destructive and require client confirmation; every call is
 audited. Input domains are validated (no wildcards, IPs, or single-label names)

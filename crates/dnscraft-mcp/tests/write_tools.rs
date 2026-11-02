@@ -9,8 +9,8 @@
 mod support;
 
 use dnscraft_mcp::{
-    AddRuleResult, AuditResult, BackendError, McpConfig, McpRuleInfo, PauseResult,
-    RemoveRuleResult, ResumeResult, TempAllowResult,
+    AddRuleResult, AuditResult, BackendError, ClassifyDomainResult, McpConfig, McpRuleInfo,
+    PauseResult, RemoveRuleResult, ResumeResult, TempAllowResult,
 };
 use serde_json::{Value, json};
 use support::harness::{self, TestServer};
@@ -493,6 +493,10 @@ async fn allow_temporarily_definition_is_static_and_locked() {
                     "type": "string",
                     "maxLength": 200,
                     "description": "Why this domain is being allowed (optional, for audit; sanitized before storage)"
+                },
+                "acknowledge_tracking": {
+                    "type": "boolean",
+                    "description": "Required true after classify_domain shows tracking and the user explicitly agrees"
                 }
             },
             "required": ["domain", "duration"]
@@ -1254,7 +1258,7 @@ async fn tools_list_shows_thirteen_with_write_tools_and_eight_without() {
     let client = reqwest::Client::new();
     let body = harness::list_tools(&client, &enabled).await;
     let tools = body["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 14, "write gate on: 8 read + 6 write tools");
+    assert_eq!(tools.len(), 34, "write gate on: 22 read + 12 write tools");
     let names: Vec<&str> = tools
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
@@ -1273,7 +1277,7 @@ async fn tools_list_shows_thirteen_with_write_tools_and_eight_without() {
     let disabled = spawn(McpConfig::default()).await;
     let body = harness::list_tools(&client, &disabled).await;
     let tools = body["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 8, "write gate off: read tools only");
+    assert_eq!(tools.len(), 22, "write gate off: read tools only");
     for tool in tools {
         let name = tool["name"].as_str().unwrap();
         assert!(
@@ -1348,7 +1352,7 @@ async fn write_tool_matrix_gate_scope_and_backend_isolation() {
                 .collect();
             assert_eq!(
                 listed.len(),
-                if gate { 14 } else { 8 },
+                if gate { 34 } else { 22 },
                 "gate={gate} scope={write_scope}"
             );
             for name in WRITE_TOOL_NAMES {
@@ -1463,4 +1467,43 @@ async fn domain_rejections_forward_the_filtering_codes() {
         "filter_name.empty"
     );
     assert_eq!(server.backend.add_calls(), 0);
+}
+
+#[tokio::test]
+async fn allow_temporarily_refuses_tracking_without_acknowledge() {
+    let server = spawn(write_config()).await;
+    server.backend.set_classify(ClassifyDomainResult {
+        domain: "ads.tracker.test".into(),
+        kind: "tracking".into(),
+        category: Some("advertising".into()),
+        name: Some("Test Ads".into()),
+        source: "trackers_db".into(),
+    });
+    let body = call(
+        &server,
+        "allow_temporarily",
+        json!({ "domain": "ads.tracker.test", "duration": "PT5M" }),
+    )
+    .await;
+    assert_eq!(harness::error_code(&body), "mcp.tracking_domain_refused");
+    assert_eq!(server.backend.allow_calls(), 0);
+
+    server.backend.set_allow(Ok(TempAllowResult {
+        filter_set_id: "default".into(),
+        created_at: "2026-11-02T12:00:00Z".into(),
+        expires_at: "2026-11-02T12:05:00Z".into(),
+    }));
+    let body = call(
+        &server,
+        "allow_temporarily",
+        json!({
+            "domain": "ads.tracker.test",
+            "duration": "PT5M",
+            "acknowledge_tracking": true,
+            "reason": "user override"
+        }),
+    )
+    .await;
+    assert_eq!(body["result"]["isError"], false, "{body}");
+    assert_eq!(server.backend.allow_calls(), 1);
 }

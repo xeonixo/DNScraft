@@ -761,7 +761,7 @@ impl Kind {
     }
 }
 
-fn status_json(status: &crate::dto::NodeStatus) -> Value {
+pub(crate) fn status_json(status: &crate::dto::NodeStatus) -> Value {
     json!({
         "node_id": sanitize(&status.node_id, CAP_CLIENT_NAME),
         "version": sanitize(&status.version, CAP_CLIENT_NAME),

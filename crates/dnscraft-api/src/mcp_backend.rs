@@ -14,23 +14,36 @@ use dnscraft_listeners::ListenersStatus;
 use dnscraft_mcp::ProtectedDomains;
 use dnscraft_mcp::backend::{BackendError, McpBackend};
 use dnscraft_mcp::dto::{
-    AddRuleParams, AddRuleResult, AnswerRecord, AuditEntry, AuditResult, DnssecCounts,
-    ExplainBlockResult, ExplainReason, FilteringStatus, ListRulesParams, ListRulesResult,
-    McpRuleInfo, NodeStatus, PauseDuration, PauseInfo, PauseParams, PauseResult, QType,
-    QueryClient, QueryDetail, QueryLogEntry, QueryLogFilter as McpQueryLogFilter, QueryLogResult,
-    QueryLogSearch, QueryName, QueryTimings, RemoveRuleParams, RemoveRuleResult, ResolverStatus,
-    ResumeResult, Selection, StatsParams, StatsPeriod, StatsResult, SynthesizedAnswer,
+    AddRuleParams, AddRuleResult, AnswerRecord, AuditEntry, AuditResult, CancelTempAllowParams,
+    CancelTempAllowResult, ClassifyDomainResult, ClientListParams, ClientListResult,
+    DeleteZoneRecordParams, DeleteZoneRecordResult, DnssecCounts, DomainStatsParams,
+    DomainZoneSummary, ExplainBlockResult, ExplainReason, FilterListSummary, FilterSetSummary,
+    FilteringStatus, FlushCacheParams, FlushCacheResult, ListAlertsResult,
+    ListBlockedServicesResult, ListDomainZonesResult, ListFilterListsResult, ListFilterSetsResult,
+    ListListenersResult, ListPolicyRecordsResult, ListPolicyViewsResult,
+    ListResolverUpstreamsResult, ListRulesParams, ListRulesResult, ListZoneRecordsResult,
+    McpRuleInfo, NodeStatus, PauseDuration, PauseInfo, PauseParams, PauseResult, PolicyViewSummary,
+    QType, QueryClient, QueryDetail, QueryLogEntry, QueryLogFilter as McpQueryLogFilter,
+    QueryLogResult, QueryLogSearch, QueryName, QueryTimings, RemoveRuleParams, RemoveRuleResult,
+    ResolveClientParams, ResumeResult, Selection, SetBlockedServiceParams, SetBlockedServiceResult,
+    StatsParams, StatsPeriod, StatsResult, StatsTimeseriesParams, SynthesizedAnswer,
     TempAllowInfo, TempAllowParams, TempAllowResult, TestQueryFilter, TestQueryResult, TlsStatus,
-    TokenInfo, TokenScope,
+    TokenInfo, TokenScope, UpstreamStatusItem, ZoneRecord, ZoneRecordWriteParams,
+    ZoneRecordWriteResult, ResolverStatus,
 };
+use dnscraft_mcp::tracker_kind::tracker_kind;
 use dnscraft_policy::RequestContext;
-use dnscraft_resolver::{PrimingStatus, Resolver};
+use dnscraft_resolver::{FlushScope, PrimingStatus, Resolver, UpstreamState};
+use dnscraft_proto::Name;
 use serde_json::{Value, json};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 use crate::api::auth::roles::Scope;
 use crate::api::clients_routes::{ClientDirectory, DirectoryClient};
+use crate::api::config_routes::array;
+use crate::api::filter_routes::ServiceCatalogProvider;
+use crate::tls::TlsAdmin;
 use crate::api::query_log_routes::parse_timestamp;
 use crate::audit::Audit;
 use crate::config_apply::{ConfigActor, ConfigService, MutationAudit};
@@ -50,6 +63,13 @@ pub(crate) type SharedClusterBroadcast = Arc<Mutex<Option<dnscraft_cluster::Clus
 /// Reads the live listener-set status (GM4). The binary passes a closure over
 /// its listener set, so the backend never owns the set.
 pub type ListenersSource = Arc<dyn Fn() -> ListenersStatus + Send + Sync>;
+
+/// Active alerts for MCP (`list_alerts` / `dnscraft://alerts`).
+pub type AlertsSource = Arc<
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<Value>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// Service handles the MCP backend needs.
 ///
@@ -80,6 +100,12 @@ pub struct McpBackendInner {
     pub(crate) oidc_issuer: Option<String>,
     /// Master broadcast handle; `None` on a standalone or sub-node runtime.
     pub(crate) cluster_broadcast: SharedClusterBroadcast,
+    /// Optional alerts collector wired at MCP mount time.
+    pub(crate) list_alerts: Option<AlertsSource>,
+    /// Public DNS zone admin (optional).
+    pub(crate) tls_admin: Option<Arc<dyn TlsAdmin>>,
+    /// Blocked-services catalog (optional).
+    pub(crate) service_catalog: Option<Arc<dyn ServiceCatalogProvider>>,
 }
 
 /// Builds the production MCP backend's inner handle (D3).
@@ -113,6 +139,8 @@ pub fn mcp_backend_inner(
     version: impl Into<String>,
     mcp_config: dnscraft_mcp::McpConfig,
     oidc_issuer: Option<String>,
+    tls_admin: Option<Arc<dyn TlsAdmin>>,
+    service_catalog: Option<Arc<dyn ServiceCatalogProvider>>,
 ) -> Arc<McpBackendInner> {
     Arc::new(McpBackendInner {
         policy: Some(policy),
@@ -132,10 +160,21 @@ pub fn mcp_backend_inner(
         mcp_config,
         oidc_issuer,
         cluster_broadcast: Arc::new(Mutex::new(None)),
+        list_alerts: None,
+        tls_admin,
+        service_catalog,
     })
 }
 
 impl McpBackendInner {
+    /// Attach an alerts source (typically `collect_alerts` on [`AppState`]).
+    pub(crate) fn with_list_alerts(self: Arc<Self>, source: AlertsSource) -> Arc<Self> {
+        Arc::new(Self {
+            list_alerts: Some(source),
+            ..(*self).clone()
+        })
+    }
+
     /// Attaches (or replaces) the master broadcast handle.
     pub(crate) fn attach_cluster_broadcast(&self, broadcast: dnscraft_cluster::ClusterBroadcast) {
         *self
@@ -164,6 +203,68 @@ pub(crate) struct ControlMcpBackend {
 impl ControlMcpBackend {
     pub fn new(inner: Arc<McpBackendInner>) -> Self {
         Self { inner }
+    }
+
+    async fn write_zone_record(
+        &self,
+        params: ZoneRecordWriteParams,
+        update: bool,
+    ) -> Result<ZoneRecordWriteResult, BackendError> {
+        let admin = self.inner.tls_admin.as_ref().ok_or(BackendError::Internal {
+            message: "domain zones not configured".into(),
+        })?;
+        let body = json!({
+            "name": params.name,
+            "type": params.r#type,
+            "content": params.content,
+            "proxied": params.proxied.unwrap_or(false),
+            "ttl": params.ttl.unwrap_or(1),
+        });
+        let record = if update {
+            let record_id = params.record_id.as_deref().ok_or(BackendError::Internal {
+                message: "record_id required".into(),
+            })?;
+            admin
+                .update_domain_zone_record(&params.zone_id, record_id, body)
+                .await
+        } else {
+            admin
+                .create_domain_zone_record(&params.zone_id, body)
+                .await
+        }
+        .map_err(|err| BackendError::Internal {
+            message: err.to_string(),
+        })?;
+        Ok(ZoneRecordWriteResult {
+            zone_id: params.zone_id,
+            record: ZoneRecord {
+                id: record
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_owned(),
+                name: record
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_owned(),
+                r#type: record
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_owned(),
+                content: record
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_owned(),
+                proxied: record
+                    .get("proxied")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                ttl: record.get("ttl").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+            },
+        })
     }
 
     fn filter_engine(&self) -> Result<&Arc<FilterEngine>, BackendError> {
@@ -241,6 +342,9 @@ pub fn mcp_backend_for_test(query_log: Option<Arc<QueryLog>>) -> Arc<dyn McpBack
         mcp_config: dnscraft_mcp::McpConfig::default(),
         oidc_issuer: None,
         cluster_broadcast: Arc::new(Mutex::new(None)),
+        list_alerts: None,
+        tls_admin: None,
+        service_catalog: None,
     })))
 }
 
@@ -312,6 +416,9 @@ pub fn mcp_backend_for_test_writes_with_broadcast(
         mcp_config,
         oidc_issuer,
         cluster_broadcast,
+        list_alerts: None,
+        tls_admin: None,
+        service_catalog: None,
     })))
 }
 
@@ -655,6 +762,42 @@ pub(crate) fn build_error(err: dnscraft_filtering::BuildError) -> ControlApiErro
 pub(crate) fn parse_set(id: Option<&str>) -> Result<SetId, ControlApiError> {
     let raw = id.unwrap_or("default");
     SetId::new(raw).map_err(|_| unknown_set(raw))
+}
+
+/// Resolves a write target set, asking for clarification when several exist.
+pub(crate) fn resolve_set_for_write(
+    snapshot: Option<&Value>,
+    filter_set_id: Option<&str>,
+) -> Result<SetId, ControlApiError> {
+    if filter_set_id.is_some() {
+        return parse_set(filter_set_id);
+    }
+    let ids: Vec<String> = snapshot
+        .map(|s| array(s, "filtering", "sets"))
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|set| set.get("id").and_then(Value::as_str).map(str::to_owned))
+        .collect();
+    match ids.len() {
+        0 => parse_set(None),
+        1 => parse_set(Some(&ids[0])),
+        _ => Err(mcp_error(
+            "mcp.needs_clarification",
+            json!({
+                "reason": "multiple filter sets; specify filter_set_id",
+                "candidates": ids.iter().map(|id| json!({ "filter_set_id": id })).collect::<Vec<_>>(),
+            }),
+        )),
+    }
+}
+
+fn upstream_state_str(state: UpstreamState) -> &'static str {
+    match state {
+        UpstreamState::Up => "up",
+        UpstreamState::Degraded => "degraded",
+        UpstreamState::Down => "down",
+        UpstreamState::Unknown => "unknown",
+    }
 }
 
 /// Validates the non-snapshot parts of an `add_rule` request.
@@ -1858,7 +2001,6 @@ impl McpBackend for ControlMcpBackend {
             return Err(backend_error(error));
         }
         let domain = canonical_allow_domain(&params.domain).map_err(backend_error)?;
-        let set = parse_set(params.filter_set_id.as_deref()).map_err(backend_error)?;
 
         // Hold the config apply lock across the snapshot read, the protected
         // check and the engine mutation, so a concurrent config replace cannot
@@ -1880,6 +2022,9 @@ impl McpBackend for ControlMcpBackend {
             }
             None => None,
         };
+        let set =
+            resolve_set_for_write(snapshot.as_ref(), params.filter_set_id.as_deref())
+                .map_err(backend_error)?;
         let protected = self.protected(snapshot.as_ref())?;
         reject_protected(&protected, domain.as_str(), params.include_subdomains)
             .map_err(backend_error)?;
@@ -2273,6 +2418,498 @@ impl McpBackend for ControlMcpBackend {
         })
     }
 
+    async fn classify_domain(&self, domain: &str) -> Result<ClassifyDomainResult, BackendError> {
+        let canonical = canonical_allow_domain(domain).map_err(backend_error)?;
+        let domain_str = canonical.as_str().to_owned();
+        let filter = self.filter_engine()?;
+        if let Some(db) = filter.trackers()
+            && let Some(info) = db.lookup(&domain_str)
+        {
+            let kind = tracker_kind(&info.category);
+            return Ok(ClassifyDomainResult {
+                domain: domain_str,
+                kind: kind.as_str().to_owned(),
+                category: Some(info.category.clone()),
+                name: Some(info.name.clone()),
+                source: "trackers_db".to_owned(),
+            });
+        }
+        Ok(ClassifyDomainResult {
+            domain: domain_str,
+            kind: "unknown".to_owned(),
+            category: None,
+            name: None,
+            source: "none".to_owned(),
+        })
+    }
+
+    async fn list_alerts(&self) -> Result<ListAlertsResult, BackendError> {
+        let items = if let Some(source) = &self.inner.list_alerts {
+            (source)().await
+        } else {
+            Vec::new()
+        };
+        Ok(ListAlertsResult {
+            active_count: items.len() as u64,
+            items,
+        })
+    }
+
+    async fn list_filter_lists(&self) -> Result<ListFilterListsResult, BackendError> {
+        let snapshot = self.current_snapshot().await?;
+        let filter_lists = snapshot
+            .as_ref()
+            .map(|s| array(s, "filtering", "lists"))
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|list| {
+                Some(FilterListSummary {
+                    id: list.get("id")?.as_str()?.to_owned(),
+                    name: list
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("")
+                        .to_owned(),
+                    enabled: list
+                        .get("enabled")
+                        .and_then(|e| e.as_bool())
+                        .unwrap_or(true),
+                })
+            })
+            .collect();
+        Ok(ListFilterListsResult { filter_lists })
+    }
+
+    async fn list_filter_sets(&self) -> Result<ListFilterSetsResult, BackendError> {
+        let snapshot = self.current_snapshot().await?;
+        let filter_sets = snapshot
+            .as_ref()
+            .map(|s| array(s, "filtering", "sets"))
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|set| {
+                Some(FilterSetSummary {
+                    id: set.get("id")?.as_str()?.to_owned(),
+                    name: set
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("")
+                        .to_owned(),
+                })
+            })
+            .collect();
+        Ok(ListFilterSetsResult { filter_sets })
+    }
+
+    async fn list_policy_views(&self) -> Result<ListPolicyViewsResult, BackendError> {
+        let snapshot = self.current_snapshot().await?;
+        let views = snapshot
+            .as_ref()
+            .map(|s| array(s, "policy", "views"))
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|view| {
+                Some(PolicyViewSummary {
+                    id: view.get("id")?.as_str()?.to_owned(),
+                    profile_id: view
+                        .get("profile")
+                        .and_then(|p| p.get("id"))
+                        .and_then(|id| id.as_str())
+                        .unwrap_or("default")
+                        .to_owned(),
+                    is_default: view
+                        .get("is_default")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                })
+            })
+            .collect();
+        Ok(ListPolicyViewsResult { views })
+    }
+
+    async fn list_resolver_upstreams(&self) -> Result<ListResolverUpstreamsResult, BackendError> {
+        let resolver = self.inner.resolver.as_ref().ok_or(BackendError::Internal {
+            message: "resolver not configured".into(),
+        })?;
+        let items = resolver
+            .upstreams()
+            .iter()
+            .map(|upstream| UpstreamStatusItem {
+                address: upstream.name.clone(),
+                state: upstream_state_str(upstream.state).to_owned(),
+            })
+            .collect();
+        Ok(ListResolverUpstreamsResult { items })
+    }
+
+    async fn list_blocked_services(
+        &self,
+        locale: Option<&str>,
+    ) -> Result<ListBlockedServicesResult, BackendError> {
+        let locale = locale.unwrap_or("en");
+        let Some(provider) = self.inner.service_catalog.as_ref() else {
+            return Ok(ListBlockedServicesResult {
+                available: false,
+                items: Vec::new(),
+            });
+        };
+        let Some(catalog) = provider.catalog() else {
+            return Ok(ListBlockedServicesResult {
+                available: false,
+                items: Vec::new(),
+            });
+        };
+        let snapshot = self.current_snapshot().await?;
+        let sets = snapshot
+            .as_ref()
+            .map(|s| array(s, "filtering", "sets"))
+            .unwrap_or_default();
+        let items: Vec<Value> = catalog
+            .services()
+            .iter()
+            .map(|info| {
+                let enabled: serde_json::Map<String, Value> = sets
+                    .iter()
+                    .filter_map(|set| {
+                        let id = set.get("id")?.as_str()?;
+                        let on = set
+                            .get("services")
+                            .and_then(Value::as_array)
+                            .is_some_and(|list| {
+                                list.iter().any(|s| s.as_str() == Some(&*info.id))
+                            });
+                        Some((id.to_owned(), Value::Bool(on)))
+                    })
+                    .collect();
+                json!({
+                    "id": &*info.id,
+                    "name": catalog.translated_name(&info.id, locale).unwrap_or(&info.name),
+                    "enabled": enabled,
+                })
+            })
+            .collect();
+        Ok(ListBlockedServicesResult {
+            available: true,
+            items,
+        })
+    }
+
+    async fn list_domain_zones(&self) -> Result<ListDomainZonesResult, BackendError> {
+        let admin = self.inner.tls_admin.as_ref().ok_or(BackendError::Internal {
+            message: "domain zones not configured".into(),
+        })?;
+        let attached = admin.attached_domain_zones().await.map_err(|err| {
+            BackendError::Internal {
+                message: err.to_string(),
+            }
+        })?;
+        let zones = attached
+            .get("zones")
+            .and_then(Value::as_array)
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|zone| {
+                        let name = zone.get("name")?.as_str()?;
+                        let id = zone
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(name);
+                        Some(DomainZoneSummary {
+                            id: id.to_owned(),
+                            name: name.to_owned(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(ListDomainZonesResult { zones })
+    }
+
+    async fn list_zone_records(&self, zone_id: &str) -> Result<ListZoneRecordsResult, BackendError> {
+        let admin = self.inner.tls_admin.as_ref().ok_or(BackendError::Internal {
+            message: "domain zones not configured".into(),
+        })?;
+        let page = admin
+            .domain_zone_records(zone_id, 1, 100, None)
+            .await
+            .map_err(|err| BackendError::Internal {
+                message: err.to_string(),
+            })?;
+        let records = page
+            .get("records")
+            .and_then(Value::as_array)
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|row| {
+                        Some(ZoneRecord {
+                            id: row.get("id")?.as_str()?.to_owned(),
+                            name: row.get("name")?.as_str()?.to_owned(),
+                            r#type: row.get("type")?.as_str()?.to_owned(),
+                            content: row.get("content")?.as_str()?.to_owned(),
+                            proxied: row
+                                .get("proxied")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false),
+                            ttl: row.get("ttl").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(ListZoneRecordsResult {
+            zone_id: zone_id.to_owned(),
+            records,
+        })
+    }
+
+    async fn list_listeners(&self) -> Result<ListListenersResult, BackendError> {
+        let snapshot = self.current_snapshot().await?;
+        Ok(ListListenersResult {
+            listeners: snapshot
+                .as_ref()
+                .map(|s| array(s, "listeners", "listeners"))
+                .unwrap_or_default(),
+        })
+    }
+
+    async fn list_policy_records(&self) -> Result<ListPolicyRecordsResult, BackendError> {
+        let snapshot = self.current_snapshot().await?;
+        let records = snapshot
+            .as_ref()
+            .and_then(|s| s.get("policy"))
+            .and_then(|p| p.get("records"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        Ok(ListPolicyRecordsResult { records })
+    }
+
+    async fn get_domain_stats(&self, params: DomainStatsParams) -> Result<Value, BackendError> {
+        let log = self
+            .inner
+            .query_log
+            .as_ref()
+            .ok_or(BackendError::Internal {
+                message: "query log not configured".into(),
+            })?;
+        let domain = DomainName::parse(&params.domain).map_err(|_| {
+            backend_error(mcp_error(
+                "control_api.stats.invalid_domain",
+                json!({ "domain": params.domain }),
+            ))
+        })?;
+        let days = 7_u32;
+        let detail = log
+            .domain_detail(domain.as_str(), days)
+            .await
+            .map_err(|e| BackendError::Internal {
+                message: e.code().to_owned(),
+            })?;
+        detail.ok_or(BackendError::NotFound {
+            what: format!("domain {}", domain.as_str()),
+        })
+    }
+
+    async fn get_stats_timeseries(
+        &self,
+        params: StatsTimeseriesParams,
+    ) -> Result<Value, BackendError> {
+        let log = self
+            .inner
+            .query_log
+            .as_ref()
+            .ok_or(BackendError::Internal {
+                message: "query log not configured".into(),
+            })?;
+        let from_us = parse_time(params.from.as_deref(), "from")?;
+        let to_us = parse_time(params.to.as_deref(), "to")?.map(|to| to.saturating_sub(1));
+        let scope = StatsScope {
+            node_id: None,
+            profile_id: params.profile_id.as_deref(),
+        };
+        log.timeseries_scoped(from_us, to_us, scope, "hour")
+            .await
+            .map_err(|e| BackendError::Internal {
+                message: e.code().to_owned(),
+            })
+            .map(|series| serde_json::to_value(series).unwrap_or(Value::Null))
+    }
+
+    async fn resolve_client(
+        &self,
+        params: ResolveClientParams,
+    ) -> Result<ClientListResult, BackendError> {
+        let page = self
+            .list_clients(ClientListParams {
+                limit: 500,
+                offset: 0,
+                name_substr: None,
+                source: None,
+            })
+            .await?;
+        let query = params.query.trim();
+        let matches: Vec<_> = page
+            .clients
+            .into_iter()
+            .filter(|client| {
+                client.display_name.eq_ignore_ascii_case(query)
+                    || client.addresses.iter().any(|addr| addr == query)
+            })
+            .collect();
+        if matches.len() > 1 {
+            return Err(BackendError::Coded {
+                code: "mcp.ambiguous_client".to_owned(),
+                params: Some(json!({
+                    "query": query,
+                    "candidates": matches.iter().map(|c| json!({
+                        "id": c.id,
+                        "display_name": c.display_name,
+                    })).collect::<Vec<_>>(),
+                })),
+            });
+        }
+        Ok(ClientListResult {
+            clients: matches,
+            has_more: false,
+            next_offset: None,
+        })
+    }
+
+    async fn cancel_temporary_allow(
+        &self,
+        params: CancelTempAllowParams,
+    ) -> Result<CancelTempAllowResult, BackendError> {
+        let filter = self.filter_engine()?;
+        let domain = canonical_allow_domain(&params.domain).map_err(backend_error)?;
+        let snapshot = self.current_snapshot().await?;
+        let set = resolve_set_for_write(snapshot.as_ref(), params.filter_set_id.as_deref())
+            .map_err(backend_error)?;
+        let removed = filter
+            .remove_temporary_allow(&set, &domain)
+            .map_err(|err| backend_error(engine_error(err, set.as_str())))?;
+        self.inner.broadcast_runtime_command(
+            "remove_temporary_allow",
+            &json!({
+                "filter_set_id": set.as_str(),
+                "domain": domain.as_str(),
+            }),
+        );
+        Ok(CancelTempAllowResult {
+            removed,
+            filter_set_id: set.as_str().to_owned(),
+        })
+    }
+
+    async fn flush_cache(&self, params: FlushCacheParams) -> Result<FlushCacheResult, BackendError> {
+        let resolver = self.inner.resolver.as_ref().ok_or(BackendError::Internal {
+            message: "resolver not configured".into(),
+        })?;
+        let scope = match params.domain.as_deref() {
+            None => FlushScope::All,
+            Some(raw) => {
+                let domain = DomainName::parse(raw).map_err(|_| {
+                    backend_error(mcp_error(
+                        "control_api.resolver.flush.invalid_domain",
+                        json!({ "domain": raw }),
+                    ))
+                })?;
+                FlushScope::Domain(
+                    Name::from_ascii(domain.as_str()).map_err(|_| {
+                        backend_error(mcp_error(
+                            "control_api.resolver.flush.invalid_domain",
+                            json!({ "domain": raw }),
+                        ))
+                    })?,
+                )
+            }
+        };
+        let _report = resolver.flush(scope);
+        Ok(FlushCacheResult {
+            flushed: true,
+            domain: params.domain,
+        })
+    }
+
+    async fn set_blocked_service(
+        &self,
+        params: SetBlockedServiceParams,
+    ) -> Result<SetBlockedServiceResult, BackendError> {
+        let service = self.config_service()?;
+        let snapshot = self.current_snapshot().await?;
+        let set = resolve_set_for_write(snapshot.as_ref(), params.filter_set_id.as_deref())
+            .map_err(backend_error)?;
+        let set_id = set.as_str().to_owned();
+        let set_for_mut = set_id.clone();
+        let service_id = params.service_id.clone();
+        let enabled = params.enabled;
+        let actor = ConfigActor::new("mcp", "token");
+        let version = service
+            .mutate(&actor, "mcp.set_blocked_service", move |snapshot| {
+                let set =
+                    set_mut(snapshot, &set_for_mut).ok_or_else(|| unknown_set(&set_for_mut))?;
+                let list = set
+                    .as_object_mut()
+                    .ok_or_else(|| {
+                        mcp_error("filtering.config.invalid", json!({ "reason": "set not object" }))
+                    })?
+                    .entry("services")
+                    .or_insert_with(|| json!([]));
+                let list = list.as_array_mut().ok_or_else(|| {
+                    mcp_error(
+                        "filtering.config.invalid",
+                        json!({ "reason": "services not array" }),
+                    )
+                })?;
+                list.retain(|id| id.as_str() != Some(service_id.as_str()));
+                if enabled {
+                    list.push(json!(service_id));
+                }
+                Ok(true)
+            })
+            .await
+            .map_err(backend_error)?;
+        Ok(SetBlockedServiceResult {
+            service_id: params.service_id,
+            filter_set_id: set_id,
+            enabled: params.enabled,
+            config_version: version.map(|v| v as u64),
+        })
+    }
+
+    async fn create_zone_record(
+        &self,
+        params: ZoneRecordWriteParams,
+    ) -> Result<ZoneRecordWriteResult, BackendError> {
+        self.write_zone_record(params, false).await
+    }
+
+    async fn update_zone_record(
+        &self,
+        params: ZoneRecordWriteParams,
+    ) -> Result<ZoneRecordWriteResult, BackendError> {
+        self.write_zone_record(params, true).await
+    }
+
+    async fn delete_zone_record(
+        &self,
+        params: DeleteZoneRecordParams,
+    ) -> Result<DeleteZoneRecordResult, BackendError> {
+        let admin = self.inner.tls_admin.as_ref().ok_or(BackendError::Internal {
+            message: "domain zones not configured".into(),
+        })?;
+        admin
+            .delete_domain_zone_record(&params.zone_id, &params.record_id)
+            .await
+            .map_err(|err| BackendError::Internal {
+                message: err.to_string(),
+            })?;
+        Ok(DeleteZoneRecordResult {
+            deleted: true,
+            zone_id: params.zone_id,
+            record_id: params.record_id,
+        })
+    }
+
     async fn record_audit(&self, entry: AuditEntry) -> Result<(), BackendError> {
         let audit = self.inner.audit.as_ref().ok_or(BackendError::Internal {
             message: "audit log not configured".into(),
@@ -2586,5 +3223,42 @@ mod tests {
             message: "x".into(),
         });
         assert_eq!(other.code(), "control_api.internal");
+    }
+
+    #[test]
+    fn resolve_set_for_write_asks_when_multiple_sets_and_id_omitted() {
+        let snapshot = json!({
+            "filtering": {
+                "sets": [
+                    { "id": "default", "name": "Default" },
+                    { "id": "kids", "name": "Kids" }
+                ]
+            }
+        });
+        let err = resolve_set_for_write(Some(&snapshot), None).unwrap_err();
+        assert_eq!(err.code(), "mcp.needs_clarification");
+    }
+
+    #[test]
+    fn resolve_set_for_write_uses_explicit_or_single_set() {
+        let snapshot = json!({
+            "filtering": {
+                "sets": [
+                    { "id": "kids", "name": "Kids" }
+                ]
+            }
+        });
+        assert_eq!(
+            resolve_set_for_write(Some(&snapshot), None)
+                .unwrap()
+                .as_str(),
+            "kids"
+        );
+        assert_eq!(
+            resolve_set_for_write(Some(&snapshot), Some("kids"))
+                .unwrap()
+                .as_str(),
+            "kids"
+        );
     }
 }

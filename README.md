@@ -25,7 +25,7 @@ cluster and an embedded web UI are part of the same binary.
 - **TLS** — ACME DNS-01 (Cloudflare), cert store, DynDNS
 - **Control plane** — REST `/api/v1`, OIDC + break-glass login, API tokens,
   audit log, backups
-- **MCP** — 14 tools for AI assistants on `/mcp/v1` (opt-in; same RBAC family)
+- **MCP** — 34 tools, safe resources/prompts, and OAuth connectors on `/mcp/v1` (opt-in)
 - **Cluster** — master + sub-nodes, config sync, write relay, log aggregation
 - **Web UI** — SvelteKit SPA (en/de), embeddable into the binary (`web-ui` feature)
 
@@ -118,7 +118,7 @@ shares sockets with public DoH/DoT/DoQ listeners.
 | [`dnscraft-policy`](crates/dnscraft-policy/README.md) | Views/profiles and query pipeline |
 | [`dnscraft-listeners`](crates/dnscraft-listeners/README.md) | Do53 / DoT / DoH / DoQ |
 | [`dnscraft-api`](crates/dnscraft-api/README.md) | REST, auth, query log, stats, MCP/cluster wiring |
-| [`dnscraft-mcp`](crates/dnscraft-mcp/README.md) | MCP protocol + 14 tools |
+| [`dnscraft-mcp`](crates/dnscraft-mcp/README.md) | MCP protocol + 34 tools, resources, prompts |
 | [`dnscraft-cluster`](crates/dnscraft-cluster/README.md) | Master/sub-node protocol |
 | [`web/`](web/README.md) | SvelteKit SPA |
 
@@ -165,7 +165,8 @@ ADRs: [0001 recursion](docs/adr/0001-recursion-engine.md) ·
 [0003 policy ClientDirectory](docs/adr/0003-policy-client-directory.md) ·
 [0004 listeners admission](docs/adr/0004-listeners-shared-admission.md) ·
 [0005 injectable Clock](docs/adr/0005-injectable-clock.md) ·
-[0006 MCP rmcp](docs/adr/0006-mcp-rmcp-stateless.md).
+[0006 MCP rmcp](docs/adr/0006-mcp-rmcp-stateless.md),
+[0007 MCP v2 surface](docs/adr/0007-mcp-v2-surface.md).
 
 ## Development
 

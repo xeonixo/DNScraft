@@ -283,6 +283,8 @@ pub(crate) async fn start(
             env!("CARGO_PKG_VERSION"),
             mcp_config,
             oidc_issuer,
+            state.tls_admin().cloned(),
+            state.service_catalog().cloned(),
         ));
     }
 

@@ -13,12 +13,18 @@
 pub mod read;
 pub mod write;
 
+mod v2_read;
+mod v2_write;
+
 use std::borrow::Cow;
 use std::future::Future;
 
 use rmcp::model::{
-    CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, JsonObject,
-    ListToolsResult, PaginatedRequestParams, ProtocolVersion, ResultType, Tool,
+    CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, GetPromptRequestParams,
+    GetPromptResponse, Implementation, JsonObject, ListPromptsResult, ListResourcesResult,
+    ListToolsResult, PaginatedRequestParams, Prompt, PromptMessage, ProtocolVersion,
+    ReadResourceRequestParams, ReadResourceResponse, Resource, ResourceContents, ResultType,
+    Role, ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler, tool_handler};
@@ -57,12 +63,13 @@ impl McpServer {
         }
     }
 
-    /// All 14 tools: the macro-registered `get_status`, the seven static read
-    /// tools and the six write tools.
+    /// All tools: macro `get_status`, read/write catalog and v2 extensions.
     fn catalog(&self) -> Vec<Tool> {
         let mut tools = Self::tool_router().list_all();
         tools.extend(read::tool_definitions());
+        tools.extend(v2_read::tool_definitions());
         tools.extend(write::tool_definitions());
+        tools.extend(v2_write::tool_definitions());
         tools.sort_by(|a, b| a.name.cmp(&b.name));
         tools
     }
@@ -70,7 +77,11 @@ impl McpServer {
     fn listed_tools(&self) -> Vec<Tool> {
         self.catalog()
             .into_iter()
-            .filter(|tool| self.config.write_tools_enabled || !write::is_write_tool(&tool.name))
+            .filter(|tool| {
+                self.config.write_tools_enabled
+                    || (!write::is_write_tool(&tool.name)
+                        && !v2_write::is_v2_write_tool(&tool.name))
+            })
             .collect()
     }
 }
@@ -110,7 +121,11 @@ pub fn parse_mcp_tool_input(tool: &str, json: &[u8]) -> Result<(), McpError> {
     let valid = match tool {
         "get_status" => true,
         name if read::is_read_tool(name) => read::validate_arguments(name, Some(arguments)),
+        name if v2_read::is_v2_read_tool(name) => v2_read::validate_arguments(name, Some(arguments)),
         name if write::is_write_tool(name) => write::validate_arguments(name, Some(arguments)),
+        name if v2_write::is_v2_write_tool(name) => {
+            v2_write::validate_arguments(name, Some(arguments))
+        }
         _ => {
             return Err(McpError::ToolNotFound {
                 tool: tool.to_owned(),
@@ -195,8 +210,28 @@ pub(crate) fn require_token(token: Option<&TokenInfo>) -> Result<(), CallToolRes
     }
 }
 
+const INSTRUCTIONS_TEXT: &str = "\
+1. Never invent domains, clients, filter sets, or DNS answers — use tools or ask the user.\n\
+2. Prefer DNScraft tools over assumptions.\n\
+3. If input is incomplete or ambiguous, ask the user or return a clarification error.\n\
+4. Read tools are safe; confirm with the user before any write tool.\n\
+5. Call classify_domain before allow_temporarily or propose_exception; tracking domains need acknowledge_tracking after explicit user consent.\n\
+6. When multiple clients or filter sets match, disambiguate before acting.";
+
 #[tool_handler(name = "dnscraft-mcp")]
 impl ServerHandler for McpServer {
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_prompts()
+                .enable_resources()
+                .build(),
+        )
+        .with_instructions(INSTRUCTIONS_TEXT)
+        .with_server_info(Implementation::new("dnscraft-mcp", env!("CARGO_PKG_VERSION")))
+    }
+
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
         if self.config.legacy_session_mode {
             Cow::Borrowed(ProtocolVersion::KNOWN_VERSIONS)
@@ -240,8 +275,12 @@ impl ServerHandler for McpServer {
             self.get_status(context).await
         } else if write::is_write_tool(name) {
             write::call(name, request.arguments, self, context).await
+        } else if v2_write::is_v2_write_tool(name) {
+            v2_write::call(name, request.arguments, self, context).await
         } else if read::is_read_tool(name) {
             read::call(name, request.arguments, self, context).await
+        } else if v2_read::is_v2_read_tool(name) {
+            v2_read::call(name, request.arguments, self, context).await
         } else {
             tool_error(
                 McpError::ToolNotFound { tool: name.into() }.code(),
@@ -266,6 +305,166 @@ impl ServerHandler for McpServer {
         );
         Ok(result.into())
     }
+
+    async fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, rmcp::ErrorData> {
+        Ok(ListPromptsResult {
+            result_type: Some(ResultType::COMPLETE),
+            prompts: vec![
+                Prompt::from_raw(
+                    "diagnose_block",
+                    Some("Workflow: resolve the client, explain_block or test_query, then summarize for the user. Ask when inputs are missing."),
+                    None,
+                ),
+                Prompt::from_raw(
+                    "network_health_check",
+                    Some("Workflow: get_status, list_alerts, list_resolver_upstreams. Report issues without guessing."),
+                    None,
+                ),
+                Prompt::from_raw(
+                    "temporary_access",
+                    Some("Workflow: classify_domain first; if tracking, get explicit user consent before allow_temporarily with acknowledge_tracking."),
+                    None,
+                ),
+            ],
+            meta: None,
+            next_cursor: None,
+            ttl_ms: None,
+            cache_scope: None,
+        })
+    }
+
+    async fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResponse, rmcp::ErrorData> {
+        let text = match request.name.as_str() {
+            "diagnose_block" => "Use resolve_client, explain_block, and test_query. Ask for domain and device when unknown.",
+            "network_health_check" => "Use get_status, list_alerts, and list_resolver_upstreams. Do not invent health data.",
+            "temporary_access" => "Use classify_domain before allow_temporarily. Tracking domains require acknowledge_tracking after the user explicitly agrees.",
+            other => {
+                return Err(rmcp::ErrorData::invalid_params(
+                    "unknown prompt",
+                    Some(json!({ "name": other })),
+                ));
+            }
+        };
+        Ok(GetPromptResponse::Complete(
+            rmcp::model::GetPromptResult::new(vec![PromptMessage::new_text(
+                Role::Assistant,
+                text,
+            )])
+            .with_description(text),
+        ))
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, rmcp::ErrorData> {
+        Ok(ListResourcesResult {
+            result_type: Some(ResultType::COMPLETE),
+            resources: vec![
+                Resource::new("dnscraft://status", "status")
+                    .with_description("Node status snapshot")
+                    .with_mime_type("application/json"),
+                Resource::new("dnscraft://alerts", "alerts")
+                    .with_description("Active alerts")
+                    .with_mime_type("application/json"),
+                Resource::new("dnscraft://filter-lists", "filter-lists")
+                    .with_description("Filter list catalog")
+                    .with_mime_type("application/json"),
+                Resource::new("dnscraft://policy/map", "policy-map")
+                    .with_description("Policy views")
+                    .with_mime_type("application/json"),
+            ],
+            meta: None,
+            next_cursor: None,
+            ttl_ms: None,
+            cache_scope: None,
+        })
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, rmcp::ErrorData> {
+        if require_token(token_from(&context)).is_err() {
+            return Err(rmcp::ErrorData::invalid_request(
+                "authentication required",
+                None,
+            ));
+        }
+        let payload = match request.uri.as_str() {
+            "dnscraft://status" => {
+                let status = self
+                    .backend
+                    .get_status()
+                    .await
+                    .map_err(resource_backend_err)?;
+                serde_json::to_string(&read::status_json(&status)).map_err(resource_internal_err)?
+            }
+            "dnscraft://alerts" => {
+                let alerts = self
+                    .backend
+                    .list_alerts()
+                    .await
+                    .map_err(resource_backend_err)?;
+                serde_json::to_string(&json!({
+                    "active_count": alerts.active_count,
+                    "items": alerts.items,
+                }))
+                .map_err(resource_internal_err)?
+            }
+            "dnscraft://filter-lists" => {
+                let lists = self
+                    .backend
+                    .list_filter_lists()
+                    .await
+                    .map_err(resource_backend_err)?;
+                serde_json::to_string(&lists).map_err(resource_internal_err)?
+            }
+            "dnscraft://policy/map" => {
+                let views = self
+                    .backend
+                    .list_policy_views()
+                    .await
+                    .map_err(resource_backend_err)?;
+                serde_json::to_string(&views).map_err(resource_internal_err)?
+            }
+            other => {
+                return Err(rmcp::ErrorData::invalid_params(
+                    "unknown resource",
+                    Some(json!({ "uri": other })),
+                ));
+            }
+        };
+        Ok(ReadResourceResponse::Complete(
+            rmcp::model::ReadResourceResult::new(vec![ResourceContents::TextResourceContents {
+                uri: request.uri,
+                mime_type: Some("application/json".into()),
+                text: payload,
+                meta: None,
+            }]),
+        ))
+    }
+}
+
+fn resource_backend_err(error: BackendError) -> rmcp::ErrorData {
+    rmcp::ErrorData::internal_error(error.code().to_owned(), error.params())
+}
+
+fn resource_internal_err(error: serde_json::Error) -> rmcp::ErrorData {
+    rmcp::ErrorData::internal_error(
+        "control_api.internal",
+        Some(json!({ "reason": error.to_string() })),
+    )
 }
 
 #[cfg(test)]
@@ -301,6 +500,19 @@ mod tests {
             ("remove_rule", r#"{"domain":"example.com"}"#),
             ("pause_filter_set", r#"{"duration":"PT1H"}"#),
             ("resume_filter_set", r#"{"filter_set_id":"default"}"#),
+            ("classify_domain", r#"{"domain":"ads.example.com"}"#),
+            ("list_alerts", "{}"),
+            ("resolve_client", r#"{"query":"phone"}"#),
+            ("cancel_temporary_allow", r#"{"domain":"ads.example.com"}"#),
+            ("flush_cache", "{}"),
+            (
+                "set_blocked_service",
+                r#"{"service_id":"youtube","enabled":true}"#,
+            ),
+            (
+                "create_zone_record",
+                r#"{"zone_id":"z1","name":"www","type":"A","content":"192.0.2.1"}"#,
+            ),
         ];
         for (tool, json) in cases {
             assert!(

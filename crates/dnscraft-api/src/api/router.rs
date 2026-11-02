@@ -323,6 +323,13 @@ pub(crate) fn build_router(state: AppState) -> Router {
     if let Some(inner) = state.mcp_backend_inner().cloned() {
         let mcp_config = state.mcp_config().clone();
         if mcp_config.enabled {
+            let state_for_alerts = state.clone();
+            let inner = inner.with_list_alerts(Arc::new(move || {
+                let state = state_for_alerts.clone();
+                Box::pin(async move {
+                    crate::api::alerts_routes::collect_alerts(&state).await
+                })
+            }));
             let backend = Arc::new(ControlMcpBackend::new(inner));
             router = router.nest_service("/mcp/v1", dnscraft_mcp::service(backend, mcp_config));
             // OAuth sign-in for MCP clients; only the master issues credentials.

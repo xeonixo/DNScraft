@@ -270,9 +270,16 @@ async fn write_gate_controls_listing_and_calls() {
     let write_names = [
         "allow_temporarily",
         "add_rule",
+        "propose_exception",
         "remove_rule",
         "pause_filter_set",
         "resume_filter_set",
+        "cancel_temporary_allow",
+        "flush_cache",
+        "set_blocked_service",
+        "create_zone_record",
+        "update_zone_record",
+        "delete_zone_record",
     ];
 
     let off = spawn(McpConfig::default(), Ok(support::write_token())).await;
@@ -284,7 +291,7 @@ async fn write_gate_controls_listing_and_calls() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(listed.len(), 8);
+    assert_eq!(listed.len(), 22);
     for name in read_names {
         assert!(listed.contains(&name), "{name} missing from {listed:?}");
     }
@@ -318,7 +325,7 @@ async fn write_gate_controls_listing_and_calls() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(listed.len(), 14);
+    assert_eq!(listed.len(), 34);
     for name in read_names.into_iter().chain(write_names) {
         assert!(listed.contains(&name), "{name} missing from {listed:?}");
     }

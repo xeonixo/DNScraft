@@ -16,7 +16,7 @@ Status matches [tasks/progress.md](tasks/progress.md) "Current state".
 | `listeners` | Do53 UDP/TCP, DoT, DoH (h2/h3), DoQ; multiple NICs/addresses; public listeners for registered Client IDs | policy, tls | [SPEC-listeners.md](docs/SPEC-listeners.md) | complete |
 | `control-api` | REST API, configuration, query log (filterable by device), statistics, OIDC (Authentik) + local break-glass login, locale-neutral error codes | policy, clients | [SPEC-control-api.md](docs/SPEC-control-api.md) | complete |
 | `web-ui` | TypeScript frontend, fully internationalized, embedded into the binary as static assets (`web-ui` Cargo feature) | control-api | [SPEC-web-ui.md](docs/SPEC-web-ui.md) | SPA screens shipped (dashboard, query log, policy, filtering including blocked services, listeners, cluster, settings, public web access); rust-embed via the `web-ui` feature; release still copies `web/build` → `embed-web-ui/` |
-| `mcp` | MCP server for AI assistants: query log, "why blocked?", test query, stats (viewer); temporary allow, rules, pause (admin); internal listener only, same tokens/roles/audit as the API | control-api | [SPEC-mcp.md](docs/SPEC-mcp.md) | complete |
+| `mcp` | MCP v2 for AI assistants: 34 tools, safe resources/prompts, OAuth connectors, classify-before-allow; internal listener only | control-api | [SPEC-mcp.md](docs/SPEC-mcp.md) | complete |
 | `cluster` | Master/sub-nodes: config sync, writes from any node (forwarded to master, offline fallback), keep serving without the master, log/stats aggregation on the master | control-api | [SPEC-cluster.md](docs/SPEC-cluster.md) | complete (wired into the `dnscraft` binary) |
 
 ## Build order

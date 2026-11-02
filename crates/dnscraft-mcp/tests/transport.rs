@@ -161,12 +161,14 @@ async fn smoke_discover_advertises_tools_only_without_handshake() {
     // rmcp shape (ADR 0006 contradiction 1): version list plus `_meta.serverInfo`.
     assert_eq!(body["result"]["resultType"], "complete");
     assert_eq!(body["result"]["supportedVersions"], json!([VERSION]));
-    assert_eq!(body["result"]["capabilities"], json!({ "tools": {} }));
+    assert!(body["result"]["capabilities"]["tools"].is_object());
+    assert!(body["result"]["capabilities"]["prompts"].is_object());
+    assert!(body["result"]["capabilities"]["resources"].is_object());
     assert_eq!(
         body["result"]["_meta"]["io.modelcontextprotocol/serverInfo"],
         json!({ "name": "dnscraft-mcp", "version": env!("CARGO_PKG_VERSION") })
     );
-    assert!(body["result"]["instructions"].is_null());
+    assert!(body["result"]["instructions"].is_string());
     assert_eq!(
         server
             .backend
@@ -185,8 +187,8 @@ async fn smoke_list_tools_exposes_static_read_only_status_tool() {
 
     assert_eq!(status, 200, "tools/list: {body}");
     let tools = body["result"]["tools"].as_array().expect("tools array");
-    // Write gate defaults to false: only the 8 read tools are listed.
-    assert_eq!(tools.len(), 8);
+    // Write gate defaults to false: only the 22 read tools are listed.
+    assert_eq!(tools.len(), 22);
     let tool = tools
         .iter()
         .find(|tool| tool["name"] == "get_status")

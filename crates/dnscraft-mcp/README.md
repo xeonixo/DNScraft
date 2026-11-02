@@ -17,7 +17,7 @@ control-api
    │  implements McpBackend (all I/O: log, policy, filtering, audit)
    ▼
 dnscraft-mcp
-   ├── tools/       14 tool definitions + handlers (read and write)
+   ├── tools/       34 tool definitions + handlers (read and write)
    ├── transport     pure request pre-checks + rmcp Streamable HTTP wrapper
    ├── auth         bearer-token extraction and scope checks
    ├── protected    protected-domain matching
@@ -41,27 +41,47 @@ write-tools gate. The dependency decision is recorded in
 
 ## Tools
 
-All 14 tools are listed when `write_tools_enabled = true`; with the gate off,
-`tools/list` returns only the eight read tools and every write tool call fails
+All 34 tools are listed when `write_tools_enabled = true`; with the gate off,
+`tools/list` returns only the 22 read tools and every write tool call fails
 with `mcp.write_tools_disabled`. Rows are in the order returned by `tools/list`
 (alphabetical).
 
 | Tool | Scope | Description |
 |---|---|---|
 | `add_rule` | `mcp:write` | Add a structured custom block rule to a filter set (no raw syntax, no wildcards). |
-| `allow_temporarily` | `mcp:write` | Temporarily allow a blocked domain for a fixed short duration; the allow expires automatically. |
+| `allow_temporarily` | `mcp:write` | Temporarily allow a blocked domain; call `classify_domain` first; tracking domains need `acknowledge_tracking`. |
+| `cancel_temporary_allow` | `mcp:write` | Remove an active temporary allow for a domain. |
+| `classify_domain` | `mcp:read` | Classify a domain using the tracker database (tracking / functional / unknown). |
+| `create_zone_record` | `mcp:write` | Create a DNS record in an attached public zone. |
+| `delete_zone_record` | `mcp:write` | Delete a DNS record from an attached public zone. |
 | `explain_block` | `mcp:read` | Explain why a domain is currently blocked for a profile, without a live DNS query. |
+| `flush_cache` | `mcp:write` | Flush the resolver cache for one domain or entirely. |
+| `get_domain_stats` | `mcp:read` | Per-domain query statistics from the query log. |
 | `get_query` | `mcp:read` | Retrieve one query-log entry with its full decision record. |
 | `get_stats` | `mcp:read` | Retrieve DNS statistics for a time range. |
+| `get_stats_timeseries` | `mcp:read` | Query volume over time (hourly buckets). |
 | `get_status` | `mcp:read` | Get node status: resolver health, listeners, TLS, list updates and uptime. |
+| `list_alerts` | `mcp:read` | List active operational alerts. |
+| `list_blocked_services` | `mcp:read` | Blocked-services catalog and per–filter-set toggles. |
 | `list_clients` | `mcp:read` | List known clients with names, addresses, VLANs and source. |
+| `list_domain_zones` | `mcp:read` | List attached public DNS zones. |
+| `list_filter_lists` | `mcp:read` | List configured filter lists. |
+| `list_filter_sets` | `mcp:read` | List filter sets from configuration. |
+| `list_listeners` | `mcp:read` | List listener definitions from configuration. |
 | `list_mcp_rules` | `mcp:read` | List MCP-created rules, active temporary allows or active pauses for a filter set. |
+| `list_policy_records` | `mcp:read` | List static local DNS records from policy configuration. |
+| `list_policy_views` | `mcp:read` | List policy views and profile bindings. |
+| `list_resolver_upstreams` | `mcp:read` | Resolver upstream health. |
+| `list_zone_records` | `mcp:read` | List DNS records in one attached zone. |
 | `pause_filter_set` | `mcp:write` | Pause filtering for a filter set for a fixed short duration. |
-| `propose_exception` | `mcp:write` | Propose a permanent exception for a wrongly blocked domain; it takes effect only after the owner confirms it in the web UI. |
+| `propose_exception` | `mcp:write` | Propose a permanent exception; classify first; owner confirms in the web UI. |
 | `remove_rule` | `mcp:write` | Remove a custom block rule that was previously created via MCP. |
+| `resolve_client` | `mcp:read` | Resolve a client by exact display name or IP. |
 | `resume_filter_set` | `mcp:write` | Resume filtering for a paused filter set. |
 | `search_query_log` | `mcp:read` | Search the query log by time, client, domain, protocol, view or outcome. |
+| `set_blocked_service` | `mcp:write` | Enable or disable a blocked-service category in a filter set. |
 | `test_query` | `mcp:read` | Dry-run a query through the policy engine without writing to the log or cache. |
+| `update_zone_record` | `mcp:write` | Update a DNS record in an attached public zone. |
 
 Read tools carry `readOnlyHint: true`; write tools carry `destructiveHint: true`.
 Tool descriptions are static and are never built from runtime data.
@@ -82,7 +102,7 @@ Tool descriptions are static and are never built from runtime data.
 | `max_custom_rules_per_set` | 100 | 10–1000 | `add_rule` (non-expired rules per filter set) |
 | `max_block_rule_lifetime` | 30 d | 1–365 d | Server-set `expires_at` on every MCP-created rule |
 | `legacy_session_mode` | `false` | `true`/`false` | Protocol negotiation; `MCP-Protocol-Version` is still required |
-| `write_tools_enabled` | `false` | `true`/`false` | Independent gate for the five write tools |
+| `write_tools_enabled` | `false` | `true`/`false` | Independent gate for the twelve write tools |
 
 `enabled` defaults to `false` as well: the endpoint is opt-in. Result lists default
 to 50 items (100 for `list_clients` and `list_mcp_rules`) and cap at 500 per
@@ -113,6 +133,9 @@ an HTTP status or a JSON-RPC error.
 | `mcp.protected_domain` | The target, an ancestor or a descendant is protected |
 | `mcp.config.invalid` | A configuration value is out of range (startup only) |
 | `mcp.config.protected_domain` | A `protected_domains` entry is malformed (startup only) |
+| `mcp.tracking_domain_refused` | Allow/propose on a tracking-classified domain without `acknowledge_tracking` |
+| `mcp.needs_clarification` | Multiple filter sets (or similar) — pick from `params.candidates` |
+| `mcp.ambiguous_client` | More than one client matched `resolve_client` |
 
 Protocol-defined JSON-RPC errors, returned as JSON-RPC errors rather than tool
 results: `-32601` (method not found, HTTP 404), `-32020` (header mismatch, HTTP
@@ -161,11 +184,34 @@ header and no cookies. Every request declares the protocol version in both the
 `Mcp-Method` (plus `Mcp-Name` for `tools/call`). Examples use documentation
 names only.
 
-**Status: not run.** These steps need a running control-api with MCP enabled
-and a token with `mcp:read`; they were not executed while writing this
-document.
+**Automated coverage:** `cargo test -p dnscraft-mcp --test v2_surface` covers
+classify/tracking gates, clarify errors, new writes, prompts, and resources.
+OAuth multi-client: `cargo test -p dnscraft-api --lib api::oauth`. Live
+connector matrix below is owner-run.
 
-1. Start the server with `[control_api.mcp] enabled = true` and a test token.
+These curl steps need a running control-api with MCP enabled
+(`public_url` set for remote clients) and either OAuth or a token with
+`mcp:read`.
+
+### Connector interop matrix (owner checklist)
+
+Built-in redirect allowlist (no extras needed for these): Claude callbacks;
+ChatGPT stable + `connector/oauth/{id}`; Cursor `localhost:8787` / agents /
+`cursor://…`; Perplexity (+ Enterprise); VS Code loopback/web; any
+`http://127.0.0.1|localhost` loopback. Set `public_url` for remote hosts.
+AS advertises RFC 9207 `iss` support.
+
+| Client | Auth | Register → Consent → `tools/list` → one read | Date / result |
+|---|---|---|---|
+| Claude (web / desktop connector) | OAuth DCR + browser consent | | not run |
+| ChatGPT (custom MCP / plugins) | OAuth DCR; stable redirect via `iss` | | not run |
+| Cursor (desktop / agents) | OAuth DCR or static bearer | | not run |
+| Perplexity (custom connector) | OAuth; UI may ask for client secret — prefer DCR or static bearer | | not run |
+| Loopback desktop (Claude Code, etc.) | OAuth loopback redirect | | not run |
+
+1. Start the server with `[control_api.mcp] enabled = true`, optional
+   `public_url = "https://dnscraft.example.net:8443"`, and a test token or
+   admin browser session for OAuth.
 
 2. List tools (not run):
 
@@ -179,8 +225,8 @@ document.
      -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
    ```
 
-   Expect `200 OK` with `application/json` and a `result.tools` array of eight
-   read tools (14 with the write gate on).
+   Expect `200 OK` with `application/json` and a `result.tools` array of 22
+   read tools (34 with the write gate on).
 
 3. Call `get_status` (not run):
 

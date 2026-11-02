@@ -11,21 +11,24 @@ Expose DNScraft's query log, configuration, and real-time DNS testing capabiliti
 
 - MCP server implementation over **Streamable HTTP**, revision **2026-07-28**, on the internal API listener only.
 - Single endpoint `/mcp/v1` (POST only; GET/DELETE → 405); every JSON-RPC message is its own stateless POST.
-- Read tools (viewer role, `mcp:read` scope): search query log, retrieve single query with full decision record, explain why a domain was blocked, dry-run test query, statistics, client list, node status, list MCP-managed rules and active temporary allows/pauses (8 tools).
-- Write tools (admin role, `mcp:write` scope): temporary allow with mandatory expiry, add/remove structured block rules, propose a permanent exception for the owner to confirm, pause/resume filter sets (6 tools).
+- **v2 surface:** tools (read freely / write after user confirmation), safe server-authored **resources**, static **prompts**, and server **instructions** (clarify-first, no hallucination, ads/tracker policy).
+- Read tools (`mcp:read`): query log, explain/test, stats, clients, status, MCP rules, alerts, policy/filter inventory, domain classification, domain zones (read), and related ops reads.
+- Write tools (`mcp:write` + gate): temporary allow/cancel, block rules, propose exception, pause/resume, cache flush, blocked-service toggle, domain-zone record CRUD — all with `destructiveHint` except non-mutating propose.
 - Separate token scopes (`mcp:read`, `mcp:write`) valid only on MCP endpoints; normal API tokens rejected on MCP unless explicitly scoped.
 - Server-side write-tools gate: `control_api.mcp.write_tools_enabled` (default false) independent of token scope; with it off, write tools are not listed.
-- Prompt-injection defenses: query-log content (domain names, client names, list names) returned strictly as structured data with length caps and sanitization (all control characters including `\t`, `\n`, `\r` neutralized); assistant-supplied `reason` fields sanitized before audit; write tools marked `destructiveHint` for client confirmation.
+- **Ads/tracker policy:** before allow/propose, assistants must call `classify_domain`; tracking/advertising domains are refused unless `acknowledge_tracking: true` is set after an explicit user override.
+- **Clarify-first:** incomplete or ambiguous inputs → ask the user or return `mcp.needs_clarification` / `mcp.ambiguous_*`; never invent domains, clients, filter sets, or DNS facts.
+- Prompt-injection defenses: query-log content returned strictly as structured sanitized data; never as MCP resource/prompt freeform text; write tools marked `destructiveHint` for client confirmation.
 - Off by default; opt-in per node.
 
 ### Non-goals
 
 - Not a replacement for the web UI or a general-purpose DNS management interface.
-- OAuth for MCP clients is a thin sign-in layer, not a general authorization server: see § OAuth sign-in. Static bearer tokens stay supported.
-- Not supporting MCP resources or prompts in v1 (tools only).
+- OAuth for MCP clients is a thin sign-in layer for MCP connectors (not a general IdP). Static bearer tokens stay supported.
 - Not exposing secrets, private keys, or full configuration snapshots (viewer sees read-only status, admin cannot retrieve token material).
 - Not a separate rate-limit policy: the MCP crate keeps its own per-token buckets with the same default rates as `control-api` (see § Limits and defaults); `control-api` still counts `/mcp/v1` requests in its own buckets.
-- Domain-Zonen / public Cloudflare DNS editing tools are deferred (use web UI `/names` and control-api `/api/v1/domain-zones`).
+- Query-log content must not be exposed as MCP resources or prompt template text (injection risk).
+- No permanent allow via MCP without owner confirmation in the web UI (`propose_exception` only).
 
 ## Architecture
 
@@ -156,15 +159,18 @@ Handshake-based revisions (with `initialize` and session management) are **2025-
   - **Per-token rate buckets:** the mcp crate keeps read, write and failed-auth token buckets (`read_per_second` 100, `write_per_second` 20, `auth_per_second` 10, `max_tracked_tokens` 10000; LRU-bounded). The control-api limiter (SPEC-control-api.md § General rules) also applies to `/mcp/v1`.
 - **Protocol version validation per request:** Each request's `MCP-Protocol-Version` header is checked. Unsupported version → HTTP 400 + `UnsupportedProtocolVersionError` (JSON-RPC error with supported versions in `data.supportedVersions`). No session-level negotiation.
 
-### OAuth sign-in (Claude connector)
+### OAuth sign-in (MCP clients)
 
-DNScraft serves a minimal OAuth 2.1 authorization server (`crates/dnscraft-api/src/api/oauth.rs`) so a client can sign in through the owner's browser session (OIDC or break-glass, admin role required) instead of a pasted token:
+DNScraft serves a minimal OAuth 2.1 authorization server (`crates/dnscraft-api/src/api/oauth.rs`) so compliant MCP clients can sign in through the owner's browser session (OIDC or break-glass, admin role required) instead of a pasted token:
 
 - Discovery: `/.well-known/oauth-protected-resource[/mcp/v1]`, `/.well-known/oauth-authorization-server`; a 401 on `/mcp/v1` carries `WWW-Authenticate: Bearer resource_metadata=...`.
-- `POST /oauth/register`: stateless DCR, redirect URIs limited to `claude.ai`/`claude.com` callbacks and loopback.
-- `/oauth/authorize`: PKCE `S256` mandatory, consent page with CSRF token, audited as `oauth.authorize`.
-- `POST /oauth/token`: `authorization_code` only; issues a normal `mcp:write` token, 30 days, no refresh token.
-- Public base URL: first `allowed_origins` entry, else `Host`. Mounted only when MCP is enabled and the node is not a cluster sub-node.
+- AS metadata includes `authorization_response_iss_parameter_supported: true`; authorize redirects (success and deny) include `iss` matching the metadata `issuer` (RFC 9207 — required for ChatGPT’s stable redirect).
+- `POST /oauth/register`: DCR (optional JSON persistence via `oauth_clients_path`). Built-in redirect allowlist covers Claude, ChatGPT (stable + `…/connector/oauth/{id}`), Cursor (desktop/agents/custom-scheme), Perplexity (+ Enterprise), VS Code, plus any loopback `http://127.0.0.1|localhost|::1` URI and exact `oauth_extra_redirect_uris`.
+- `/oauth/authorize`: PKCE `S256` mandatory, consent page (owner picks `mcp:read` / `mcp:write` when write tools are enabled) with CSRF token, audited as `oauth.authorize`.
+- `POST /oauth/token`: `authorization_code` and `refresh_token`; issues MCP-scoped access (1 h) plus a refresh token (30 d, not rotated on refresh). Scopes: `mcp:read`, `mcp:write`.
+- Public base URL: `public_url` when set (recommended for remote connectors), else first `allowed_origins` entry, else `Host`. Mounted only when MCP is enabled and the node is not a cluster sub-node.
+
+Known client notes (still verify live): Claude uses fixed hosted callback + loopback for Claude Code; ChatGPT prefers the stable redirect when `iss` is advertised; Cursor uses `localhost:8787` / agents URL; Perplexity may still prefer a pre-registered confidential client with Client Secret in some UIs even though DNScraft DCR is public-client-only — then use a static MCP bearer or extras as documented.
 
 ### Legacy session mode (optional)
 
@@ -188,21 +194,25 @@ The server's `server/discover` response includes:
     "version": "<build-version>"
   },
   "capabilities": {
-    "tools": {}
-  }
+    "tools": {},
+    "resources": {},
+    "prompts": {}
+  },
+  "instructions": "<clarify-first / no-hallucination / classify-before-allow>"
 }
 ```
 
-**Supported:**
-- `tools`: all read and write tools listed below. If `control_api.mcp.write_tools_enabled = false`, only the 8 read tools are listed in `tools/list` responses.
+**Supported (v2):**
+- `tools`: all read and write tools listed below. If `control_api.mcp.write_tools_enabled = false`, only read tools are listed in `tools/list` responses.
+- `resources`: safe, server-authored catalogs only (`dnscraft://status`, `dnscraft://alerts`, `dnscraft://filter-lists`, `dnscraft://policy/map`). Never query-log bodies.
+- `prompts`: static workflow templates (`diagnose_block`, `network_health_check`, `temporary_access`) with clarify-first and ads/tracker rules.
+- `instructions`: static anti-hallucination / write-after-ask / classify-before-allow text on `get_info` / discover.
 
-**Not supported in v1:**
-- `resources`: no MCP resources (query log as a resource would expose attacker-controlled content in a prompt-like context; explicit tool calls with structured output are safer).
-- `prompts`: no prompt templates (assistants compose their own queries).
+**Not supported:**
 - `logging`: server-to-client log streaming not implemented (server logs stay in `tracing`, not sent to MCP clients).
-- `completion`: argument autocompletion not implemented (assistants resolve arguments themselves).
+- `completion`: argument autocompletion not implemented in v2.0 (assistants resolve arguments themselves or ask).
 
-Justification: Tools are sufficient for the "search, explain, act" workflow. Resources and prompts risk prompt-injection if query-log content (attacker-influenced domain/client names) were embedded in assistant context as freeform text. Explicit tool calls with JSON Schema–validated arguments and structured responses keep injection surface minimal.
+Justification: Tools remain the primary “search, explain, act” path. Safe resources/prompts avoid embedding attacker-influenced query-log text in freeform prompt context.
 
 ## Tools
 

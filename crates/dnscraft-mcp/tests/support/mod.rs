@@ -12,13 +12,20 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use dnscraft_mcp::McpConfig;
 use dnscraft_mcp::backend::{BackendError, McpBackend};
 use dnscraft_mcp::dto::{
-    AddRuleParams, AddRuleResult, AuditEntry, ClientInfo, ClientListParams, ClientListResult,
-    ExplainBlockResult, ListRulesParams, ListRulesResult, McpRuleInfo, NodeStatus, PauseInfo,
-    PauseParams, PauseResult, ProposeExceptionParams, ProposeExceptionResult, QType, QueryDetail,
-    QueryLogEntry, QueryLogResult, QueryLogSearch, RemoveRuleParams, RemoveRuleResult,
-    ResumeResult, StatsParams, StatsResult, TempAllowInfo, TempAllowParams, TempAllowResult,
-    TestQueryParams, TestQueryResult, TokenInfo, TokenScope,
+    AddRuleParams, AddRuleResult, AuditEntry, CancelTempAllowParams, CancelTempAllowResult,
+    ClassifyDomainResult, ClientInfo, ClientListParams, ClientListResult, DeleteZoneRecordParams,
+    DeleteZoneRecordResult, DomainStatsParams, ExplainBlockResult, FlushCacheParams,
+    FlushCacheResult, ListAlertsResult, ListBlockedServicesResult, ListDomainZonesResult,
+    ListFilterListsResult, ListFilterSetsResult, ListListenersResult, ListPolicyRecordsResult,
+    ListPolicyViewsResult, ListResolverUpstreamsResult, ListRulesParams, ListRulesResult,
+    ListZoneRecordsResult, McpRuleInfo, NodeStatus, PauseInfo, PauseParams, PauseResult,
+    ProposeExceptionParams, ProposeExceptionResult, QType, QueryDetail, QueryLogEntry,
+    QueryLogResult, QueryLogSearch, RemoveRuleParams, RemoveRuleResult, ResolveClientParams,
+    ResumeResult, SetBlockedServiceParams, SetBlockedServiceResult, StatsParams, StatsResult,
+    StatsTimeseriesParams, TempAllowInfo, TempAllowParams, TempAllowResult, TestQueryParams,
+    TestQueryResult, TokenInfo, TokenScope, ZoneRecordWriteParams, ZoneRecordWriteResult,
 };
+use serde_json::{Value, json};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use tokio::sync::Notify;
@@ -139,6 +146,21 @@ pub struct MockBackend {
     pub resume_calls: AtomicUsize,
     audits: Mutex<Vec<AuditEntry>>,
     audit_error: Mutex<Option<BackendError>>,
+    classify_result: Mutex<Option<ClassifyDomainResult>>,
+    alerts_result: Mutex<Option<ListAlertsResult>>,
+    resolve_error: Mutex<Option<BackendError>>,
+    cancel_result: Mutex<Option<Result<CancelTempAllowResult, BackendError>>>,
+    /// Most recent `cancel_temporary_allow` params.
+    pub last_cancel: Mutex<Option<CancelTempAllowParams>>,
+    /// Number of `cancel_temporary_allow` calls.
+    pub cancel_calls: AtomicUsize,
+    flush_result: Mutex<Option<Result<FlushCacheResult, BackendError>>>,
+    /// Most recent `flush_cache` params.
+    pub last_flush: Mutex<Option<FlushCacheParams>>,
+    /// Number of `flush_cache` calls.
+    pub flush_calls: AtomicUsize,
+    /// Most recent `set_blocked_service` params.
+    pub last_blocked_service: Mutex<Option<SetBlockedServiceParams>>,
 }
 
 /// Decrements the active counter even when the tool future is cancelled.
@@ -392,6 +414,46 @@ impl MockBackend {
     }
 
     /// Make `record_audit` fail with `error`.
+    /// Set the next `classify_domain` result (defaults to `unknown` / `none`).
+    pub fn set_classify(&self, value: ClassifyDomainResult) {
+        *slot(&self.classify_result) = Some(value);
+    }
+
+    /// Set the `list_alerts` payload.
+    pub fn set_alerts(&self, value: ListAlertsResult) {
+        *slot(&self.alerts_result) = Some(value);
+    }
+
+    /// Force `resolve_client` to fail with a coded error (e.g. ambiguous).
+    pub fn set_resolve_error(&self, error: BackendError) {
+        *slot(&self.resolve_error) = Some(error);
+    }
+
+    /// Set the `cancel_temporary_allow` result.
+    pub fn set_cancel(&self, value: Result<CancelTempAllowResult, BackendError>) {
+        *slot(&self.cancel_result) = Some(value);
+    }
+
+    /// Number of `cancel_temporary_allow` calls.
+    pub fn cancel_calls(&self) -> usize {
+        self.cancel_calls.load(Ordering::SeqCst)
+    }
+
+    /// Set the `flush_cache` result.
+    pub fn set_flush(&self, value: Result<FlushCacheResult, BackendError>) {
+        *slot(&self.flush_result) = Some(value);
+    }
+
+    /// Number of `flush_cache` calls.
+    pub fn flush_calls(&self) -> usize {
+        self.flush_calls.load(Ordering::SeqCst)
+    }
+
+    /// Most recent `set_blocked_service` params.
+    pub fn last_blocked_service(&self) -> Option<SetBlockedServiceParams> {
+        slot(&self.last_blocked_service).clone()
+    }
+
     pub fn set_audit_error(&self, error: BackendError) {
         *slot(&self.audit_error) = Some(error);
     }
@@ -659,6 +721,186 @@ impl McpBackend for MockBackend {
             .unwrap_or_else(|| Ok(ResumeResult::default()))
     }
 
+    async fn classify_domain(&self, domain: &str) -> Result<ClassifyDomainResult, BackendError> {
+        if let Some(mut result) = slot(&self.classify_result).clone() {
+            if result.domain.is_empty() {
+                result.domain = domain.to_owned();
+            }
+            return Ok(result);
+        }
+        Ok(ClassifyDomainResult {
+            domain: domain.to_owned(),
+            kind: "unknown".into(),
+            source: "none".into(),
+            ..Default::default()
+        })
+    }
+
+    async fn list_alerts(&self) -> Result<ListAlertsResult, BackendError> {
+        Ok(slot(&self.alerts_result)
+            .clone()
+            .unwrap_or_default())
+    }
+
+    async fn list_filter_lists(&self) -> Result<ListFilterListsResult, BackendError> {
+        Ok(ListFilterListsResult::default())
+    }
+
+    async fn list_filter_sets(&self) -> Result<ListFilterSetsResult, BackendError> {
+        Ok(ListFilterSetsResult::default())
+    }
+
+    async fn list_policy_views(&self) -> Result<ListPolicyViewsResult, BackendError> {
+        Ok(ListPolicyViewsResult::default())
+    }
+
+    async fn list_resolver_upstreams(&self) -> Result<ListResolverUpstreamsResult, BackendError> {
+        Ok(ListResolverUpstreamsResult::default())
+    }
+
+    async fn list_blocked_services(
+        &self,
+        _locale: Option<&str>,
+    ) -> Result<ListBlockedServicesResult, BackendError> {
+        Ok(ListBlockedServicesResult::default())
+    }
+
+    async fn list_domain_zones(&self) -> Result<ListDomainZonesResult, BackendError> {
+        Ok(ListDomainZonesResult::default())
+    }
+
+    async fn list_zone_records(&self, zone_id: &str) -> Result<ListZoneRecordsResult, BackendError> {
+        Ok(ListZoneRecordsResult {
+            zone_id: zone_id.to_owned(),
+            ..Default::default()
+        })
+    }
+
+    async fn list_listeners(&self) -> Result<ListListenersResult, BackendError> {
+        Ok(ListListenersResult::default())
+    }
+
+    async fn list_policy_records(&self) -> Result<ListPolicyRecordsResult, BackendError> {
+        Ok(ListPolicyRecordsResult::default())
+    }
+
+    async fn get_domain_stats(&self, _params: DomainStatsParams) -> Result<Value, BackendError> {
+        Ok(json!({}))
+    }
+
+    async fn get_stats_timeseries(
+        &self,
+        _params: StatsTimeseriesParams,
+    ) -> Result<Value, BackendError> {
+        Ok(json!({ "buckets": [] }))
+    }
+
+    async fn resolve_client(
+        &self,
+        params: ResolveClientParams,
+    ) -> Result<ClientListResult, BackendError> {
+        if let Some(error) = slot(&self.resolve_error).clone() {
+            return Err(error);
+        }
+        let query = params.query.trim();
+        let matches: Vec<ClientInfo> = slot(&self.client_rows)
+            .iter()
+            .filter(|client| {
+                client.display_name.eq_ignore_ascii_case(query)
+                    || client.addresses.iter().any(|addr| addr == query)
+            })
+            .cloned()
+            .collect();
+        if matches.len() > 1 {
+            return Err(BackendError::Coded {
+                code: "mcp.ambiguous_client".into(),
+                params: Some(json!({
+                    "query": query,
+                    "candidates": matches.iter().map(|c| json!({
+                        "id": c.id,
+                        "display_name": c.display_name,
+                    })).collect::<Vec<_>>(),
+                })),
+            });
+        }
+        Ok(ClientListResult {
+            clients: matches,
+            has_more: false,
+            next_offset: None,
+        })
+    }
+
+    async fn cancel_temporary_allow(
+        &self,
+        params: CancelTempAllowParams,
+    ) -> Result<CancelTempAllowResult, BackendError> {
+        *slot(&self.last_cancel) = Some(params.clone());
+        self.cancel_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(result) = slot(&self.cancel_result).clone() {
+            return result;
+        }
+        Ok(CancelTempAllowResult {
+            removed: true,
+            filter_set_id: params.filter_set_id.unwrap_or_else(|| "default".into()),
+        })
+    }
+
+    async fn flush_cache(&self, params: FlushCacheParams) -> Result<FlushCacheResult, BackendError> {
+        *slot(&self.last_flush) = Some(params.clone());
+        self.flush_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(result) = slot(&self.flush_result).clone() {
+            return result;
+        }
+        Ok(FlushCacheResult {
+            flushed: true,
+            domain: params.domain,
+        })
+    }
+
+    async fn set_blocked_service(
+        &self,
+        params: SetBlockedServiceParams,
+    ) -> Result<SetBlockedServiceResult, BackendError> {
+        *slot(&self.last_blocked_service) = Some(params.clone());
+        Ok(SetBlockedServiceResult {
+            service_id: params.service_id,
+            filter_set_id: params.filter_set_id.unwrap_or_else(|| "default".into()),
+            enabled: params.enabled,
+            ..Default::default()
+        })
+    }
+
+    async fn create_zone_record(
+        &self,
+        params: ZoneRecordWriteParams,
+    ) -> Result<ZoneRecordWriteResult, BackendError> {
+        Ok(ZoneRecordWriteResult {
+            zone_id: params.zone_id,
+            ..Default::default()
+        })
+    }
+
+    async fn update_zone_record(
+        &self,
+        params: ZoneRecordWriteParams,
+    ) -> Result<ZoneRecordWriteResult, BackendError> {
+        Ok(ZoneRecordWriteResult {
+            zone_id: params.zone_id,
+            ..Default::default()
+        })
+    }
+
+    async fn delete_zone_record(
+        &self,
+        params: DeleteZoneRecordParams,
+    ) -> Result<DeleteZoneRecordResult, BackendError> {
+        Ok(DeleteZoneRecordResult {
+            deleted: true,
+            zone_id: params.zone_id,
+            record_id: params.record_id,
+        })
+    }
+
     async fn record_audit(&self, entry: AuditEntry) -> Result<(), BackendError> {
         if let Some(error) = slot(&self.audit_error).clone() {
             return Err(error);
@@ -810,6 +1052,20 @@ pub mod harness {
     pub async fn list_tools(client: &reqwest::Client, server: &TestServer) -> Value {
         let (_, body) = call(client, &server.url, "tools/list", None, json!({})).await;
         body
+    }
+
+    /// Call an arbitrary MCP JSON-RPC method (prompts/resources/…).
+    ///
+    /// For `prompts/get` / `resources/read`, pass `mcp_name` (prompt name or
+    /// resource URI) — SEP-2243 requires the `Mcp-Name` header.
+    pub async fn rpc(
+        client: &reqwest::Client,
+        server: &TestServer,
+        method: &str,
+        mcp_name: Option<&str>,
+        params: Value,
+    ) -> (reqwest::StatusCode, Value) {
+        call(client, &server.url, method, mcp_name, params).await
     }
 
     /// Parse the JSON payload carried by a successful tool result.

@@ -665,6 +665,8 @@ pub struct TempAllowParams {
     pub filter_set_id: Option<String>,
     /// Assistant-supplied reason, sanitized before audit.
     pub reason: String,
+    /// Explicit user override after classifying a tracking domain.
+    pub acknowledge_tracking: Option<bool>,
 }
 
 /// Result of `allow_temporarily`.
@@ -725,6 +727,8 @@ pub struct ProposeExceptionParams {
     pub token_id: String,
     /// Sanitized reason from the assistant, shown to the owner.
     pub reason: String,
+    /// Explicit user override after classifying a tracking domain.
+    pub acknowledge_tracking: Option<bool>,
 }
 
 /// Result of `propose_exception`.
@@ -818,4 +822,227 @@ pub struct AuditEntry {
     pub result: AuditResult,
     /// Stable error code when `result` is [`AuditResult::Error`].
     pub error_code: Option<String>,
+}
+
+/// Result of `classify_domain`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClassifyDomainResult {
+    /// Canonical domain.
+    pub domain: String,
+    /// `tracking`, `functional`, `unclear`, or `unknown`.
+    pub kind: String,
+    /// Tracker-database category id when known.
+    pub category: Option<String>,
+    /// Tracker display name when known.
+    pub name: Option<String>,
+    /// `trackers_db` or `none`.
+    pub source: String,
+}
+
+/// Active alerts (`list_alerts`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListAlertsResult {
+    /// Number of items in `items`.
+    pub active_count: u64,
+    /// Alert objects (module-specific shape).
+    pub items: Vec<Value>,
+}
+
+/// Input for `cancel_temporary_allow`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancelTempAllowParams {
+    /// Canonical domain.
+    pub domain: String,
+    /// Filter set that owns the allow; the backend resolves the default.
+    pub filter_set_id: Option<String>,
+}
+
+/// Result of `cancel_temporary_allow`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancelTempAllowResult {
+    /// Whether an allow was removed.
+    pub removed: bool,
+    /// Filter set inspected (resolved by the backend).
+    pub filter_set_id: String,
+}
+
+/// Input for `flush_cache`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlushCacheParams {
+    /// Flush one domain subtree, or the whole cache when absent.
+    pub domain: Option<String>,
+}
+
+/// Result of `flush_cache`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlushCacheResult {
+    /// Whether a flush ran.
+    pub flushed: bool,
+    /// Domain scope when a single name was flushed.
+    pub domain: Option<String>,
+}
+
+/// Input for `set_blocked_service`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetBlockedServiceParams {
+    /// Blocked-service catalog id.
+    pub service_id: String,
+    /// Whether the service is blocked in the set.
+    pub enabled: bool,
+    /// Target filter set; the backend may require clarification when omitted.
+    pub filter_set_id: Option<String>,
+}
+
+/// Result of `set_blocked_service`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetBlockedServiceResult {
+    pub service_id: String,
+    pub filter_set_id: String,
+    pub enabled: bool,
+    pub config_version: Option<u64>,
+}
+
+/// Attached DNS zone summary.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DomainZoneSummary {
+    pub id: String,
+    pub name: String,
+}
+
+/// One zone's DNS record.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZoneRecord {
+    pub id: String,
+    pub name: String,
+    pub r#type: String,
+    pub content: String,
+    pub proxied: bool,
+    pub ttl: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListDomainZonesResult {
+    pub zones: Vec<DomainZoneSummary>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListZoneRecordsResult {
+    pub zone_id: String,
+    pub records: Vec<ZoneRecord>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilterListSummary {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilterSetSummary {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyViewSummary {
+    pub id: String,
+    pub profile_id: String,
+    pub is_default: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpstreamStatusItem {
+    pub address: String,
+    pub state: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListFilterListsResult {
+    pub filter_lists: Vec<FilterListSummary>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListFilterSetsResult {
+    pub filter_sets: Vec<FilterSetSummary>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListPolicyViewsResult {
+    pub views: Vec<PolicyViewSummary>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListResolverUpstreamsResult {
+    pub items: Vec<UpstreamStatusItem>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListBlockedServicesResult {
+    pub available: bool,
+    pub items: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListListenersResult {
+    pub listeners: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListPolicyRecordsResult {
+    pub records: Vec<Value>,
+}
+
+/// Filters for `get_domain_stats`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DomainStatsParams {
+    pub domain: String,
+    pub from: Option<String>,
+    pub to: Option<String>,
+}
+
+/// Filters for `get_stats_timeseries`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatsTimeseriesParams {
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub profile_id: Option<String>,
+}
+
+/// Input for `resolve_client`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolveClientParams {
+    /// Exact display name or IP address.
+    pub query: String,
+}
+
+/// Zone record create/update payload.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZoneRecordWriteParams {
+    pub zone_id: String,
+    pub name: String,
+    pub r#type: String,
+    pub content: String,
+    pub proxied: Option<bool>,
+    pub ttl: Option<u32>,
+    pub record_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZoneRecordWriteResult {
+    pub zone_id: String,
+    pub record: ZoneRecord,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteZoneRecordParams {
+    pub zone_id: String,
+    pub record_id: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteZoneRecordResult {
+    pub deleted: bool,
+    pub zone_id: String,
+    pub record_id: String,
 }

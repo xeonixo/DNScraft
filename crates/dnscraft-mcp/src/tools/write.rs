@@ -32,13 +32,13 @@ use crate::sanitize::{
 };
 
 /// Static description for `allow_temporarily`.
-const ALLOW_DESCRIPTION: &str = "Temporarily allow a domain that is currently blocked, for a specified duration. The allow expires automatically. Use this when a legitimate site is blocked by a list and needs immediate access. Requires mcp:write scope and write_tools_enabled. The client will ask you to confirm this action. This affects every client using this filter set.";
+const ALLOW_DESCRIPTION: &str = "Temporarily allow a domain that is currently blocked, for a specified duration. The allow expires automatically. Call classify_domain first; for tracking/ad domains the user must explicitly consent and you must pass acknowledge_tracking: true. Requires mcp:write scope and write_tools_enabled. The client will ask you to confirm this action. This affects every client using this filter set.";
 
 /// Static description for `add_rule`.
 const ADD_RULE_DESCRIPTION: &str = "Add a custom block rule to a filter set. The rule is built from structured input; no raw AdGuard syntax is accepted via MCP. Requires mcp:write scope and write_tools_enabled. The client will ask you to confirm. This affects every client using this filter set.";
 
 /// Static description for `propose_exception`.
-const PROPOSE_DESCRIPTION: &str = "Propose a permanent exception (allow) for a domain that a list blocks wrongly. This changes nothing by itself: the owner must confirm the proposal in the DNScraft web UI, and it lapses after 7 days if they do not. Use it after allow_temporarily when the same domain keeps being needed. Requires mcp:write scope and write_tools_enabled.";
+const PROPOSE_DESCRIPTION: &str = "Propose a permanent exception (allow) for a domain that a list blocks wrongly. Call classify_domain first; tracking domains need acknowledge_tracking after explicit user consent. This changes nothing by itself: the owner must confirm the proposal in the DNScraft web UI, and it lapses after 7 days if they do not. Requires mcp:write scope and write_tools_enabled.";
 
 /// Static description for `remove_rule`.
 const REMOVE_RULE_DESCRIPTION: &str = "Remove a custom block rule that was previously added via MCP. Only rules created via MCP can be removed; web UI rules and downloaded list rules cannot. Requires mcp:write scope.";
@@ -132,6 +132,10 @@ fn allow_definition() -> Tool {
                     "type": "string",
                     "maxLength": 200,
                     "description": "Why this domain is being allowed (optional, for audit; sanitized before storage)"
+                },
+                "acknowledge_tracking": {
+                    "type": "boolean",
+                    "description": "Required true after classify_domain shows tracking and the user explicitly agrees"
                 }
             },
             "required": ["domain", "duration"]
@@ -196,6 +200,10 @@ fn propose_definition() -> Tool {
                     "type": "string",
                     "maxLength": 200,
                     "description": "Why the exception is needed; shown to the owner (sanitized before storage)"
+                },
+                "acknowledge_tracking": {
+                    "type": "boolean",
+                    "description": "Required true after classify_domain shows tracking and the user explicitly agrees"
                 }
             },
             "required": ["domain"]
@@ -284,9 +292,9 @@ pub(crate) async fn call(
         return tool_error("control_api.auth.insufficient_scope", json!({}));
     }
     match name {
-        "allow_temporarily" => allow_temporarily(arguments, server, &token).await,
+        "allow_temporarily" => allow_temporarily(arguments, server, context, &token).await,
         "add_rule" => add_rule(arguments, server, &token).await,
-        "propose_exception" => propose_exception(arguments, server, &token).await,
+        "propose_exception" => propose_exception(arguments, server, context, &token).await,
         "remove_rule" => remove_rule(arguments, server, &token).await,
         "pause_filter_set" => pause_filter_set(arguments, server, &token).await,
         "resume_filter_set" => resume_filter_set(arguments, server, &token).await,
@@ -305,11 +313,13 @@ struct AllowArgs {
     duration: PauseDuration,
     filter_set_id: Option<String>,
     reason: Option<String>,
+    acknowledge_tracking: Option<bool>,
 }
 
 async fn allow_temporarily(
     arguments: Option<JsonObject>,
     server: &McpServer,
+    context: RequestContext<RoleServer>,
     token: &TokenInfo,
 ) -> CallToolResult {
     let args = match parse_arguments::<AllowArgs>(arguments) {
@@ -366,12 +376,19 @@ async fn allow_temporarily(
         return tool_error(error.code(), error.params().unwrap_or_else(|| json!({})));
     }
 
+    if let Err(error) =
+        check_tracking_gate(server, &context, &domain, args.acknowledge_tracking).await
+    {
+        return error;
+    }
+
     let params = TempAllowParams {
         domain: domain.clone(),
         include_subdomains,
         duration: args.duration,
         filter_set_id: filter_set_id.clone(),
         reason: reason.clone(),
+        acknowledge_tracking: args.acknowledge_tracking,
     };
     match server.backend.allow_temporarily(params).await {
         Ok(result) => {
@@ -437,6 +454,7 @@ struct AddRuleArgs {
     include_subdomains: Option<bool>,
     filter_set_id: Option<String>,
     reason: Option<String>,
+    acknowledge_tracking: Option<bool>,
 }
 
 async fn add_rule(
@@ -510,6 +528,7 @@ async fn add_rule(
 async fn propose_exception(
     arguments: Option<JsonObject>,
     server: &McpServer,
+    context: RequestContext<RoleServer>,
     token: &TokenInfo,
 ) -> CallToolResult {
     let args = match parse_arguments::<AddRuleArgs>(arguments) {
@@ -545,12 +564,19 @@ async fn propose_exception(
         return tool_error(error.code(), error.params().unwrap_or_else(|| json!({})));
     }
 
+    if let Err(error) =
+        check_tracking_gate(server, &context, &domain, args.acknowledge_tracking).await
+    {
+        return error;
+    }
+
     let params = ProposeExceptionParams {
         domain: domain.clone(),
         include_subdomains,
         filter_set_id,
         token_id: token.token_id.clone(),
         reason,
+        acknowledge_tracking: args.acknowledge_tracking,
     };
     match server.backend.propose_exception(params).await {
         // The backend commits the proposal and its audit entry together.
@@ -887,7 +913,40 @@ fn allow_failure_after(
 ///
 /// Wildcards, regular expressions, paths, IP literals and single-label names
 /// are rejected here, before the backend sees the request.
-fn validate_domain(raw: &str) -> Result<String, CallToolResult> {
+pub(crate) async fn check_tracking_gate(
+    server: &McpServer,
+    context: &RequestContext<RoleServer>,
+    domain: &str,
+    acknowledge_tracking: Option<bool>,
+) -> Result<(), CallToolResult> {
+    if acknowledge_tracking == Some(true) {
+        return Ok(());
+    }
+    let classified = match super::backend_call(
+        "classify_domain",
+        context,
+        server.backend.classify_domain(domain),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => return Err(error),
+    };
+    if classified.kind == "tracking" {
+        let err = McpError::TrackingDomainRefused {
+            domain: domain.to_owned(),
+            kind: classified.kind.clone(),
+            category: classified.category.clone(),
+        };
+        return Err(tool_error(
+            err.code(),
+            err.params().unwrap_or_else(|| json!({})),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_domain(raw: &str) -> Result<String, CallToolResult> {
     let canonical = crate::protected::canonicalize(raw).map_err(|code| {
         if code == "filter_build.pattern_not_allowed" {
             tool_error(code, json!({}))
@@ -957,7 +1016,7 @@ fn protected_violation(
 
 /// Audit write; a failure is logged and returned so a post-mutation success
 /// path can surface the missing audit record as `mcp.audit_failed`.
-async fn record(
+pub(crate) async fn record(
     server: &McpServer,
     token: &TokenInfo,
     action: &str,
@@ -986,6 +1045,30 @@ async fn record(
 }
 
 /// Report a committed mutation whose audit write failed.
-fn audit_failed(action: &str) -> CallToolResult {
+pub(crate) fn audit_failed(action: &str) -> CallToolResult {
     tool_error("mcp.audit_failed", json!({ "action": action }))
+}
+
+#[cfg(test)]
+mod tracking_gate_tests {
+    use super::*;
+    use crate::dto::ClassifyDomainResult;
+
+    #[test]
+    fn tracking_kind_requires_acknowledge_flag() {
+        let err = McpError::TrackingDomainRefused {
+            domain: "ads.example.com".into(),
+            kind: "tracking".into(),
+            category: Some("advertising".into()),
+        };
+        assert_eq!(err.code(), "mcp.tracking_domain_refused");
+        let classified = ClassifyDomainResult {
+            domain: "ads.example.com".into(),
+            kind: "tracking".into(),
+            category: Some("advertising".into()),
+            source: "trackers_db".into(),
+            ..Default::default()
+        };
+        assert_eq!(classified.kind, "tracking");
+    }
 }

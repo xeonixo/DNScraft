@@ -16,6 +16,9 @@
 //! | [`McpError::ProtectedDomain`] | `mcp.protected_domain` |
 //! | [`McpError::ConfigInvalid`] | `mcp.config.invalid` |
 //! | [`McpError::ConfigProtectedDomain`] | `mcp.config.protected_domain` |
+//! | [`McpError::TrackingDomainRefused`] | `mcp.tracking_domain_refused` |
+//! | [`McpError::NeedsClarification`] | `mcp.needs_clarification` |
+//! | [`McpError::AmbiguousClient`] | `mcp.ambiguous_client` |
 
 use serde_json::{Value, json};
 
@@ -82,6 +85,32 @@ pub enum McpError {
         /// Why it was rejected.
         reason: String,
     },
+    /// Allow/propose refused because the domain is classified as tracking.
+    #[error("tracking domain refused: {domain}")]
+    TrackingDomainRefused {
+        /// Canonical domain.
+        domain: String,
+        /// Wire kind (`tracking`, etc.).
+        kind: String,
+        /// Tracker-database category when known.
+        category: Option<String>,
+    },
+    /// The assistant must disambiguate or ask the user.
+    #[error("needs clarification: {reason}")]
+    NeedsClarification {
+        /// Why the input is incomplete.
+        reason: String,
+        /// Optional structured choices (filter sets, etc.).
+        candidates: Option<Value>,
+    },
+    /// More than one client matched the query.
+    #[error("ambiguous client: {query}")]
+    AmbiguousClient {
+        /// The submitted name or IP.
+        query: String,
+        /// Matching clients (ids and display names).
+        candidates: Value,
+    },
 }
 
 impl McpError {
@@ -97,6 +126,9 @@ impl McpError {
             Self::ProtectedDomain { .. } => "mcp.protected_domain",
             Self::ConfigInvalid { .. } => "mcp.config.invalid",
             Self::ConfigProtectedDomain { .. } => "mcp.config.protected_domain",
+            Self::TrackingDomainRefused { .. } => "mcp.tracking_domain_refused",
+            Self::NeedsClarification { .. } => "mcp.needs_clarification",
+            Self::AmbiguousClient { .. } => "mcp.ambiguous_client",
         }
     }
 
@@ -117,6 +149,21 @@ impl McpError {
             Self::ConfigInvalid { key, reason } => Some(json!({ "key": key, "reason": reason })),
             Self::ConfigProtectedDomain { domain, reason } => {
                 Some(json!({ "domain": domain, "reason": reason }))
+            }
+            Self::TrackingDomainRefused {
+                domain,
+                kind,
+                category,
+            } => Some(json!({
+                "domain": domain,
+                "kind": kind,
+                "category": category,
+            })),
+            Self::NeedsClarification { reason, candidates } => {
+                Some(json!({ "reason": reason, "candidates": candidates }))
+            }
+            Self::AmbiguousClient { query, candidates } => {
+                Some(json!({ "query": query, "candidates": candidates }))
             }
         }
     }
@@ -151,6 +198,19 @@ pub(crate) fn sample_errors() -> Vec<McpError> {
         McpError::ConfigProtectedDomain {
             domain: "bad".into(),
             reason: "x".into(),
+        },
+        McpError::TrackingDomainRefused {
+            domain: "ads.example.com".into(),
+            kind: "tracking".into(),
+            category: Some("advertising".into()),
+        },
+        McpError::NeedsClarification {
+            reason: "pick a filter set".into(),
+            candidates: Some(json!([{ "filter_set_id": "default" }])),
+        },
+        McpError::AmbiguousClient {
+            query: "iphone".into(),
+            candidates: json!([{ "id": "a", "display_name": "iPhone" }]),
         },
     ]
 }

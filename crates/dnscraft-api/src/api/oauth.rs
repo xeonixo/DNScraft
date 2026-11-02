@@ -1,19 +1,19 @@
 //! Minimal OAuth 2.1 authorization server for the MCP endpoint.
 //!
-//! Lets an MCP client (Claude's custom connector) sign in through the owner's
-//! existing browser session (OIDC or break-glass) instead of a pasted token.
-//! The result is an ordinary `mcp:write` bearer token, so `/mcp/v1` validation,
-//! revocation and the token list are unchanged.
+//! Lets MCP clients (Claude, ChatGPT, Cursor, Perplexity, desktop loopback, …)
+//! sign in through the owner's browser session (OIDC or break-glass) instead of
+//! a pasted token. The result is an ordinary MCP-scoped bearer token, so
+//! `/mcp/v1` validation, revocation and the token list are unchanged.
 //!
 //! - Public clients only, PKCE `S256` mandatory, no client secrets.
+//! - Built-in vendor redirect allowlist (exact + ChatGPT callback-id prefix)
+//!   plus loopback and owner `oauth_extra_redirect_uris`.
+//! - Advertises RFC 9207 issuer identification so ChatGPT can use its stable
+//!   redirect; authorize responses include `iss`.
 //! - Dynamic client registration remembers `client_id` and its redirect URIs
-//!   (bounded). When the consent flow names a `client_id` it must match a
-//!   registration and its redirect URI. Without one, only loopback redirects
-//!   are accepted. The redirect allow-list plus PKCE plus the admin consent
-//!   carry the security.
+//!   (bounded). Consent + PKCE + allowlist carry the security.
 //! - Authorization codes live in memory for 60 s and are single-use.
-//! - No refresh tokens: the access token lives 7 days, then the client signs
-//!   in again.
+//! - Access tokens live 1 h; refresh tokens live 30 d (not rotated on refresh).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -38,10 +38,25 @@ use super::auth::{Role, Scope, csrf_matches, csrf_token_for, session_cookie_valu
 use crate::server::AppState;
 
 const CODE_TTL: Duration = Duration::from_secs(60);
-const TOKEN_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
-const ALLOWED_REDIRECTS: [&str; 2] = [
+const ACCESS_TTL: Duration = Duration::from_secs(3600);
+const REFRESH_TTL: Duration = Duration::from_secs(30 * 24 * 3600);
+/// Exact redirect URIs for known MCP hosts (docs as of 2026-11).
+const ALLOWED_REDIRECTS: &[&str] = &[
+    // Claude hosted surfaces
     "https://claude.ai/api/mcp/auth_callback",
     "https://claude.com/api/mcp/auth_callback",
+    // ChatGPT stable callback (when AS advertises RFC 9207 iss support)
+    "https://chatgpt.com/connector_platform_oauth_redirect",
+    // Cursor desktop / agents
+    "http://localhost:8787/callback",
+    "https://www.cursor.com/agents/mcp/oauth/callback",
+    "cursor://anysphere.cursor-mcp/oauth/callback",
+    // Perplexity custom connectors
+    "https://www.perplexity.ai/rest/connections/oauth_callback",
+    "https://enterprise.perplexity.ai/rest/connections/oauth_callback",
+    // VS Code
+    "http://127.0.0.1:33418/",
+    "https://vscode.dev/redirect/",
 ];
 /// Most registered clients remembered; the oldest is forgotten first.
 const MAX_REGISTERED_CLIENTS: usize = 1000;
@@ -50,8 +65,50 @@ const MAX_REGISTERED_CLIENTS: usize = 1000;
 // ponytail: process-global list, oldest-first eviction, linear scan at 1000 entries.
 // Keeps AppState unchanged; a restart forgets clients, which then re-register.
 static REGISTERED_CLIENTS: Mutex<Vec<(String, Vec<String>)>> = Mutex::new(Vec::new());
+static CLIENTS_LOADED: Mutex<bool> = Mutex::new(false);
 
-fn remember_client(client_id: String, redirect_uris: Vec<String>) {
+fn ensure_clients_loaded(state: &AppState) {
+    let mut loaded = CLIENTS_LOADED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if *loaded {
+        return;
+    }
+    if let Some(path) = state
+        .mcp_config()
+        .oauth_clients_path
+        .as_deref()
+        .filter(|p| !p.is_empty())
+        && let Ok(data) = std::fs::read_to_string(path)
+        && let Ok(parsed) = serde_json::from_str::<Vec<(String, Vec<String>)>>(&data)
+    {
+        let mut clients = REGISTERED_CLIENTS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        *clients = parsed;
+    }
+    *loaded = true;
+}
+
+fn persist_clients(state: &AppState) {
+    let Some(path) = state
+        .mcp_config()
+        .oauth_clients_path
+        .as_deref()
+        .filter(|p| !p.is_empty())
+    else {
+        return;
+    };
+    let clients = REGISTERED_CLIENTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if let Ok(json) = serde_json::to_string(&*clients) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+fn remember_client(state: &AppState, client_id: String, redirect_uris: Vec<String>) {
+    ensure_clients_loaded(state);
     let mut clients = REGISTERED_CLIENTS
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
@@ -59,10 +116,13 @@ fn remember_client(client_id: String, redirect_uris: Vec<String>) {
         clients.remove(0);
     }
     clients.push((client_id, redirect_uris));
+    drop(clients);
+    persist_clients(state);
 }
 
 /// Whether `client_id` was registered with `redirect_uri`.
-fn client_allows(client_id: &str, redirect_uri: &str) -> bool {
+fn client_allows(state: &AppState, client_id: &str, redirect_uri: &str) -> bool {
+    ensure_clients_loaded(state);
     REGISTERED_CLIENTS
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -75,6 +135,7 @@ pub(crate) struct PendingCode {
     challenge: String,
     redirect_uri: String,
     actor_id: String,
+    scope: Scope,
     expires: Instant,
 }
 
@@ -84,6 +145,15 @@ pub(crate) type OAuthCodes = Arc<Mutex<HashMap<String, PendingCode>>>;
 /// The public base URL: the first configured MCP origin, else the request's
 /// `Host` (and trusted `X-Forwarded-Proto`).
 fn public_base(state: &AppState, headers: &HeaderMap) -> String {
+    if let Some(url) = state
+        .mcp_config()
+        .public_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| !u.is_empty())
+    {
+        return url.trim_end_matches('/').to_owned();
+    }
     if let Some(origin) = state.mcp_config().allowed_origins.first() {
         return origin.trim_end_matches('/').to_owned();
     }
@@ -98,7 +168,7 @@ fn public_base(state: &AppState, headers: &HeaderMap) -> String {
     format!("{proto}://{host}")
 }
 
-/// A plain-http redirect to a loopback address (native clients such as Claude Code).
+/// A plain-http redirect to a loopback address (Claude Code, Cursor desktop, …).
 fn is_loopback(uri: &str) -> bool {
     url::Url::parse(uri).is_ok_and(|u| {
         u.scheme() == "http"
@@ -107,9 +177,34 @@ fn is_loopback(uri: &str) -> bool {
     })
 }
 
-fn redirect_allowed(uri: &str) -> bool {
-    // Native clients (Claude Code) use a loopback redirect on any port.
-    ALLOWED_REDIRECTS.contains(&uri) || is_loopback(uri)
+/// ChatGPT's per-connection callback: exactly one path segment after the prefix.
+fn is_chatgpt_callback_id(uri: &str) -> bool {
+    let Ok(url) = url::Url::parse(uri) else {
+        return false;
+    };
+    if url.scheme() != "https" || url.host_str() != Some("chatgpt.com") || url.fragment().is_some()
+    {
+        return false;
+    }
+    let path = url.path().trim_end_matches('/');
+    let Some(rest) = path.strip_prefix("/connector/oauth/") else {
+        return false;
+    };
+    !rest.is_empty()
+        && rest
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+fn redirect_allowed(uri: &str, state: &AppState) -> bool {
+    ALLOWED_REDIRECTS.contains(&uri)
+        || is_loopback(uri)
+        || is_chatgpt_callback_id(uri)
+        || state
+            .mcp_config()
+            .oauth_extra_redirect_uris
+            .iter()
+            .any(|extra| extra == uri)
 }
 
 fn random_hex(len: usize) -> Option<String> {
@@ -158,7 +253,7 @@ pub(crate) async fn protected_resource(
     Json(json!({
         "resource": format!("{base}/mcp/v1"),
         "authorization_servers": [base],
-        "scopes_supported": ["mcp:write"],
+        "scopes_supported": ["mcp:read", "mcp:write"],
         "bearer_methods_supported": ["header"],
     }))
 }
@@ -175,27 +270,31 @@ pub(crate) async fn server_metadata(
         "token_endpoint": format!("{base}/oauth/token"),
         "registration_endpoint": format!("{base}/oauth/register"),
         "response_types_supported": ["code"],
-        "grant_types_supported": ["authorization_code"],
+        "grant_types_supported": ["authorization_code", "refresh_token"],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["none"],
-        "scopes_supported": ["mcp:write"],
+        "scopes_supported": ["mcp:read", "mcp:write"],
+        // ChatGPT uses the stable connector redirect when this is true and
+        // authorize responses carry a matching `iss` (RFC 9207).
+        "authorization_response_iss_parameter_supported": true,
     }))
 }
 
 /// `POST /oauth/register`: stateless dynamic client registration.
-pub(crate) async fn register(Json(body): Json<Value>) -> Response {
+pub(crate) async fn register(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
     let uris: Vec<&str> = body
         .get("redirect_uris")
         .and_then(Value::as_array)
         .map(|a| a.iter().filter_map(Value::as_str).collect())
         .unwrap_or_default();
-    if uris.is_empty() || !uris.iter().all(|u| redirect_allowed(u)) {
+    if uris.is_empty() || !uris.iter().all(|u| redirect_allowed(u, &state)) {
         return oauth_error(StatusCode::BAD_REQUEST, "invalid_redirect_uri");
     }
     let Some(client_id) = random_hex(16) else {
         return oauth_error(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
     };
     remember_client(
+        &state,
         client_id.clone(),
         uris.iter().map(|uri| (*uri).to_owned()).collect(),
     );
@@ -205,7 +304,7 @@ pub(crate) async fn register(Json(body): Json<Value>) -> Response {
             "client_id": client_id,
             "redirect_uris": uris,
             "client_name": body.get("client_name").and_then(Value::as_str).unwrap_or("MCP client"),
-            "grant_types": ["authorization_code"],
+            "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],
             "token_endpoint_auth_method": "none",
         })),
@@ -232,20 +331,36 @@ pub(crate) struct AuthorizeParams {
 impl AuthorizeParams {
     /// With a `client_id` it must be a registered client with this redirect URI.
     /// Without one, only a loopback redirect is accepted.
-    fn client_ok(&self) -> bool {
+    fn client_ok(&self, state: &AppState) -> bool {
         if self.client_id.is_empty() {
             is_loopback(&self.redirect_uri)
         } else {
-            client_allows(&self.client_id, &self.redirect_uri)
+            client_allows(state, &self.client_id, &self.redirect_uri)
         }
     }
 
-    fn valid(&self) -> bool {
+    fn valid(&self, state: &AppState) -> bool {
         self.response_type == "code"
-            && redirect_allowed(&self.redirect_uri)
-            && self.client_ok()
+            && redirect_allowed(&self.redirect_uri, state)
+            && self.client_ok(state)
             && self.code_challenge_method == "S256"
             && !self.code_challenge.is_empty()
+    }
+}
+
+fn scope_from_consent(f: &HashMap<String, String>, write_tools_enabled: bool) -> Option<Scope> {
+    let read = f.contains_key("scope_read");
+    let write = f.contains_key("scope_write");
+    if write && !write_tools_enabled {
+        return None;
+    }
+    if !read && !write {
+        return None;
+    }
+    if write {
+        Some(Scope::McpWrite)
+    } else {
+        Some(Scope::McpRead)
     }
 }
 
@@ -298,7 +413,7 @@ pub(crate) async fn authorize_page(
     headers: HeaderMap,
     Query(p): Query<AuthorizeParams>,
 ) -> Response {
-    if !p.valid() {
+    if !p.valid(&state) {
         return page(StatusCode::BAD_REQUEST, "<h1>Ungültige Anfrage</h1>");
     }
     let Some((cookie, _)) = admin_session(&state, &headers).await else {
@@ -320,13 +435,24 @@ pub(crate) async fn authorize_page(
         .ok()
         .and_then(|u| u.host_str().map(str::to_owned))
         .unwrap_or_default();
+    let write_on = state.mcp_config().write_tools_enabled;
+    let scope_fields = if write_on {
+        "<p><label><input type=\"checkbox\" name=\"scope_read\" value=\"1\" checked> \
+         MCP lesen (<code>mcp:read</code>)</label></p>\
+         <p><label><input type=\"checkbox\" name=\"scope_write\" value=\"1\" checked> \
+         MCP schreiben (<code>mcp:write</code>)</label></p>"
+    } else {
+        "<p><label><input type=\"checkbox\" name=\"scope_read\" value=\"1\" checked> \
+         MCP lesen (<code>mcp:read</code>)</label></p>"
+    };
     page(
         StatusCode::OK,
         &format!(
             "<h1>Zugriff erlauben?</h1>\
-             <p>Eine Anwendung (z. B. Claude) möchte über MCP auf diesen DNScraft-Knoten \
-             zugreifen: Abfragen lesen sowie – sofern aktiviert – Regeln ändern. \
-             Der Zugriff gilt 7 Tage und lässt sich in den API-Tokens widerrufen.</p>\
+             <p>Eine KI-Anwendung (Claude, ChatGPT, Cursor, Perplexity, …) möchte über MCP \
+             auf diesen DNScraft-Knoten zugreifen. Zugriffstoken laufen nach 1 Stunde ab; \
+             ein Refresh-Token gilt 30 Tage und lässt sich in den API-Tokens widerrufen.</p>\
+             {scope_fields}\
              <p style=\"font-size:1.2rem\">Rückgabe an Host: <strong><code>{}</code></strong></p>\
              <p>Vollständige Weiterleitung: <code>{}</code></p>\
              <form method=\"post\" action=\"/oauth/authorize\">{}{}{}{}{}{}\
@@ -386,7 +512,7 @@ pub(crate) async fn authorize_decision(
     let Some((cookie, actor_id)) = admin_session(&state, &headers).await else {
         return page(StatusCode::UNAUTHORIZED, "<h1>Anmeldung nötig</h1>");
     };
-    if !params.valid() || !csrf_matches(&cookie, get("csrf")) {
+    if !params.valid(&state) || !csrf_matches(&cookie, get("csrf")) {
         return page(StatusCode::BAD_REQUEST, "<h1>Ungültige Anfrage</h1>");
     }
     let result = if get("decision") == "allow" {
@@ -404,12 +530,20 @@ pub(crate) async fn authorize_decision(
         None,
     )
     .await;
+    let iss = public_base(&state, &headers);
     if result == "denied" {
         return redirect(
             &params.redirect_uri,
-            &[("error", "access_denied"), ("state", &params.state)],
+            &[
+                ("error", "access_denied"),
+                ("state", &params.state),
+                ("iss", &iss),
+            ],
         );
     }
+    let Some(scope) = scope_from_consent(&f, state.mcp_config().write_tools_enabled) else {
+        return page(StatusCode::BAD_REQUEST, "<h1>Ungültige Anfrage</h1>");
+    };
     let Some(code) = random_hex(32) else {
         return page(StatusCode::INTERNAL_SERVER_ERROR, "<h1>Fehler</h1>");
     };
@@ -426,57 +560,104 @@ pub(crate) async fn authorize_decision(
                 challenge: params.code_challenge.clone(),
                 redirect_uri: params.redirect_uri.clone(),
                 actor_id,
+                scope,
                 expires: now + CODE_TTL,
             },
         );
     }
     redirect(
         &params.redirect_uri,
-        &[("code", &code), ("state", &params.state)],
+        &[("code", &code), ("state", &params.state), ("iss", &iss)],
     )
 }
 
-/// `POST /oauth/token`: `authorization_code` grant with PKCE.
+/// `POST /oauth/token`: `authorization_code` (PKCE) and `refresh_token` grants.
 pub(crate) async fn token(State(state): State<AppState>, body: Bytes) -> Response {
     let f = form(&body);
     let get = |k: &str| f.get(k).map(String::as_str).unwrap_or_default();
-    if get("grant_type") != "authorization_code" {
-        return oauth_error(StatusCode::BAD_REQUEST, "unsupported_grant_type");
-    }
-    let pending = state
-        .oauth_codes()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .remove(get("code"));
-    let challenge = URL_SAFE_NO_PAD.encode(digest(&SHA256, get("code_verifier").as_bytes()));
-    let Some(pending) = pending.filter(|c| {
-        c.expires > Instant::now()
-            && c.redirect_uri == get("redirect_uri")
-            && c.challenge == challenge
-    }) else {
-        return oauth_error(StatusCode::BAD_REQUEST, "invalid_grant");
-    };
     let Some(tokens) = state.auth_state().map(|a| a.tokens()) else {
         return oauth_error(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
     };
-    let Ok(created) = tokens
-        .create(
-            pending.actor_id,
-            "OAuth (MCP)".to_owned(),
-            Scope::McpWrite,
-            Some(TOKEN_TTL),
-        )
-        .await
-    else {
-        return oauth_error(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
+    let grant = get("grant_type");
+    let token_json = if grant == "authorization_code" {
+        let pending = state
+            .oauth_codes()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(get("code"));
+        let challenge =
+            URL_SAFE_NO_PAD.encode(digest(&SHA256, get("code_verifier").as_bytes()));
+        let Some(pending) = pending.filter(|c| {
+            c.expires > Instant::now()
+                && c.redirect_uri == get("redirect_uri")
+                && c.challenge == challenge
+        }) else {
+            return oauth_error(StatusCode::BAD_REQUEST, "invalid_grant");
+        };
+        let scope = pending.scope;
+        let Ok(access) = tokens
+            .create(
+                pending.actor_id.clone(),
+                "OAuth (MCP)".to_owned(),
+                scope,
+                Some(ACCESS_TTL),
+            )
+            .await
+        else {
+            return oauth_error(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
+        };
+        let Ok(refresh) = tokens
+            .create(
+                pending.actor_id,
+                "OAuth refresh (MCP)".to_owned(),
+                scope,
+                Some(REFRESH_TTL),
+            )
+            .await
+        else {
+            return oauth_error(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
+        };
+        json!({
+            "access_token": access.plaintext().expose(),
+            "token_type": "Bearer",
+            "expires_in": ACCESS_TTL.as_secs(),
+            "scope": scope.as_str(),
+            "refresh_token": refresh.plaintext().expose(),
+        })
+    } else if grant == "refresh_token" {
+        let refresh = get("refresh_token");
+        if refresh.is_empty() {
+            return oauth_error(StatusCode::BAD_REQUEST, "invalid_request");
+        }
+        let Ok(principal) = tokens.authenticate(refresh).await else {
+            return oauth_error(StatusCode::BAD_REQUEST, "invalid_grant");
+        };
+        if !matches!(principal.scope(), Scope::McpRead | Scope::McpWrite) {
+            return oauth_error(StatusCode::BAD_REQUEST, "invalid_grant");
+        }
+        let scope = principal.scope();
+        let Ok(access) = tokens
+            .create(
+                principal.actor_id().to_owned(),
+                "OAuth (MCP)".to_owned(),
+                scope,
+                Some(ACCESS_TTL),
+            )
+            .await
+        else {
+            return oauth_error(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
+        };
+        json!({
+            "access_token": access.plaintext().expose(),
+            "token_type": "Bearer",
+            "expires_in": ACCESS_TTL.as_secs(),
+            "scope": scope.as_str(),
+            "refresh_token": refresh,
+        })
+    } else {
+        return oauth_error(StatusCode::BAD_REQUEST, "unsupported_grant_type");
     };
-    let mut res = Json(json!({
-        "access_token": created.plaintext().expose(),
-        "token_type": "Bearer",
-        "expires_in": TOKEN_TTL.as_secs(),
-        "scope": "mcp:write",
-    }))
-    .into_response();
+    let mut res = Json(token_json).into_response();
     res.headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     res
@@ -576,15 +757,16 @@ mod tests {
     }
 
     fn consent_form_for(cookie: &str, client_id: &str, redirect: &str, decision: &str) -> String {
-        url::form_urlencoded::Serializer::new(String::new())
-            .append_pair("csrf", csrf_token_for(cookie).expose())
+        let mut s = url::form_urlencoded::Serializer::new(String::new());
+        s.append_pair("csrf", csrf_token_for(cookie).expose())
             .append_pair("client_id", client_id)
             .append_pair("redirect_uri", redirect)
             .append_pair("state", "xyz")
             .append_pair("code_challenge", &challenge())
             .append_pair("code_challenge_method", "S256")
-            .append_pair("decision", decision)
-            .finish()
+            .append_pair("scope_read", "1")
+            .append_pair("decision", decision);
+        s.finish()
     }
 
     fn consent_form(cookie: &str, client_id: &str, decision: &str) -> String {
@@ -604,6 +786,10 @@ mod tests {
         let location = headers.get(header::LOCATION).unwrap().to_str().unwrap();
         let url = url::Url::parse(location).unwrap();
         assert!(location.starts_with(REDIRECT));
+        assert!(
+            url.query_pairs().any(|(k, v)| k == "iss" && !v.is_empty()),
+            "authorize redirect must carry iss: {location}"
+        );
         url.query_pairs()
             .find(|(k, _)| k == "code")
             .unwrap()
@@ -632,11 +818,43 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{body}");
         let json: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(json["token_type"], "Bearer");
-        assert_eq!(json["scope"], "mcp:write");
+        assert_eq!(json["scope"], "mcp:read");
+        assert_eq!(json["expires_in"], 3600);
         assert_eq!(json["access_token"].as_str().unwrap().len(), 64);
+        assert!(json["refresh_token"].as_str().is_some());
 
         let (status, _, _) = send(&app, post_form("/oauth/token", None, token_form(&code))).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "code is single-use");
+    }
+
+    #[tokio::test]
+    async fn refresh_token_extends_access_without_rotation() {
+        let (app, cookie) = app().await;
+        let client_id = register_client(&app).await;
+        let (_, headers, _) = send(
+            &app,
+            post_form(
+                "/oauth/authorize",
+                Some(&cookie),
+                consent_form(&cookie, &client_id, "allow"),
+            ),
+        )
+        .await;
+        let code = code_from(&headers);
+        let (_, _, body) = send(&app, post_form("/oauth/token", None, token_form(&code))).await;
+        let issued: Value = serde_json::from_str(&body).unwrap();
+        let refresh = issued["refresh_token"].as_str().unwrap();
+        let access1 = issued["access_token"].as_str().unwrap().to_owned();
+
+        let refresh_body = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("grant_type", "refresh_token")
+            .append_pair("refresh_token", refresh)
+            .finish();
+        let (status, _, body) = send(&app, post_form("/oauth/token", None, refresh_body)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let json: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["refresh_token"], refresh);
+        assert_ne!(json["access_token"].as_str().unwrap(), access1);
     }
 
     #[tokio::test]
@@ -742,14 +960,9 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::SEE_OTHER);
-        assert!(
-            headers
-                .get(header::LOCATION)
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .contains("error=access_denied")
-        );
+        let location = headers.get(header::LOCATION).unwrap().to_str().unwrap();
+        assert!(location.contains("error=access_denied"));
+        assert!(location.contains("iss="), "{location}");
 
         let register = |uri: &str| {
             Request::post("/oauth/register")
@@ -762,5 +975,66 @@ mod tests {
             send(&app, register("https://evil.example/cb")).await.0,
             StatusCode::BAD_REQUEST
         );
+        for uri in [
+            "https://chatgpt.com/connector_platform_oauth_redirect",
+            "https://chatgpt.com/connector/oauth/abc123",
+            "https://www.cursor.com/agents/mcp/oauth/callback",
+            "http://localhost:8787/callback",
+            "https://www.perplexity.ai/rest/connections/oauth_callback",
+            "https://enterprise.perplexity.ai/rest/connections/oauth_callback",
+        ] {
+            assert_eq!(send(&app, register(uri)).await.0, StatusCode::CREATED, "{uri}");
+        }
+        assert_eq!(
+            send(
+                &app,
+                register("https://chatgpt.com/connector/oauth/../evil")
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            send(&app, register("https://evil.chatgpt.com/connector/oauth/x")).await.0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[tokio::test]
+    async fn metadata_advertises_iss_support_and_refresh() {
+        let (app, _) = app().await;
+        let (status, _, body) = send(
+            &app,
+            Request::get("/.well-known/oauth-authorization-server")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let json: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["authorization_response_iss_parameter_supported"], true);
+        assert!(
+            json["grant_types_supported"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|g| g == "refresh_token")
+        );
+    }
+
+    #[test]
+    fn chatgpt_callback_id_matching_is_strict() {
+        assert!(is_chatgpt_callback_id(
+            "https://chatgpt.com/connector/oauth/callback_abc-123"
+        ));
+        assert!(!is_chatgpt_callback_id(
+            "https://chatgpt.com/connector/oauth/a/b"
+        ));
+        assert!(!is_chatgpt_callback_id(
+            "https://evil.example/connector/oauth/abc"
+        ));
+        assert!(!is_chatgpt_callback_id(
+            "http://chatgpt.com/connector/oauth/abc"
+        ));
     }
 }

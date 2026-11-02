@@ -1530,8 +1530,8 @@ async fn list_mcp_rules_definition_and_read_scope_listing() {
     let tools = body["result"]["tools"].as_array().unwrap();
     assert_eq!(
         tools.len(),
-        8,
-        "a read-scope token sees exactly the eight read tools"
+        22,
+        "a read-scope token sees exactly the 22 read tools"
     );
     let names: Vec<&str> = tools
         .iter()

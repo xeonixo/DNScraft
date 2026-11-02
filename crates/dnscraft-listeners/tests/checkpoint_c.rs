@@ -15,7 +15,7 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bytes::Bytes;
 use dnscraft_filtering::{
-    FilterConfig, FilterEngine, FilterSetConfig, EmptyBodies, ListBodies, ManualClock, SetId,
+    EmptyBodies, FilterConfig, FilterEngine, FilterSetConfig, ListBodies, ManualClock, SetId,
     SnapshotBuilder,
 };
 use dnscraft_listeners::{

@@ -7,8 +7,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use dnscraft_filtering::{
-    FilterConfig, FilterEngine, FilterSetConfig, EmptyBodies, ListBodies, ManualClock as FilterClock,
-    SetId, SnapshotBuilder,
+    EmptyBodies, FilterConfig, FilterEngine, FilterSetConfig, ListBodies,
+    ManualClock as FilterClock, SetId, SnapshotBuilder,
 };
 use dnscraft_listeners::{
     DdrConfig, Exposure, FakeHandler, Limits, ListenerConfig, ListenersConfig, Protocol,

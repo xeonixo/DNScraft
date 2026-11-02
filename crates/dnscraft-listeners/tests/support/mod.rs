@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use dnscraft_filtering::{
-    FilterConfig, FilterEngine, FilterSetConfig, EmptyBodies, ListBodies, SetId, SnapshotBuilder,
+    EmptyBodies, FilterConfig, FilterEngine, FilterSetConfig, ListBodies, SetId, SnapshotBuilder,
 };
 use dnscraft_listeners::{
     Admission, Exposure, FakeHandler, Limits, ListenerConfig, Protocol, PublicConfig, SourceClass,

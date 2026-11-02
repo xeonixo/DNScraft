@@ -15,7 +15,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use dnscraft_filtering::{
-    FilterConfig, FilterEngine, FilterSetConfig, EmptyBodies, ListBodies, ManualClock, SetId,
+    EmptyBodies, FilterConfig, FilterEngine, FilterSetConfig, ListBodies, ManualClock, SetId,
     SnapshotBuilder,
 };
 use dnscraft_policy::{

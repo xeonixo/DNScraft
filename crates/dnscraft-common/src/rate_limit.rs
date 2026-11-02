@@ -120,7 +120,10 @@ impl LimiterState {
 
         let rate = rates.for_class(class).max(1.0);
         let burst = rate * rates.burst_factor.max(1.0);
-        let result = entry.buckets.bucket_mut(class).try_consume(now, rate, burst);
+        let result = entry
+            .buckets
+            .bucket_mut(class)
+            .try_consume(now, rate, burst);
         self.evict();
         result
     }
@@ -142,7 +145,6 @@ impl LimiterState {
                 .collect();
         }
     }
-
 }
 
 /// In-memory token-bucket limiter keyed by an opaque string.
@@ -209,7 +211,12 @@ mod tests {
     use super::*;
     use crate::clock::ManualClock;
 
-    fn limiter(read: f64, write: f64, auth: f64, max: usize) -> (TokenRateLimiter, Arc<ManualClock>) {
+    fn limiter(
+        read: f64,
+        write: f64,
+        auth: f64,
+        max: usize,
+    ) -> (TokenRateLimiter, Arc<ManualClock>) {
         let clock = Arc::new(ManualClock::new(SystemTime::UNIX_EPOCH));
         (
             TokenRateLimiter::new(

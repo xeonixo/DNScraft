@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
 use dnscraft_filtering::{
-    BlockMode, FilterConfig, FilterEngine, FilterSetConfig, EmptyBodies, ListBodies, ManualClock, SetId,
-    SnapshotBuilder,
+    BlockMode, EmptyBodies, FilterConfig, FilterEngine, FilterSetConfig, ListBodies, ManualClock,
+    SetId, SnapshotBuilder,
 };
 use dnscraft_policy::{
     AnswerOrigin, ClientFlags, DecisionStep, DnsProtocol, ListenerId, NoClients, PolicyConfig,

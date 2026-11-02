@@ -241,7 +241,6 @@ pub trait ListBodies: Send + Sync + std::fmt::Debug {
     /// The body of list `id`, or `None` if it has not been downloaded yet.
     fn body(&self, id: &ListId) -> Option<Arc<str>>;
 
-
     /// The body of list `id` plus a rule-text reader pinned to those bytes.
     /// Snapshot builders call this instead of [`Self::body`]. The default has
     /// no pinned reader, so rule text then comes from [`Self::rule_at`].

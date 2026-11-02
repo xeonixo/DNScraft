@@ -212,6 +212,7 @@ pub(crate) async fn start(
         .with_node_id(process_node_id.as_str())
         .with_db(db.clone())
         .with_backup_dir(data_dir.join("backups"))
+        .with_cluster_data_dir(data_dir)
         .with_web_bans(Arc::new(ListenerBans {
             set: Arc::downgrade(set),
         }))

@@ -310,6 +310,7 @@ async fn allow_temporarily_beats_a_block_and_expires_exactly() {
             duration: PauseDuration::Pt5M,
             filter_set_id: None,
             reason: "legitimate site".to_owned(),
+        acknowledge_tracking: None,
         })
         .await
         .expect("allow");
@@ -358,6 +359,7 @@ async fn allow_temporarily_validates_duration_scope_and_target() {
             duration: PauseDuration::Pt15M,
             filter_set_id: None,
             reason: String::new(),
+        acknowledge_tracking: None,
         })
         .await
         .expect_err("duration above the max");
@@ -372,6 +374,7 @@ async fn allow_temporarily_validates_duration_scope_and_target() {
                 duration: PauseDuration::Pt5M,
                 filter_set_id: None,
                 reason: String::new(),
+            acknowledge_tracking: None,
             })
             .await
             .expect_err("protected");
@@ -385,6 +388,7 @@ async fn allow_temporarily_validates_duration_scope_and_target() {
                 duration: PauseDuration::Pt5M,
                 filter_set_id: None,
                 reason: String::new(),
+            acknowledge_tracking: None,
             })
             .await
             .expect_err("owner-protected")
@@ -400,6 +404,7 @@ async fn allow_temporarily_validates_duration_scope_and_target() {
                 duration: PauseDuration::Pt5M,
                 filter_set_id: None,
                 reason: String::new(),
+            acknowledge_tracking: None,
             })
             .await
             .expect_err("too broad")
@@ -414,6 +419,7 @@ async fn allow_temporarily_validates_duration_scope_and_target() {
                 duration: PauseDuration::Pt5M,
                 filter_set_id: None,
                 reason: String::new(),
+            acknowledge_tracking: None,
             })
             .await
             .expect_err("pattern")
@@ -428,6 +434,7 @@ async fn allow_temporarily_validates_duration_scope_and_target() {
                 duration: PauseDuration::Pt5M,
                 filter_set_id: Some("missing".to_owned()),
                 reason: String::new(),
+            acknowledge_tracking: None,
             })
             .await
             .expect_err("unknown set")
@@ -1127,6 +1134,7 @@ fn propose_params(domain: &str, include_subdomains: bool) -> ProposeExceptionPar
         filter_set_id: None,
         token_id: "tok-propose".to_owned(),
         reason: "needed for the article page".to_owned(),
+    acknowledge_tracking: None,
     }
 }
 

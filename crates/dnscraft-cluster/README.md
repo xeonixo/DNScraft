@@ -28,12 +28,17 @@ src/
 ├── lib.rs       public re-exports
 ├── ca.rs        dedicated cluster CA (load/generate, `0600` key) + fingerprints
 ├── config.rs    `[cluster]` bootstrap config types and role/bind/URL validation
+├── transport.rs Prefer-QUIC dial policy, active transport / fallback status
+├── quic.rs      QUIC/HTTP/3 session helpers (ring-only, no 0-RTT)
+├── compress.rs  zstd envelopes + decompress caps (window ≤ 8 MiB)
+├── rpc.rs       reverse RPC allowlist, pending waiters, CONNECT path gate
+├── settings.rs  node-local settings.json (API/UI; not fleet snapshot)
 ├── enroll.rs    enroll request/response wire shape + master-side enrollment
 ├── error.rs     `ClusterError` and the stable `cluster.*` codes
 ├── identity.rs  sub-node key + CSR generation and durable cert/key storage
 ├── store.rs     SQLite node registry: join tokens, fingerprints, revoke, applied version
-├── server.rs    master mTLS HTTP/2 listener (enroll, stream, logs, writes, heartbeat)
-├── client.rs    sub-node outbound mTLS client and NDJSON stream reader
+├── server.rs    master dual-stack mTLS listener (TCP/h2 + UDP/h3; enroll, stream, RPC)
+├── client.rs    sub-node outbound client (auto QUIC→h2) and NDJSON stream reader
 ├── sync.rs      stream records, snapshot push/ack/lag/retry, cert + auth push
 ├── relay.rs     write relay and volatile runtime-command broadcast
 ├── offline.rs   durable FIFO offline write queue with conflict/expiry semantics
@@ -105,10 +110,14 @@ Traits implemented by the caller:
 - **Bootstrap pinning.** Before enrollment the sub-node pins the master's
   bootstrap certificate fingerprint; the control-api self-signed certificate is
   never accepted silently. After enrollment the cluster CA is authoritative.
-- **Transport.** TLS 1.3 only, rustls with the `ring` provider, mandatory
-  client certificates on both sides, HTTP/2, no plaintext fallback. The cluster
-  listener must bind to loopback or a private/ULA address; `0.0.0.0` and `::`
-  are rejected at config validation.
+- **Transport (protocol v2).** TLS 1.3 only, rustls with the `ring` provider,
+  mandatory client certificates on both sides. Prefer **QUIC/HTTP/3** on the
+  same private UDP port as TCP/HTTP/2 (default **443**); dial policy `auto`
+  falls back to HTTP/2 when UDP is blocked (ADR-0008). Optional zstd envelopes
+  (`compress=zstd`) and reverse RPC (`reverse_rpc`) over the sub-initiated
+  session. No plaintext. The cluster listener must bind to loopback or a
+  private/ULA address; `0.0.0.0` and `::` are rejected at config validation.
+  Runtime prefs also live in `GET/PUT /api/v1/cluster/settings` (node-local).
 - **Outbound-only sub-nodes.** Every session and upload is initiated by the
   sub-node. The master never opens a connection to a sub-node.
 - **Secrets.** Join tokens and node private keys travel only over the mTLS
@@ -129,11 +138,23 @@ snapshot; secrets come from the environment or `*_FILE`, not this file.
 [cluster]
 role = "standalone"                  # standalone | master | sub_node
 node_id = ""                         # required for master/sub_node: 1-63 chars, [a-z0-9-]
-# master_url = "https://master.dns.example.com:8443"   # required for sub_node; forbidden otherwise
+# master_url = "https://master.dns.example.com:443"   # required for sub_node; forbidden otherwise
 
 [cluster.listen]                     # master only
 bind = "192.0.2.10"                  # loopback or private/ULA only; never 0.0.0.0/::
-port = 8443
+port = 443                           # TCP + UDP (Prefer-QUIC)
+
+[cluster.transport]
+mode = "auto"                        # auto | prefer_quic | h2_only
+quic_connect_timeout = "2s"
+
+[cluster.compression]
+enabled = true
+level = 3
+
+[cluster.reverse_rpc]
+enabled = true
+# connect_enabled = false            # loopback CONNECT proxy (opt-in)
 
 [cluster.join]                       # master only
 token_ttl = "15m"

@@ -124,6 +124,55 @@ pub enum ClusterError {
         /// Which quota (`relay request` / `log byte`).
         what: String,
     },
+    /// zstd envelope encode/decode failure.
+    #[error("cluster compression error: {reason}")]
+    Compression {
+        /// Why compression failed.
+        reason: String,
+    },
+    /// Reverse RPC method is unknown.
+    #[error("unsupported reverse rpc method {method}")]
+    RpcUnsupported {
+        /// Requested method.
+        method: String,
+    },
+    /// Reverse RPC method is known but not on the allowlist.
+    #[error("reverse rpc method {method} is denied")]
+    RpcDenied {
+        /// Requested method.
+        method: String,
+    },
+    /// Reverse CONNECT denied (disabled, non-loopback host, or path not allowlisted).
+    #[error("reverse connect denied: {reason}")]
+    ConnectDenied {
+        /// Why CONNECT was refused.
+        reason: String,
+    },
+    /// Cluster listen bind/port collides with a DoH (or similar) listener on this node.
+    #[error("cluster listen collides with {listener_id} on {bind}:{port}")]
+    ListenCollision {
+        /// Conflicting listener id.
+        listener_id: String,
+        /// Requested bind.
+        bind: String,
+        /// Requested port.
+        port: u16,
+    },
+    /// Reverse RPC timed out waiting for the sub-node.
+    #[error("reverse rpc timed out")]
+    RpcTimeout,
+    /// Reverse RPC peer lacks the capability or is offline.
+    #[error("reverse rpc unavailable: {reason}")]
+    RpcUnavailable {
+        /// Why the call cannot proceed.
+        reason: String,
+    },
+    /// QUIC listener or dial failed (informational; dialer may fall back).
+    #[error("cluster transport QUIC unavailable: {message}")]
+    TransportQuic {
+        /// Detail for logs/status.
+        message: String,
+    },
     /// Backend failure (filesystem, rcgen, SQLite). Crate-internal fallback.
     #[error("cluster internal error: {message}")]
     Internal {
@@ -161,6 +210,14 @@ impl ClusterError {
             Self::CertPushFailed { .. } => "cluster.cert_push.failed",
             Self::ClockSkew => "cluster.clock_skew",
             Self::QuotaExceeded { .. } => "cluster.quota.exceeded",
+            Self::Compression { .. } => "cluster.compression",
+            Self::RpcUnsupported { .. } => "cluster.rpc.unsupported",
+            Self::RpcDenied { .. } => "cluster.rpc.denied",
+            Self::ConnectDenied { .. } => "cluster.reverse_rpc.denied",
+            Self::ListenCollision { .. } => "cluster.listen.collision",
+            Self::RpcTimeout => "cluster.rpc.timeout",
+            Self::RpcUnavailable { .. } => "cluster.rpc.unavailable",
+            Self::TransportQuic { .. } => "cluster.transport.quic_unavailable",
             Self::Internal { .. } => "cluster.internal",
         }
     }
@@ -218,6 +275,30 @@ mod tests {
             ClusterError::QuotaExceeded {
                 node_id: "node-a".into(),
                 what: "relay request".into(),
+            },
+            ClusterError::Compression {
+                reason: "x".into(),
+            },
+            ClusterError::RpcUnsupported {
+                method: "x".into(),
+            },
+            ClusterError::RpcDenied {
+                method: "x".into(),
+            },
+            ClusterError::ConnectDenied {
+                reason: "x".into(),
+            },
+            ClusterError::ListenCollision {
+                listener_id: "doh".into(),
+                bind: "127.0.0.1".into(),
+                port: 443,
+            },
+            ClusterError::RpcTimeout,
+            ClusterError::RpcUnavailable {
+                reason: "x".into(),
+            },
+            ClusterError::TransportQuic {
+                message: "x".into(),
             },
             ClusterError::Internal {
                 message: "x".into(),
@@ -278,6 +359,12 @@ mod tests {
             "cluster.runtime_command.failed",
             "cluster.cert_push.failed",
             "cluster.clock_skew",
+            "cluster.compression",
+            "cluster.rpc.unsupported",
+            "cluster.rpc.denied",
+            "cluster.rpc.timeout",
+            "cluster.rpc.unavailable",
+            "cluster.transport.quic_unavailable",
         ];
         let codes = all_errors()
             .iter()

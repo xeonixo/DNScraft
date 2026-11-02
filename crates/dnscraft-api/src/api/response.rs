@@ -100,7 +100,11 @@ impl ControlApiError {
             ControlApiError::MethodNotAllowed { .. } => S::METHOD_NOT_ALLOWED,
             ControlApiError::PayloadTooLarge { .. } => S::PAYLOAD_TOO_LARGE,
             ControlApiError::PaginationInvalid { .. } => S::BAD_REQUEST,
-            ControlApiError::Module { .. } => S::BAD_REQUEST,
+            ControlApiError::Module { code, .. } => match *code {
+                // Plan/SPEC: DoH+cluster same bind:port is a conflict, not a soft 400.
+                "cluster.listen.collision" => S::CONFLICT,
+                _ => S::BAD_REQUEST,
+            },
         }
     }
 

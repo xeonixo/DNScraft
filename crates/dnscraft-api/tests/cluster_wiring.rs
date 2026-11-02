@@ -110,6 +110,9 @@ fn master_config(dir: &Path) -> ClusterConfig {
             bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
             port: 0,
         }),
+        transport: Default::default(),
+        compression: Default::default(),
+        reverse_rpc: Default::default(),
         join: JoinConfig::default(),
         timing: Default::default(),
         offline_writes: OfflineWritesConfig::default(),
@@ -129,6 +132,9 @@ fn sub_node_config(dir: &Path, url: &str) -> ClusterConfig {
         node_id: "node-b".to_owned(),
         master_url: Some(url.to_owned()),
         listen: None,
+        transport: Default::default(),
+        compression: Default::default(),
+        reverse_rpc: Default::default(),
         join: JoinConfig::default(),
         timing: Default::default(),
         offline_writes: OfflineWritesConfig::default(),
@@ -302,6 +308,9 @@ async fn synced_config_applier_publishes_applied_version_before_config_ack() {
         degraded_nodes: 0,
         last_apply_error: None,
         warnings: Vec::new(),
+        protocol_version: None,
+        active_transport: None,
+        fallback_reason: None,
     });
     let clock: Arc<dyn dnscraft_common::clock::Clock> = Arc::new(ClusterClock::new(at(NOW)));
     let applier = SyncedConfigApplier::new(Arc::clone(&service), "node-b")

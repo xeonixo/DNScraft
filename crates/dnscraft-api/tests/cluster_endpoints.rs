@@ -5,6 +5,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::fs;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -16,11 +17,21 @@ use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
 use dnscraft_api::{
-    AppState, AuthState, ClusterStore, Db, ManualClock as ApiClock, OfflineWriteQueue, Scope,
-    SessionStore, TokenStore,
+    AppState, AuthState, ClusterStatusHandle, ClusterStore, Db, ListenersStatusProvider,
+    ManualClock as ApiClock, OfflineWriteQueue, Scope, SessionStore, TokenStore,
 };
 use dnscraft_cluster::{EnqueueOutcome, OfflineWritesConfig, RelayedActor, Role, WriteRelay};
 use dnscraft_common::clock::ManualClock as ClusterClock;
+use dnscraft_listeners::{ListenerStatus, ListenersStatus, Protocol};
+use dnscraft_policy::ListenerId;
+
+struct FixedListeners(ListenersStatus);
+
+impl ListenersStatusProvider for FixedListeners {
+    fn listeners_status(&self) -> ListenersStatus {
+        self.0.clone()
+    }
+}
 
 const NOW: u64 = 1_700_000_000;
 const TOKEN_TTL: Duration = Duration::from_secs(900);
@@ -423,6 +434,142 @@ async fn viewer_is_denied_and_admin_is_allowed() {
     assert_eq!(status, StatusCode::OK);
     let (status, _) = mint(&h, "node-a").await;
     assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn cluster_settings_round_trip_on_disk() {
+    let dir = std::env::temp_dir().join(format!(
+        "dnscraft-api-cluster-settings-{}",
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    let status = Arc::new(ClusterStatusHandle::new());
+    status.set(dnscraft_api::ClusterStatus {
+        role: "master".to_owned(),
+        node_id: "master".to_owned(),
+        master_reachable: true,
+        applied_version: None,
+        lag: 0,
+        queue_depth: 0,
+        last_sync: None,
+        degraded_nodes: 0,
+        last_apply_error: None,
+        warnings: Vec::new(),
+        protocol_version: Some(2),
+        active_transport: Some("h2".to_owned()),
+        fallback_reason: None,
+    });
+    let mut h = harness(true, false).await;
+    h.state = h
+        .state
+        .clone()
+        .with_cluster_data_dir(&dir)
+        .with_cluster_status(status);
+    let (status, body) = send(&h, "GET", "/api/v1/cluster/settings", Some(&h.admin), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["transport"]["mode"], "auto");
+    assert_eq!(body["data"]["status"]["active"], "h2");
+
+    let patch = json!({
+        "transport": { "mode": "h2_only" },
+        "compression": { "enabled": false },
+        "reverse_rpc": { "enabled": false },
+    });
+    let (status, body) = send(
+        &h,
+        "PUT",
+        "/api/v1/cluster/settings",
+        Some(&h.admin),
+        Some(patch),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["transport"]["mode"], "h2_only");
+    assert_eq!(body["data"]["compression"]["enabled"], false);
+    let stored = fs::read_to_string(dir.join("cluster/settings.json")).unwrap();
+    assert!(stored.contains("\"h2_only\""));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn cluster_listen_colliding_with_doh_returns_409() {
+    let dir = std::env::temp_dir().join(format!(
+        "dnscraft-api-cluster-collision-{}",
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    let status = Arc::new(ClusterStatusHandle::new());
+    status.set(dnscraft_api::ClusterStatus {
+        role: "master".to_owned(),
+        node_id: "master".to_owned(),
+        master_reachable: true,
+        applied_version: None,
+        lag: 0,
+        queue_depth: 0,
+        last_sync: None,
+        degraded_nodes: 0,
+        last_apply_error: None,
+        warnings: Vec::new(),
+        protocol_version: Some(2),
+        active_transport: Some("h2".to_owned()),
+        fallback_reason: None,
+    });
+    let listeners = ListenersStatus {
+        listeners: vec![ListenerStatus {
+            id: ListenerId::new("local-doh").unwrap(),
+            protocol: Protocol::Doh,
+            configured_address: SocketAddr::from(([127, 0, 0, 1], 443)),
+            bound: Some(SocketAddr::from(([127, 0, 0, 1], 443))),
+            error: None,
+            connections: 0,
+            queries: 0,
+            answered: 0,
+            dropped: 0,
+            rate_limited: 0,
+            banned_sources: 0,
+            tls_no_cert: 0,
+            tls_handshake_failures: 0,
+        }],
+        events_dropped: 0,
+        ban_entries: 0,
+    };
+    let mut h = harness(true, false).await;
+    h.state = h
+        .state
+        .clone()
+        .with_cluster_data_dir(&dir)
+        .with_cluster_status(status)
+        .with_listeners_status(Arc::new(FixedListeners(listeners)));
+
+    let (status, body) = send(
+        &h,
+        "PUT",
+        "/api/v1/cluster/settings",
+        Some(&h.admin),
+        Some(json!({ "listen": { "bind": "127.0.0.1", "port": 443 } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "cluster.listen.collision");
+
+    // Different port is fine and marks restart_required.
+    let (status, body) = send(
+        &h,
+        "PUT",
+        "/api/v1/cluster/settings",
+        Some(&h.admin),
+        Some(json!({ "listen": { "bind": "127.0.0.1", "port": 8443 } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["restart_required"], true);
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]

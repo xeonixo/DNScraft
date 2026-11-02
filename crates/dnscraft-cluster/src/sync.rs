@@ -28,6 +28,7 @@ use tokio::sync::{Notify, mpsc, watch};
 use crate::config::{DEFAULT_RECONNECT_BACKOFF, DEFAULT_RECONNECT_BACKOFF_MAX};
 use crate::error::ClusterError;
 use crate::relay::RuntimeCommand;
+use crate::rpc::RpcRequest;
 
 /// A canonical, deterministic byte encoding of a snapshot.
 ///
@@ -345,6 +346,8 @@ pub enum StreamRecord {
     TlsCertificatePush(TlsCertificatePush),
     /// UniFi directory snapshot for nodes bound to a profile.
     ClientsDirectoryPush(ClientsDirectoryPush),
+    /// Master → sub reverse RPC request (protocol ≥ 2, capability `reverse_rpc`).
+    RpcRequest(RpcRequest),
     /// Terminal stream error.
     Error {
         /// Error code and optional parameters.

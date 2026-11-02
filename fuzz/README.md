@@ -27,6 +27,8 @@ Defined in `fuzz/Cargo.toml`, sources in `fuzz/fuzz_targets/`:
 | `cluster_join_token` | `cluster_join_token.rs` | `EnrollRequest` deserializes from arbitrary JSON without panicking; `check_protocol` accepts only the current version and every rejection has a well-formed `cluster.*` code |
 | `cluster_log_batch` | `cluster_log_batch.rs` | `LogBatch::validate` over arbitrary JSON (matching and mismatching `node_id`) never panics; sequence/count and protocol checks reject with `cluster.*` codes |
 | `cluster_config` | `cluster_config.rs` | `ClusterConfig::from_toml` (parse + role/bind/URL validation) never panics on arbitrary TOML; accepted configs validate again |
+| `cluster_settings` | `cluster_settings.rs` | `ClusterSettings` / `ClusterSettingsUpdate` JSON never panics; `apply_update` rejections use `cluster.*` codes |
+| `cluster_zstd` | `cluster_zstd.rs` | `ZstdEnvelope` decompress never panics; size/digest/encoding failures use `cluster.compression` |
 | `control_api_config` | `control_api_config.rs` | Control-api config JSON validation never panics; bad shapes map to stable `control_api.*` codes |
 
 The `mcp_request` input is byte 0 (method selector), then an HTTP-like header
@@ -65,7 +67,8 @@ cargo +nightly fuzz run name_decode --target x86_64-unknown-linux-gnu -- -max_to
 Replace `name_decode` with `message_decode`, `message_roundtrip`, `rule_parse`,
 `listeners_handle_wire`, `listeners_doh_request`, `mcp_request`,
 `mcp_tool_input`, `cluster_join_token`, `cluster_log_batch`,
-`cluster_config` or `control_api_config`. Use the `gnu` target: the
+`cluster_config`, `cluster_settings`, `cluster_zstd` or
+`control_api_config`. Use the `gnu` target: the
 `musl` default enables static linking, which does not work with the sanitizers
 that cargo-fuzz uses.
 
@@ -86,8 +89,9 @@ request, plus a Monday schedule for a longer run:
 
 - Matrix over `name_decode`, `message_decode`, `message_roundtrip`, `rule_parse`,
   `listeners_handle_wire`, `listeners_doh_request`, `mcp_request`,
-  `mcp_tool_input`, `cluster_join_token`, `cluster_log_batch` and
-  `cluster_config`, with `fail-fast: false`.
+  `mcp_tool_input`, `cluster_join_token`, `cluster_log_batch`,
+  `cluster_config`, `cluster_settings`, `cluster_zstd` and
+  `control_api_config`, with `fail-fast: false`.
 - `RUSTUP_TOOLCHAIN=nightly` overrides the stable pin for this job only.
 - `cargo-fuzz` via `taiki-e/install-action`.
 - Duration: **60 s** on push/PR (smoke); **600 s** on the weekly schedule.

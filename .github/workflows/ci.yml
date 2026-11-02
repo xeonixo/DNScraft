@@ -105,6 +105,8 @@ jobs:
           - cluster_join_token
           - cluster_log_batch
           - cluster_config
+          - cluster_settings
+          - cluster_zstd
           - control_api_config
     # Root rust-toolchain.toml pins stable; cargo-fuzz needs nightly (-Zsanitizer).
     # RUSTUP_TOOLCHAIN overrides that pin for this job only.

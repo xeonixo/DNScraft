@@ -293,9 +293,12 @@ or secret token material. The `CertResolver` is passed to listeners as
 | DELETE | `/api/v1/domain-zones/{zone_id}/records` | admin | delete DNS record by `id` (does not delete the CF zone); holds CF `write_guard` | `tls.secret.missing`, `control_api.not_found`, `control_api.config.invalid`, `tls.cloudflare.*`, `control_api.not_ready` |
 | POST | `/api/v1/domain-zones/attach` | admin | attach apex into `dns_provider.zones` (`name`, optional `zone_id`); does not create a CF zone | `tls.secret.missing`, `tls.config.invalid`, `tls.cloudflare.zone`, `control_api.not_ready` |
 | DELETE | `/api/v1/domain-zones/attach/{apex}` | admin | detach apex from `dns_provider.zones` (does **not** delete the CF zone); refuses `public_domain` | `control_api.not_found`, `tls.config.invalid`, `control_api.not_ready` |
-| GET | `/api/v1/cluster/nodes` | admin | list sub-nodes + status (role, reachability, applied version, lag) | `cluster.node.*` |
+| GET | `/api/v1/cluster/nodes` | admin | list sub-nodes + status (role, reachability, applied version, lag, transport) | `cluster.node.*` |
 | POST | `/api/v1/cluster/join-tokens` | admin | mint one-time join token bound to `node_id`, TTL default 15 min | `cluster.join.*` |
 | DELETE | `/api/v1/cluster/nodes/{id}` | admin | revoke node; with `?remove=true` delete an already revoked node (certificates, display data) and free its id | `cluster.node.revoked`, `cluster.node.not_revoked` |
+| GET | `/api/v1/cluster/settings` | admin | node-local cluster transport/compression/reverse preferences (not in fleet snapshot) | `cluster.settings.*` |
+| PUT | `/api/v1/cluster/settings` | admin | update node-local cluster settings; sub-node: local only; master: local listener prefs | `cluster.settings.*` |
+| POST | `/api/v1/cluster/nodes/{id}/rpc` | admin | trigger allowlisted reverse RPC toward a connected sub-node (master only) | `cluster.reverse_rpc.*`, `cluster.node.*` |
 | GET | `/api/v1/query-log` | viewer/admin | query-log search / paginate | `control_api.query_log.*` |
 | GET | `/api/v1/query-log/{id}` | viewer/admin | single query-log record | `control_api.not_found` |
 | GET | `/api/v1/query-log/export.csv` | viewer/admin | CSV export of current filter | `control_api.query_log.export` |
@@ -810,9 +813,12 @@ served on the normal control-api listener, `admin` scope only.
 | Method | Path | Request | Response `data` |
 |---|---|---|---|
 | `POST` | `/api/v1/cluster/join-tokens` | `{ "node_id": "<label>" }` | `{ "token": "<plaintext, shown once>", "expires_at": "<rfc3339>" }` |
-| `GET` | `/api/v1/cluster/nodes` | – | `[{ "node_id", "role", "fingerprint", "joined_at", "last_seen", "applied_config_version", "revoked" }]` |
+| `GET` | `/api/v1/cluster/nodes` | – | `[{ "node_id", "role", "fingerprint", "joined_at", "last_seen", "applied_config_version", "revoked", "protocol_version", "active_transport", "fallback_reason" }]` (`active_transport` ∈ `quic` / `h2`; `fallback_reason` omitted when QUIC succeeded or peer is protocol 1) |
 | `DELETE` | `/api/v1/cluster/nodes/{node_id}` | – | `{ "node_id", "revoked": true }` |
 | `GET` | `/api/v1/cluster/writes/{request_id}` | – | `{ "request_id", "state", "queued_at", "expires_at", "result" }` (`state` ∈ pending / applied / conflict / failed / expired / blocked) |
+| `GET` | `/api/v1/cluster/settings` | – | `{ "transport": { "mode": "auto"|"prefer_quic"|"h2_only" }, "compression": { "enabled": bool }, "reverse_rpc": { "enabled": bool } }` (node-local; not exported in `GET /config`) |
+| `PUT` | `/api/v1/cluster/settings` | body same shape as `GET` | `{ ... }` updated settings |
+| `POST` | `/api/v1/cluster/nodes/{node_id}/rpc` | `{ "method": "node.status"|"node.diagnostics"|"config.reapply"|"runtime.exec", "params": { ... } }` | RPC result envelope `{ "ok": true, "data": { ... } }` or `{ "error": { "code": "cluster.reverse_rpc.*", ... } }`; node must be connected and protocol ≥ 2 |
 
 The join token is stored hashed (SHA-256); only the plaintext response is ever
 shown. `DELETE` revokes the node certificate, rejecting its next connection
@@ -836,6 +842,20 @@ with `cluster.node.revoked`. `DELETE …?remove=true` deletes a revoked node (`{
 `node_id` is always taken from the authenticated mTLS certificate, never from
 the payload.
 
+**Reverse RPC transport (v2):** admin triggers use `POST
+/api/v1/cluster/nodes/{node_id}/rpc` on the control-api listener; the cluster
+crate forwards the request over the sub-initiated mTLS session (SPEC-cluster.md
+§ Transport). Typed methods match the allowlist there; `runtime.exec` params are
+method-specific and validated on the sub-node.
+
+**Read-only CONNECT proxy (optional sketch):** `GET
+/api/v1/cluster/nodes/{node_id}/proxy/{path...}` on the master may tunnel an
+admin **GET** to the sub-node's loopback control-api via HTTP CONNECT on the
+reverse channel (viewer/admin session auth on the master; sub-node enforces
+loopback-only CONNECT). Mutating methods are not proxied; use normal write relay
+or explicit RPCs. Exact path allowlist TBD in implementation; default denies
+non-`/api/v1/*` paths.
+
 #### Internal hooks (control-api exposes for the cluster crate)
 
 - `apply_synced_config(snapshot, version) -> Result<i64, ControlApiError>` —
@@ -855,7 +875,11 @@ the payload.
 - `GET /api/v1/status` adds `cluster.role`, `cluster.master_reachable`,
   `cluster.applied_version`, `cluster.lag`, `cluster.queue_depth`,
   `cluster.last_sync`, `cluster.degraded_nodes` (master: connected nodes past
-  `config_apply_timeout` without an ack; SPEC-cluster § Apply timeout).
+  `config_apply_timeout` without an ack; SPEC-cluster § Apply timeout),
+  `cluster.protocol_version` (local session: `1` or `2`),
+  `cluster.active_transport` (`quic` | `h2`; sub-node and master when listening),
+  `cluster.fallback_reason` (present when `active_transport = "h2"` after a QUIC
+  failure in `auto` mode; omitted otherwise).
 - Statistics rollups gain a `node_id` dimension; `/api/v1/query-log` and
   `/api/v1/stats/*` accept a `node_id` filter.
 

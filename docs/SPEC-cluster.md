@@ -46,6 +46,10 @@ write.
 - No geo-distributed/multi-entry-node topology (deferred from SPEC-tls.md).
 - Not a general database replication layer: only the explicit state listed here
   crosses the cluster channel.
+- No external tunnel brokers, STUN/TURN, or multi-master coordination services.
+- No arbitrary TCP port forwarding or generic reverse proxy: v2 reverse access is
+  limited to typed RPCs plus allowlisted HTTP CONNECT to the sub-node's loopback
+  control-api only (ADR-0008).
 
 ## Architecture
 
@@ -65,12 +69,13 @@ timeouts.
 ### Topology and direction of control-plane traffic
 
 ```
-                 control plane (mTLS, HTTP/2, cluster listener)
+                 control plane (mTLS; Prefer-QUIC/h3 with h2 fallback, port 443)
    sub-node A  ───────────────────────────────────────────────▶  master
    sub-node B  ───────────────────────────────────────────────▶  (config push,
    sub-node C  ───────────────────────────────────────────────▶   cert push,
-        │  outbound connection, initiated by the sub-node         auth snapshot,
-        │                                                        runtime commands)
+        │  outbound session, initiated by the sub-node            auth snapshot,
+        │                                                        runtime commands,
+        │                                                        reverse RPC / CONNECT)
         └── DNS answers locally, keeps last applied config
 ```
 
@@ -155,19 +160,63 @@ identity, never an authorization subject.
 
 ### Transport
 
-- TLS 1.3, rustls ring-only provider, client certificates mandatory on both
-  sides (mTLS). No plaintext fallback, no cluster listener on a public address.
-- HTTP/2 over the TLS connection. Downstream pushes are the response body of a
-  long-lived `GET /cluster/v1/stream` (NDJSON records, one JSON object per line);
-  upstream messages are ordinary `POST`s on the same connection (`/cluster/v1/logs`,
-  `/cluster/v1/writes`, `/cluster/v1/heartbeat`, `/cluster/v1/renew`,
-  `/cluster/v1/tls/certificate`). No custom framing or webhook
-  callbacks.
-- Cluster protocol version is negotiated in the first stream message; a version
-  mismatch fails the session with `cluster.protocol.version` and the sub-node
-  keeps serving locally.
-- Compression is not used in v1: the channel is internal and TLS already
-  protects it; a batch cap bounds memory instead (YAGNI).
+**Baseline (all roles):** TLS 1.3, rustls ring-only provider (ADR-0002), client
+certificates mandatory on both sides (mTLS). No plaintext fallback, no cluster
+listener on a public address. Downstream pushes are the response body of a
+long-lived `GET /cluster/v1/stream` (NDJSON records, one JSON object per line);
+upstream messages are ordinary `POST`s on the same session (`/cluster/v1/logs`,
+`/cluster/v1/writes`, `/cluster/v1/heartbeat`, `/cluster/v1/renew`,
+`/cluster/v1/tls/certificate`). No custom framing or webhook callbacks.
+
+**Protocol version 2 (default for new deployments; ADR-0008):**
+
+| Aspect | v2 (preferred) | v1 (compatible) |
+|---|---|---|
+| Wire protocol | `protocol = 2` in `Hello` / first record | `protocol = 1` |
+| Transport | **Prefer-QUIC:** HTTP/3 on UDP, **`auto` fallback** to TCP + HTTP/2 on the **same port** when QUIC fails | TCP + HTTP/2 only |
+| Listen port (master) | **443** default (UDP + TCP) | 8443 (legacy); master accepts v1 peers on the configured port |
+| Compression | Optional **zstd** when both sides advertise `compress=zstd`; decompressed size cap + window ≤ 8 MiB | None |
+| Reverse tunnel | Typed master→sub RPCs + allowlisted CONNECT to loopback control-api | Not available |
+| 0-RTT | **Disabled** on QUIC | n/a |
+
+- **Dual stack on the master:** `cluster.listen.port` (default **443**) binds **UDP**
+  (QUIC) and **TCP** (TLS + h2). Sub-nodes dial `master_url` on that port; mode
+  `auto` tries QUIC first, then falls back to h2 with `fallback_reason` recorded
+  on status (SPEC-control-api.md).
+- **Capability negotiation:** `Hello.capabilities` may include `compress=zstd`,
+  `reverse_rpc`, and existing gates (`tls_certificate`, `cloudflare_token`). The
+  master never sends v2-only records to a peer without the capability (same rule
+  as `cloudflare_token`).
+- **Cluster settings (node-local):** transport mode, compression enablement, and
+  reverse-RPC policy are **not** part of the replicated config snapshot. They are
+  persisted per node and edited via `GET/PUT /api/v1/cluster/settings` (see
+  SPEC-control-api.md § Cluster contract). TOML `[cluster.transport]`,
+  `[cluster.compression]`, and `[cluster.reverse_rpc]` supply bootstrap defaults.
+
+**Reverse tunnel (v2 only):** multiplexed on the sub-initiated session so the
+master never opens an inbound connection to a sub-node. The master may invoke
+allowlisted **typed RPCs** toward a connected sub-node:
+
+| RPC | Purpose |
+|---|---|
+| `node.status` | Snapshot of sub-node `/api/v1/status` fields needed for cluster UI |
+| `node.diagnostics` | Bounded diagnostic bundle (versions, module readiness, last errors) |
+| `config.reapply` | Re-run atomic apply of the last acked snapshot (no version bump) |
+| `runtime.exec` | Allowlisted maintenance actions (e.g. filter-list refresh trigger); not arbitrary shell |
+
+Responses ride the same NDJSON stream as `runtime_command`/`ack` records or a
+dedicated reverse channel on the QUIC/h2 connection (implementation detail);
+the contract is request/response with stable error codes.
+
+**CONNECT allowlist:** for read-only admin proxy, the master may issue HTTP CONNECT
+only to the sub-node's **loopback control-api** address (from local bootstrap, not
+from caller-supplied host). No arbitrary destination ports or public listener
+forwarding.
+
+**Version negotiation:** cluster protocol version is negotiated in the first stream
+message. Unsupported versions fail the session with `cluster.protocol.version` and
+the sub-node keeps serving DNS locally. The master accepts **protocol 1** sessions
+(h2, no compression, no reverse RPC) alongside v2.
 
 ## Configuration synchronisation
 
@@ -491,7 +540,8 @@ logs are aggregated on the master only; sub-nodes keep a short local buffer
 - A sender task batches contiguous unacked rows (`batch_max_records` default
   500 or `batch_interval` default 1 s, whichever fires first;
   `max_batch_bytes` 1 MiB) and `POST`s them to `/cluster/v1/logs` over the mTLS
-  connection. No compression in v1.
+  session. When `compress=zstd` is negotiated (protocol 2), batch bodies may be
+  zstd-compressed subject to the same caps; protocol 1 sends plaintext only.
 - Batches carry `{ node_id, protocol, first_seq, last_seq, records[] }`.
   **`node_id` is taken from the authenticated connection, never from the
   payload**; a payload `node_id` mismatch is rejected with
@@ -630,7 +680,9 @@ clock (ADR-0005) and loopback listeners only.
    - Error-code uniqueness across `cluster.*`, `control_api.*` and module codes.
 2. **Transport tests (loopback)**
    - In-process master plus 1–3 sub-nodes on `127.0.0.1:0`; a test CA generated
-     with `rcgen`; TLS 1.3 mTLS.
+     with `rcgen`; TLS 1.3 mTLS; v2 paths exercise QUIC when the harness enables
+     UDP, forced h2 fallback (blocked UDP), zstd round-trip, and reverse RPC
+     allowlist denial.
    - Wrong CA, missing client cert, unregistered fingerprint, revoked node and
      expired node cert are all rejected with the documented codes.
    - Cluster listener refuses a non-loopback/non-private bind (config
@@ -685,6 +737,11 @@ control-api. Codes owned by other modules are forwarded unchanged (for example
 | `cluster.join.token_expired` | Join token past its TTL |
 | `cluster.transport.tls` | mTLS handshake or certificate validation failure |
 | `cluster.protocol.version` | Unsupported cluster protocol version |
+| `cluster.transport.fallback` | QUIC unavailable; session continued on HTTP/2 (informational) |
+| `cluster.compression.invalid` | Decompressed size over cap, bad zstd frame, or window violation |
+| `cluster.reverse_rpc.denied` | RPC or CONNECT target not allowlisted |
+| `cluster.listen.collision` | Cluster listen bind:port collides with a DoH listener (`PUT /cluster/settings` → HTTP 409) |
+| `cluster.reverse_rpc.failed` | Allowlisted RPC or CONNECT failed on the sub-node |
 | `cluster.config.apply` | Sub-node failed to apply a pushed snapshot; stays on the previous version |
 | `cluster.config.stale` | A connected node has not acknowledged a pushed snapshot within `config_apply_timeout` (heartbeat warning; the master also counts it in `cluster.degraded_nodes`) |
 | `cluster.write_relay_failed` | Forwarded write transport failed before a master response (`params.outcome = "unknown"`); `503` |
@@ -717,12 +774,24 @@ for first enrollment. Relative `cluster.tls` paths resolve under `data_dir`.
 [cluster]
 role = "standalone"                  # standalone | master | sub_node
 node_id = ""                         # required for master/sub_node: 1-63 chars, [a-z0-9-]
-# master_url = "https://master.dns.example.com:8443"   # required for sub_node; forbidden for master/standalone
+# master_url = "https://master.dns.example.com:443"   # required for sub_node; forbidden for master/standalone
 
 [cluster.listen]                     # master only
 bind = "192.0.2.10"                  # loopback or private/ULA only; never 0.0.0.0/:: 
-port = 8443
+port = 443                           # UDP (QUIC) + TCP (TLS/h2) on the same port; legacy default was 8443
 # TLS is always on (mTLS); there is no plaintext mode.
+
+[cluster.transport]
+mode = "auto"                        # auto | prefer_quic | h2_only — auto = QUIC then mandatory h2 fallback
+
+[cluster.compression]
+enabled = true                       # effective only when protocol 2 + compress=zstd negotiated
+max_decompressed_bytes = "16MiB"     # per message after decompress
+window_max = "8MiB"                  # zstd window cap
+
+[cluster.reverse_rpc]
+enabled = true                       # master may invoke allowlisted RPCs toward connected v2 sub-nodes
+connect_loopback_only = true         # CONNECT proxy limited to local control-api bind
 
 [cluster.join]                       # master only
 token_ttl = "15m"                    # one-time join-token lifetime
@@ -766,6 +835,12 @@ node_key = "data/cluster/node.key"   # prefer env / *_FILE in deployed configura
 | `node_id` | – | required for master/sub_node; DNS label 1–63 |
 | `master_url` | – | required for sub_node; `https://` only; must use the cluster port |
 | `cluster.listen.bind` | – | loopback/private/ULA; `0.0.0.0`/`::` rejected |
+| `cluster.listen.port` | 443 | 1–65535; master opens UDP+TCP when mode ≠ `h2_only` |
+| `cluster.transport.mode` | `auto` | `auto` \| `prefer_quic` \| `h2_only` |
+| `cluster.compression.enabled` | true | ignored for protocol 1 peers |
+| `cluster.compression.max_decompressed_bytes` | 16 MiB | 64 KiB–64 MiB |
+| `cluster.compression.window_max` | 8 MiB | ≤ 8 MiB (hard spec cap) |
+| `cluster.reverse_rpc.enabled` | true | master-only effect; sub-node advertises `reverse_rpc` capability |
 | `token_ttl` | 15m | 5m–24h |
 | `node_cert_ttl` | 90d | 1d–365d |
 | `heartbeat_interval` | 10s | 5s–60s |
@@ -845,6 +920,22 @@ node_key = "data/cluster/node.key"   # prefer env / *_FILE in deployed configura
     ring-only `cargo tree` gates are green.
 19. Every test runs on loopback with an injectable clock; no test contacts the
     internet, a real ACME server, Cloudflare or Authentik.
+20. **Transport v2:** with `mode = auto`, a sub-node on a QUIC-capable path uses
+    HTTP/3; when UDP/QUIC is blocked, it connects via HTTP/2 on the same port,
+    sets `active_transport = "h2"`, and records a non-fatal `fallback_reason`.
+    `h2_only` peers and protocol 1 sessions behave as today (no QUIC attempt).
+21. **Compression v2:** when both sides negotiate `compress=zstd`, a snapshot or
+    log batch round-trips compressed and verifies identical application semantics
+    to plaintext; oversize decompress returns `cluster.compression.invalid` without
+    partial apply.
+22. **Reverse tunnel v2:** from the master, `POST /api/v1/cluster/nodes/{id}/rpc`
+    for allowlisted methods reaches only connected v2 sub-nodes; disallowed RPCs
+    and CONNECT to non-loopback targets return `cluster.reverse_rpc.denied`. Protocol
+    1 nodes reject reverse RPC with a documented error.
+23. **Cluster settings API:** `GET/PUT /api/v1/cluster/settings` persists
+    transport/compression/reverse preferences node-locally; changes are **not**
+    present in exported fleet config or sub-node snapshots; `/cluster` UI reads and
+    writes them (SPEC-web-ui.md).
 
 ## Decisions
 
@@ -887,3 +978,10 @@ provisional "Required control-api additions" list that stood here.
     either way; display originating `time` and master `received_at`.
 12. **Multi-entry / geo** — not in v1; revisit only with a concrete multi-site
     requirement.
+13. **Transport v2, reverse tunnel, settings API** — Prefer-QUIC with mandatory
+    HTTP/2 fallback on port **443** (UDP+TCP), protocol **2** with protocol **1**
+    compatibility, optional **zstd** via `compress=zstd` (caps + 8 MiB window),
+    reverse typed RPCs and CONNECT **only** to loopback control-api over the
+    sub-initiated session, **no 0-RTT**, ring-only QUIC (ADR-0008). Node-local
+    transport/compression/reverse preferences via `GET/PUT
+    /api/v1/cluster/settings`, not replicated in the fleet snapshot.

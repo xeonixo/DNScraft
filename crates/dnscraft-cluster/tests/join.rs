@@ -317,7 +317,7 @@ async fn enroll_connect_hello_and_heartbeat() {
     // A protocol mismatch ends the stream with the documented error record.
     let mismatch = raw
         .get(format!("{}/cluster/v1/stream", master.url))
-        .header("x-cluster-protocol", "2")
+        .header("x-cluster-protocol", "99")
         .send()
         .await
         .unwrap();

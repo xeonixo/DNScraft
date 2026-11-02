@@ -191,6 +191,19 @@ impl NodeIdentity {
     pub fn key(&self) -> &KeyPair {
         &self.key
     }
+
+    /// Clones PEM material and reloads the key (for owned client state).
+    pub(crate) fn duplicate(&self) -> Result<Self, ClusterError> {
+        let key_pem = self.key.serialize_pem();
+        let key = KeyPair::from_pem(&key_pem).map_err(|error| ClusterError::Internal {
+            message: format!("duplicate node key: {error}"),
+        })?;
+        Ok(Self {
+            ca_cert_pem: self.ca_cert_pem.clone(),
+            node_cert_pem: self.node_cert_pem.clone(),
+            key,
+        })
+    }
 }
 
 impl NodeIdentity {

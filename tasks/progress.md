@@ -2,6 +2,35 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-11-02 — Cluster v2 harden: fallback/CONNECT/DoH/UI/fuzz
+
+- Fault-injection `tests/fallback_rpc.rs`: UDP occupied → Prefer-QUIC falls back to
+  h2 (`QuicUnavailable`) and reverse `node.status` still works; CONNECT loopback
+  gate asserted in-process.
+- CONNECT: `ensure_connect_request` + host loopback checks; code
+  `cluster.reverse_rpc.denied`; unit tests for LAN deny / path deny / disabled.
+- DoH collision: `PUT /cluster/settings` listen vs DoH → `409 cluster.listen.collision`;
+  API test; restart_required still set on non-colliding port change.
+- UI: restart banner on `/cluster` (en/de) + vitest page coverage for transport
+  save and banner.
+- Fuzz CI matrix adds `cluster_settings` / `cluster_zstd` (60s smoke / 600s Monday).
+
+## 2026-11-02 — Cluster Protocol V2 (QUIC + zstd + reverse tunnel)
+
+- **Transport:** Prefer-QUIC → HTTP/2 fallback (`auto`), dual-stack master listen
+  default `:443`, `ClusterSession` over h2/h3; ADR-0008 + SPEC updates.
+- **Reverse tunnel:** typed RPCs (`node.status` / diagnostics / reapply / runtime.exec)
+  + allowlisted loopback CONNECT; control-api `POST …/nodes/{id}/rpc`.
+- **Compression:** `compress=zstd` envelopes with window ≤ 8 MiB and decompress caps.
+- **Settings:** node-local `GET/PUT /api/v1/cluster/settings` + `/cluster` UI (en/de),
+  live `active_transport` / `fallback_reason`; not in fleet config snapshot.
+- **Docs:** SPEC-cluster/control-api/web-ui, API-REFERENCE, CAPABILITY-MAP,
+  deploy/README firewall notes, crate README module map.
+- **Harden:** `transport_quic` + `reverse_rpc` integration tests; fuzz targets
+  `cluster_settings` / `cluster_zstd`; vitest `cluster.test.ts`; clippy clean.
+- **Gates:** `cargo test -p dnscraft-cluster` (incl. transport/reverse); API
+  settings endpoint; fuzz `cargo check --bins`; vitest cluster API client.
+
 ## 2026-11-02 — archive Client-ID todos, webui-api-gaps, cursor-next
 
 - Moved to `tasks/archive/`: `todo.md` + `plan.md` (Client-ID; Checkpoints A/B = owner QA),

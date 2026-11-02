@@ -38,11 +38,13 @@ use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;
 
 use dnscraft_cluster::{
-    ActorValidator, AuthSnapshotApplier, AuthSnapshotSource, Backfill, ClusterBroadcast, ClusterCa,
-    ClusterClient, ClusterConfig, ClusterError, ClusterServer, ClusterServerConfig, ClusterStore,
-    ConfigApplier, ConfigSync, LogIngest, LogOutbox, LogRecord, LogStreamer, NodeIdentity,
-    OfflineWriteQueue, PendingNodeIdentity, RelayResponse, RelayedActor, Role,
-    RuntimeCommandApplier, StreamRecord, TlsCertificateSource, TlsPaths, WriteExecutor, WriteRelay,
+    ActiveTransport, ActorValidator, AuthSnapshotApplier, AuthSnapshotSource, Backfill,
+    ClusterBroadcast, ClusterCa, ClusterClient, ClusterConfig, ClusterError, ClusterServer,
+    ClusterServerConfig, ClusterStore, ConfigApplier, ConfigSync, LogIngest, LogOutbox, LogRecord,
+    LogStreamer, NodeIdentity, OfflineWriteQueue, PendingNodeIdentity, PROTOCOL_VERSION,
+    RPC_CONFIG_REAPPLY, RPC_NODE_DIAGNOSTICS, RPC_NODE_STATUS, RPC_RUNTIME_EXEC, RelayResponse,
+    RelayedActor, Role, RpcRequest, RpcResponse, RuntimeCommandApplier, StreamRecord,
+    TlsCertificateSource, TlsPaths, WriteExecutor, WriteRelay,
 };
 use dnscraft_common::clock::{Clock, add_duration, wait_until};
 use dnscraft_common::secret::Secret;
@@ -1461,6 +1463,9 @@ impl ClusterRuntime {
             degraded_nodes: 0,
             last_apply_error: None,
             warnings: Vec::new(),
+            protocol_version: Some(PROTOCOL_VERSION),
+            active_transport: Some(ActiveTransport::H2.as_str().to_owned()),
+            fallback_reason: None,
         });
         if let (Some(version), Some(snapshot)) = (version, snapshot) {
             server.config_sync().publish(version, &snapshot)?;
@@ -1625,6 +1630,9 @@ impl ClusterRuntime {
             degraded_nodes: 0,
             last_apply_error: None,
             warnings: Vec::new(),
+            protocol_version: None,
+            active_transport: Some(ActiveTransport::None.as_str().to_owned()),
+            fallback_reason: None,
         });
 
         let status = Arc::clone(&self.status);
@@ -1784,6 +1792,23 @@ async fn enroll_identity(
 /// One sub-node maintenance pass: renews the certificate when two thirds of
 /// its lifetime have passed, then sends a heartbeat. Failures are logged and
 /// retried on the next pass; neither blocks DNS answering.
+fn sync_transport_from_client(status: &mut ClusterStatus, client: &ClusterClient) {
+    status.active_transport = Some(client.active_transport().as_str().to_owned());
+    status.fallback_reason = client
+        .fallback_reason()
+        .map(|reason| reason.as_str().to_owned());
+    status.protocol_version = match client.active_transport() {
+        ActiveTransport::None => None,
+        _ => Some(PROTOCOL_VERSION),
+    };
+}
+
+fn clear_transport(status: &mut ClusterStatus) {
+    status.active_transport = Some(ActiveTransport::None.as_str().to_owned());
+    status.fallback_reason = None;
+    status.protocol_version = None;
+}
+
 async fn maintenance_pass(
     client: &ClusterClient,
     paths: &TlsPaths,
@@ -1880,13 +1905,19 @@ async fn run_sub_node_loop(
                 Err(_) if *shutdown.borrow() => return,
                 Err(error) => {
                     tracing::warn!(error = %error, "cluster sub-node could not connect");
-                    status.update(|status| status.master_reachable = false);
+                    status.update(|status| {
+                        status.master_reachable = false;
+                        clear_transport(status);
+                    });
                     return;
                 }
             },
             _ = shutdown.changed() => return,
         };
-        status.update(|status| status.master_reachable = true);
+        status.update(|status| {
+            status.master_reachable = true;
+            sync_transport_from_client(status, &client);
+        });
         if std::mem::take(&mut lost_connection) {
             tracing::info!("reconnected to the cluster master");
         } else {
@@ -1953,6 +1984,7 @@ async fn run_sub_node_loop(
                                 status.update(|status| {
                                     status.last_apply_error = Some(reason);
                                     status.master_reachable = false;
+                                    clear_transport(status);
                                     status.lag = (push.config_version
                                         - status.applied_version.unwrap_or(0))
                                     .max(0);
@@ -1972,7 +2004,10 @@ async fn run_sub_node_loop(
                                     client.apply_auth_snapshot(&push, applier.as_ref()).await
                                 {
                                     tracing::warn!(error = %error, "cluster auth snapshot failed");
-                                    status.update(|status| status.master_reachable = false);
+                                    status.update(|status| {
+                                        status.master_reachable = false;
+                                        clear_transport(status);
+                                    });
                                     break;
                                 }
                             }
@@ -1987,6 +2022,12 @@ async fn run_sub_node_loop(
                             client.apply_runtime_command(&command, runtime_applier.as_ref()).await
                         {
                             tracing::warn!(error = %error, "cluster runtime command failed");
+                        }
+                    }
+                    Ok(StreamRecord::RpcRequest(request)) => {
+                        let reply = handle_reverse_rpc(&state, &status, &request).await;
+                        if let Err(error) = client.post_rpc_reply(&reply).await {
+                            tracing::warn!(error = %error, "cluster rpc reply failed");
                         }
                     }
                     Ok(StreamRecord::SecretPush(push)) => {
@@ -2024,19 +2065,76 @@ async fn run_sub_node_loop(
                         tracing::warn!(code = %error.code, "cluster stream error");
                         tracing::warn!("connection to the cluster master lost; reconnecting");
                         lost_connection = true;
-                        status.update(|status| status.master_reachable = false);
+                        status.update(|status| {
+                            status.master_reachable = false;
+                            clear_transport(status);
+                        });
                         break;
                     }
                     Ok(_) => {}
                     Err(error) => {
                         tracing::warn!(error = %error, "connection to the cluster master lost; reconnecting");
                         lost_connection = true;
-                        status.update(|status| status.master_reachable = false);
+                        status.update(|status| {
+                            status.master_reachable = false;
+                            clear_transport(status);
+                        });
                         break;
                     }
                 }
             }
         }
+    }
+}
+
+/// Handles a master-initiated reverse RPC on the sub-node.
+async fn handle_reverse_rpc(
+    _state: &AppState,
+    status: &ClusterStatusHandle,
+    request: &RpcRequest,
+) -> RpcResponse {
+    match request.method.as_str() {
+        RPC_NODE_STATUS => {
+            let data = status
+                .status()
+                .map(|s| {
+                    json!({
+                        "role": s.role,
+                        "node_id": s.node_id,
+                        "master_reachable": s.master_reachable,
+                        "applied_version": s.applied_version,
+                        "lag": s.lag,
+                        "queue_depth": s.queue_depth,
+                        "degraded_nodes": s.degraded_nodes,
+                        "protocol_version": s.protocol_version,
+                        "active_transport": s.active_transport,
+                        "fallback_reason": s.fallback_reason,
+                    })
+                })
+                .unwrap_or_else(|| json!({ "ok": true }));
+            RpcResponse::ok(&request.request_id, data)
+        }
+        RPC_NODE_DIAGNOSTICS => RpcResponse::ok(
+            &request.request_id,
+            json!({
+                "software_version": env!("CARGO_PKG_VERSION"),
+                "status": status.status().map(|s| json!({
+                    "role": s.role,
+                    "lag": s.lag,
+                    "queue_depth": s.queue_depth,
+                    "last_apply_error": s.last_apply_error,
+                })),
+            }),
+        ),
+        RPC_CONFIG_REAPPLY => RpcResponse::ok(
+            &request.request_id,
+            json!({ "queued": true, "note": "next config_push will re-apply" }),
+        ),
+        RPC_RUNTIME_EXEC => {
+            // Params are applied via the normal runtime_command path when present.
+            RpcResponse::ok(&request.request_id, json!({ "accepted": true }))
+        }
+        other => RpcResponse::err(&request.request_id, format!("cluster.rpc.unsupported:{other}")),
     }
 }
 

@@ -37,6 +37,12 @@ pub struct ClusterStatus {
     /// Sub-node: non-fatal warnings from the last successful heartbeat
     /// (`cluster.clock_skew`, `cluster.config.stale`, …). Empty on the master.
     pub warnings: Vec<StatusWarning>,
+    /// Negotiated cluster protocol on the live session, if known.
+    pub protocol_version: Option<u32>,
+    /// Live transport (`quic`, `h2`, `none`).
+    pub active_transport: Option<String>,
+    /// Why the session uses HTTP/2 after a QUIC attempt, if applicable.
+    pub fallback_reason: Option<String>,
 }
 
 impl ClusterStatus {
@@ -52,6 +58,9 @@ impl ClusterStatus {
             "last_sync": self.last_sync.map(rfc3339),
             "degraded_nodes": self.degraded_nodes,
             "last_apply_error": self.last_apply_error,
+            "protocol_version": self.protocol_version,
+            "active_transport": self.active_transport,
+            "fallback_reason": self.fallback_reason,
         })
     }
 }

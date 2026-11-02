@@ -95,7 +95,7 @@ impl LogBatch {
     /// whose length does not equal the record count (all
     /// `cluster.log_stream.invalid`).
     pub fn validate(&self, authenticated_node: &str) -> Result<(), ClusterError> {
-        if self.protocol != PROTOCOL_VERSION {
+        if !crate::enroll::protocol_supported(self.protocol) {
             return Err(ClusterError::ProtocolVersion);
         }
         if self.node_id != authenticated_node {

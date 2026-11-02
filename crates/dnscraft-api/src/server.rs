@@ -86,6 +86,8 @@ pub struct AppState {
     update_api_url: String,
     update_cache: Arc<tokio::sync::Mutex<crate::system::UpdateCache>>,
     backup_dir: Option<PathBuf>,
+    /// Engine data directory (`settings.json` lives under `cluster/` here).
+    cluster_data_dir: Option<PathBuf>,
     web_bans: Option<Arc<dyn crate::WebBans>>,
     service_catalog: Option<Arc<dyn ServiceCatalogProvider>>,
     webhook_trust_roots: Vec<Vec<u8>>,
@@ -141,6 +143,7 @@ impl AppState {
             update_api_url: crate::system::DEFAULT_RELEASE_API.to_owned(),
             update_cache: Arc::new(tokio::sync::Mutex::new(None)),
             backup_dir: None,
+            cluster_data_dir: None,
             web_bans: None,
             service_catalog: None,
             webhook_trust_roots: Vec::new(),
@@ -260,6 +263,20 @@ impl AppState {
 
     pub(crate) fn backup_dir(&self) -> Option<&std::path::Path> {
         self.backup_dir.as_deref()
+    }
+
+    /// Sets the engine data directory used for node-local cluster settings.
+    pub fn with_cluster_data_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.cluster_data_dir = Some(dir.into());
+        self
+    }
+
+    pub(crate) fn cluster_data_dir(&self) -> Option<&std::path::Path> {
+        self.cluster_data_dir.as_deref().or_else(|| {
+            self.backup_dir
+                .as_deref()
+                .and_then(|backups| backups.parent())
+        })
     }
 
     /// Attaches the resolver read by `/api/v1/resolver/*` (upstream health and

@@ -23,7 +23,10 @@ use super::clients_routes::{
     create_manual, delete_manual, get_unifi, list_clients, list_manual, put_manual,
     put_unifi_api_key, sync_clients,
 };
-use super::cluster_endpoints::{get_write, list_nodes, mint_join_token, revoke_node, update_node};
+use super::cluster_endpoints::{
+    get_cluster_settings, get_write, invoke_node_rpc, list_nodes, mint_join_token, put_cluster_settings,
+    revoke_node, update_node,
+};
 use super::config_routes::{
     delete_pause, delete_profile, delete_view, get_config, get_pause, get_profile, get_view,
     list_versions, list_views, put_config, put_pause, put_profile, put_view, rollback,
@@ -264,6 +267,12 @@ pub(crate) fn build_router(state: AppState) -> Router {
             .route("/stats/cache", get(stats_cache))
             .route("/stats/domains/{name}", get(stats_domain));
     }
+    if state.cluster_status().is_some() {
+        api = api.route(
+            "/cluster/settings",
+            get(get_cluster_settings).put(put_cluster_settings),
+        );
+    }
     if state.cluster_store().is_some() {
         // Master-only admin surface. A standalone node has no cluster routes
         // and falls through to 404 control_api.not_found.
@@ -274,6 +283,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
                 "/cluster/nodes/{node_id}",
                 delete(revoke_node).put(update_node),
             )
+            .route("/cluster/nodes/{node_id}/rpc", post(invoke_node_rpc))
             .route("/cluster/writes/{request_id}", get(get_write));
     }
     if state.auth_state().is_some() {

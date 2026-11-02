@@ -76,6 +76,9 @@ async fn status_includes_the_six_cluster_fields_when_clustered() {
         degraded_nodes: 1,
         last_apply_error: None,
         warnings: Vec::new(),
+        protocol_version: None,
+        active_transport: None,
+        fallback_reason: None,
     });
     let state = AppState::new().with_cluster_status(status);
     let body = status_body(state).await;

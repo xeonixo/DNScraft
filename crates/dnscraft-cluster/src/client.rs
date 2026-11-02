@@ -3,7 +3,9 @@
 //! The sub-node always dials the master (the master never dials a sub-node).
 //! The client presents its node certificate for the mTLS channel opened by
 //! [`ClusterClient::open_stream`], sends heartbeats, and performs the one-time
-//! enrollment over a certificate-pinned bootstrap connection.
+//! enrollment over a certificate-pinned bootstrap connection. With
+//! [`TransportMode::Auto`] (default), the downstream stream prefers QUIC/HTTP/3
+//! and falls back to HTTP/2 when UDP is unavailable.
 //!
 //! Reconnects use exponential backoff driven by the injectable
 //! [`Clock`] ([`ClusterClient::connect`]); there are no wall-clock sleeps.
@@ -11,6 +13,7 @@
 use std::sync::{Arc, PoisonError, RwLock};
 use std::time::{Duration, SystemTime};
 
+use bytes::Bytes;
 use dnscraft_common::clock::{Clock, add_duration, wait_until};
 use dnscraft_common::secret::Secret;
 use rcgen::{CertificateParams, DistinguishedName, KeyPair, PKCS_ECDSA_P256_SHA256};
@@ -33,9 +36,13 @@ use crate::relay::{RelayResponse, RuntimeCommand, RuntimeCommandApplier, WriteRe
 use crate::server::{
     HeartbeatRequest, HeartbeatResponse, PROTOCOL_HEADER, TlsCsrRequest, TlsCsrResponse, rfc3339,
 };
+use crate::rpc::RpcResponse;
 use crate::sync::{
     AuthSnapshotApplier, AuthSnapshotPush, CertInstaller, ConfigAck, ConfigApplier, ConfigPush,
     Hello, StreamError, StreamRecord,
+};
+use crate::transport::{
+    ActiveTransport, DEFAULT_QUIC_CONNECT_TIMEOUT, FallbackReason, TransportMode,
 };
 
 const ENROLL_PATH: &str = "/cluster/v1/enroll";
@@ -43,6 +50,7 @@ const STREAM_PATH: &str = "/cluster/v1/stream";
 const HEARTBEAT_PATH: &str = "/cluster/v1/heartbeat";
 const ACK_PATH: &str = "/cluster/v1/ack";
 const LOGS_PATH: &str = "/cluster/v1/logs";
+const RPC_REPLY_PATH: &str = "/cluster/v1/rpc-reply";
 const RELAY_PATH: &str = "/cluster/v1/writes";
 const RENEW_PATH: &str = "/cluster/v1/renew";
 const TLS_CERT_PATH: &str = "/cluster/v1/tls/certificate";
@@ -59,6 +67,11 @@ pub struct ClusterClient {
     timing: TimingConfig,
     /// Advertise [`crate::sync::CAP_TLS_CERTIFICATE`] in the stream hello.
     tls_certificate: bool,
+    transport_mode: TransportMode,
+    quic_connect_timeout: Duration,
+    last_transport: RwLock<(ActiveTransport, Option<FallbackReason>)>,
+    /// Node identity PEM material for QUIC dials (same cert as the HTTP client).
+    identity: RwLock<NodeIdentity>,
 }
 
 impl ClusterClient {
@@ -93,6 +106,10 @@ impl ClusterClient {
             clock,
             timing,
             tls_certificate: false,
+            transport_mode: TransportMode::Auto,
+            quic_connect_timeout: DEFAULT_QUIC_CONNECT_TIMEOUT,
+            last_transport: RwLock::new((ActiveTransport::None, None)),
+            identity: RwLock::new(identity.duplicate()?),
         })
     }
 
@@ -103,6 +120,37 @@ impl ClusterClient {
     pub fn with_tls_certificate(mut self, accepts: bool) -> Self {
         self.tls_certificate = accepts;
         self
+    }
+
+    /// Sets how the client dials the master's downstream stream.
+    #[must_use]
+    pub fn with_transport_mode(mut self, mode: TransportMode) -> Self {
+        self.transport_mode = mode;
+        self
+    }
+
+    /// Sets the QUIC connect budget before falling back to HTTP/2.
+    #[must_use]
+    pub fn with_quic_connect_timeout(mut self, timeout: Duration) -> Self {
+        self.quic_connect_timeout = timeout;
+        self
+    }
+
+    /// Transport carrying the last successful stream, if any.
+    pub fn active_transport(&self) -> ActiveTransport {
+        self.last_transport
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .0
+    }
+
+    /// Why the last stream used HTTP/2 after a Prefer-QUIC attempt.
+    pub fn fallback_reason(&self) -> Option<FallbackReason> {
+        self.last_transport
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .1
+            .clone()
     }
 
     /// The `node_id` carried by this node's certificate.
@@ -188,7 +236,12 @@ impl ClusterClient {
         identity.persist_renewed(&renewed.node_cert_pem, paths)?;
         let fresh = NodeIdentity::load(paths)?;
         let http = mtls_client(&fresh, self.timing.master_timeout)?;
-        *self.http.write().unwrap_or_else(PoisonError::into_inner) = http;
+        {
+            let mut guard = self.http.write().unwrap_or_else(PoisonError::into_inner);
+            *guard = http;
+        }
+        *self.identity.write().unwrap_or_else(PoisonError::into_inner) =
+            fresh.duplicate()?;
         Ok(())
     }
 
@@ -208,19 +261,87 @@ impl ClusterClient {
         last_applied_version: Option<i64>,
         last_acked_log_seq: Option<u64>,
     ) -> Result<ClusterStream, ClusterError> {
-        let hello = StreamRecord::Hello(Hello {
+        if self.transport_mode == TransportMode::H2Only {
+            let stream = self.open_stream_h2(last_applied_version, last_acked_log_seq).await?;
+            *self.last_transport.write().unwrap_or_else(PoisonError::into_inner) =
+                (ActiveTransport::H2, Some(FallbackReason::ModeH2Only));
+            return Ok(stream);
+        }
+
+        if self.transport_mode.try_quic() {
+            let hello = self.stream_hello(last_applied_version, last_acked_log_seq);
+            let body = serde_json::to_vec(&hello).map_err(|error| ClusterError::Internal {
+                message: format!("encode stream hello: {error}"),
+            })?;
+            let identity = self
+                .identity
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .duplicate()?;
+            match crate::quic::try_open_h3_stream(
+                &self.base_url,
+                &identity,
+                Bytes::from(body),
+                self.quic_connect_timeout,
+            )
+            .await
+            {
+                Ok(quic) => {
+                    *self.last_transport.write().unwrap_or_else(PoisonError::into_inner) =
+                        (ActiveTransport::Quic, None);
+                    return Ok(ClusterStream::from_quic(quic));
+                }
+                Err(
+                    error @ (ClusterError::ProtocolVersion
+                    | ClusterError::NodeUnknown { .. }
+                    | ClusterError::NodeRevoked { .. }
+                    | ClusterError::TransportTls { .. }),
+                ) => return Err(error),
+                Err(_) => {
+                    *self.last_transport.write().unwrap_or_else(PoisonError::into_inner) = (
+                        ActiveTransport::None,
+                        Some(FallbackReason::QuicUnavailable),
+                    );
+                }
+            }
+        }
+
+        let stream = self.open_stream_h2(last_applied_version, last_acked_log_seq).await?;
+        *self.last_transport.write().unwrap_or_else(PoisonError::into_inner) =
+            (ActiveTransport::H2, Some(FallbackReason::QuicUnavailable));
+        Ok(stream)
+    }
+
+    fn stream_hello(
+        &self,
+        last_applied_version: Option<i64>,
+        last_acked_log_seq: Option<u64>,
+    ) -> StreamRecord {
+        StreamRecord::Hello(Hello {
             protocol: PROTOCOL_VERSION,
             node_id: self.node_id.clone(),
             last_applied_version,
             last_acked_log_seq,
             capabilities: {
-                let mut caps = vec![crate::sync::CAP_CLOUDFLARE_TOKEN.to_owned()];
+                let mut caps = vec![
+                    crate::sync::CAP_CLOUDFLARE_TOKEN.to_owned(),
+                    crate::compress::CAP_COMPRESS_ZSTD.to_owned(),
+                    crate::rpc::CAP_REVERSE_RPC.to_owned(),
+                ];
                 if self.tls_certificate {
                     caps.push(crate::sync::CAP_TLS_CERTIFICATE.to_owned());
                 }
                 caps
             },
-        });
+        })
+    }
+
+    async fn open_stream_h2(
+        &self,
+        last_applied_version: Option<i64>,
+        last_acked_log_seq: Option<u64>,
+    ) -> Result<ClusterStream, ClusterError> {
+        let hello = self.stream_hello(last_applied_version, last_acked_log_seq);
         let body = serde_json::to_vec(&hello).map_err(|error| ClusterError::Internal {
             message: format!("encode stream hello: {error}"),
         })?;
@@ -248,7 +369,7 @@ impl ClusterClient {
                 last_acked_log_seq,
                 ..
             }) => {
-                if protocol != PROTOCOL_VERSION {
+                if !crate::enroll::protocol_supported(protocol) {
                     return Err(ClusterError::ProtocolVersion);
                 }
                 if node_id != self.node_id {
@@ -260,8 +381,8 @@ impl ClusterClient {
                     node_id,
                     protocol,
                     master_highest_log_seq: last_acked_log_seq,
-                    response,
-                    buffer,
+                    transport: ActiveTransport::H2,
+                    body: StreamBody::H2 { response, buffer },
                 })
             }
             StreamRecord::Error { error } => Err(map_wire_error(&error)),
@@ -299,7 +420,7 @@ impl ClusterClient {
         push: &ConfigPush,
         applier: &dyn ConfigApplier,
     ) -> Result<i64, ClusterError> {
-        if push.protocol != PROTOCOL_VERSION {
+        if !crate::enroll::protocol_supported(push.protocol) {
             return Err(ClusterError::ProtocolVersion);
         }
         push.verify_digest()?;
@@ -373,7 +494,7 @@ impl ClusterClient {
         push: &AuthSnapshotPush,
         applier: &dyn AuthSnapshotApplier,
     ) -> Result<(), ClusterError> {
-        if push.protocol != PROTOCOL_VERSION {
+        if !crate::enroll::protocol_supported(push.protocol) {
             return Err(ClusterError::ProtocolVersion);
         }
         applier.apply(&push.snapshot).await
@@ -501,6 +622,23 @@ impl ClusterClient {
             .map_err(master_unavailable)?;
         let ack: LogAck = json_body(ensure_success(response).await?).await?;
         Ok(ack.acked_seq)
+    }
+
+    /// Posts a reverse-RPC reply for a master-initiated [`crate::rpc::RpcRequest`].
+    pub async fn post_rpc_reply(&self, response: &RpcResponse) -> Result<(), ClusterError> {
+        let body = serde_json::to_vec(response).map_err(|error| ClusterError::Internal {
+            message: format!("encode rpc reply: {error}"),
+        })?;
+        let response = self
+            .http()
+            .post(format!("{}{RPC_REPLY_PATH}", self.base_url))
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .send()
+            .await
+            .map_err(master_unavailable)?;
+        let _ = ensure_success(response).await?;
+        Ok(())
     }
 
     /// Sends one heartbeat; `applied_version`/`queue_depth` are reported as-is.
@@ -633,18 +771,42 @@ impl ClusterClient {
     }
 }
 
+#[allow(dead_code, clippy::large_enum_variant)]
+enum StreamBody {
+    H2 {
+        response: reqwest::Response,
+        buffer: Vec<u8>,
+    },
+    Quic {
+        recv: h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
+        buffer: Vec<u8>,
+        session: crate::quic::QuicH3Session,
+    },
+}
+
 /// A live downstream stream whose `hello` has been validated.
 pub struct ClusterStream {
     node_id: String,
     protocol: u32,
     master_highest_log_seq: Option<u64>,
-    /// Kept alive so the HTTP/2 response body stays open.
-    response: reqwest::Response,
-    /// Leftover bytes after the last record read.
-    buffer: Vec<u8>,
+    transport: ActiveTransport,
+    body: StreamBody,
 }
 
 impl ClusterStream {
+    pub(crate) fn from_quic(quic: crate::quic::QuicClusterStream) -> Self {
+        Self {
+            node_id: quic.node_id,
+            protocol: quic.protocol,
+            master_highest_log_seq: quic.master_highest_log_seq,
+            transport: ActiveTransport::Quic,
+            body: StreamBody::Quic {
+                recv: quic.recv,
+                buffer: quic.buffer,
+                session: quic.session,
+            },
+        }
+    }
     /// The `node_id` the master derived from this connection's certificate.
     pub fn node_id(&self) -> &str {
         &self.node_id
@@ -663,10 +825,20 @@ impl ClusterStream {
         self.master_highest_log_seq
     }
 
+    /// Whether this stream uses QUIC/HTTP/3 or TCP/HTTP/2.
+    pub fn transport(&self) -> ActiveTransport {
+        self.transport
+    }
+
     /// Reads the next NDJSON record from the master.
     pub async fn next_record(&mut self) -> Result<StreamRecord, ClusterError> {
         loop {
-            let line = read_line(&mut self.response, &mut self.buffer).await?;
+            let line = match &mut self.body {
+                StreamBody::H2 { response, buffer } => read_line(response, buffer).await?,
+                StreamBody::Quic { recv, buffer, .. } => {
+                    crate::quic::read_line_h3(recv, buffer).await?
+                }
+            };
             if line.iter().all(u8::is_ascii_whitespace) {
                 continue;
             }
@@ -680,6 +852,10 @@ impl ClusterStream {
 #[derive(Debug, Deserialize)]
 struct ErrorEnvelope {
     error: StreamError,
+}
+
+pub(crate) fn map_wire_error_public(error: &StreamError) -> ClusterError {
+    map_wire_error(error)
 }
 
 fn map_wire_error(error: &StreamError) -> ClusterError {

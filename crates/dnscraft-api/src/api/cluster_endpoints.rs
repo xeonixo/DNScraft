@@ -10,7 +10,9 @@
 //! Every timestamp in [`ClusterStore`](dnscraft_cluster::ClusterStore) is Unix
 //! seconds; the API renders them as RFC 3339, matching the other endpoints.
 
+use std::net::IpAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
@@ -19,7 +21,11 @@ use axum::response::IntoResponse;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use dnscraft_cluster::ClusterStore;
+use dnscraft_cluster::{
+    ActiveTransport, ClusterError, ClusterSettings, ClusterSettingsUpdate, ClusterStore,
+    ListenOverride, PROTOCOL_VERSION,
+};
+use dnscraft_listeners::Protocol;
 
 use crate::api::config_routes::{json_body, module_error};
 use crate::api::response::{success, unix_rfc3339 as rfc3339};
@@ -57,6 +63,60 @@ fn valid_hostname(name: &str) -> bool {
 
 fn non_empty(value: Option<String>) -> Option<String> {
     value.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty())
+}
+
+const RPC_DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn data_dir(state: &AppState) -> Result<&std::path::Path, ControlApiError> {
+    state.cluster_data_dir().ok_or_else(|| ControlApiError::NotFound {
+        what: "cluster".to_owned(),
+    })
+}
+
+fn clustered(state: &AppState) -> Result<(), ControlApiError> {
+    if state.cluster_status().is_some() {
+        Ok(())
+    } else {
+        Err(ControlApiError::NotFound {
+            what: "cluster".to_owned(),
+        })
+    }
+}
+
+fn live_transport_status(state: &AppState, settings: &ClusterSettings) -> ClusterSettings {
+    let (active, fallback, protocol) = if let Some(client) = state.cluster_uplink() {
+        (
+            client.active_transport(),
+            client.fallback_reason(),
+            match client.active_transport() {
+                ActiveTransport::None => None,
+                _ => Some(PROTOCOL_VERSION),
+            },
+        )
+    } else if state.cluster_store().is_some() {
+        (
+            ActiveTransport::H2,
+            None,
+            Some(PROTOCOL_VERSION),
+        )
+    } else {
+        (
+            ActiveTransport::None,
+            None,
+            None,
+        )
+    };
+    settings.clone().with_status(active, fallback, protocol)
+}
+
+fn rpc_error_code(code: &str) -> &'static str {
+    match code {
+        "cluster.rpc.unsupported" => "cluster.rpc.unsupported",
+        "cluster.rpc.denied" => "cluster.rpc.denied",
+        "cluster.rpc.timeout" => "cluster.rpc.timeout",
+        "cluster.rpc.unavailable" => "cluster.rpc.unavailable",
+        _ => "cluster.rpc.unavailable",
+    }
 }
 
 fn store(state: &AppState) -> Result<&Arc<ClusterStore>, ControlApiError> {
@@ -227,6 +287,106 @@ pub(crate) async fn revoke_node(
 /// `expires_at` is the 202 deadline (RFC 3339) and `result` is `{status}` once
 /// a replay has produced the master's answer. Both are `null` until known, and
 /// for rows queued before the queue stored them.
+/// `GET /api/v1/cluster/settings` — node-local transport/compression/reverse prefs.
+pub(crate) async fn get_cluster_settings(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, ControlApiError> {
+    clustered(&state)?;
+    let settings = ClusterSettings::load(data_dir(&state)?).map_err(ControlApiError::from)?;
+    Ok(success(live_transport_status(&state, &settings)))
+}
+
+/// Rejects a listen override that shares bind:port with a DoH listener.
+fn check_doh_listen_collision(
+    state: &AppState,
+    listen: &ListenOverride,
+) -> Result<(), ControlApiError> {
+    let Ok(ip) = listen.bind.parse::<IpAddr>() else {
+        return Err(ControlApiError::from(ClusterError::RoleInvalid {
+            reason: format!("invalid listen.bind {}", listen.bind),
+        }));
+    };
+    let Some(provider) = state.listeners_status() else {
+        return Ok(());
+    };
+    for listener in provider.listeners_status().listeners {
+        if listener.protocol != Protocol::Doh {
+            continue;
+        }
+        let addr = listener.bound.unwrap_or(listener.configured_address);
+        if addr.ip() == ip && addr.port() == listen.port {
+            return Err(ControlApiError::from(ClusterError::ListenCollision {
+                listener_id: listener.id.as_str().to_owned(),
+                bind: listen.bind.clone(),
+                port: listen.port,
+            }));
+        }
+    }
+    Ok(())
+}
+
+/// `PUT /api/v1/cluster/settings` — merge a partial update and persist it.
+pub(crate) async fn put_cluster_settings(
+    State(state): State<AppState>,
+    body: Result<Json<ClusterSettingsUpdate>, JsonRejection>,
+) -> Result<impl IntoResponse, ControlApiError> {
+    clustered(&state)?;
+    let update = json_body(body, "cluster.role.invalid")?;
+    let dir = data_dir(&state)?;
+    let mut settings = ClusterSettings::load(dir).map_err(ControlApiError::from)?;
+    if let Some(ref listen) = update.listen {
+        check_doh_listen_collision(&state, listen)?;
+    }
+    settings
+        .apply_update(update)
+        .map_err(ControlApiError::from)?;
+    settings.status = None;
+    settings.save(dir).map_err(ControlApiError::from)?;
+    Ok(success(live_transport_status(&state, &settings)))
+}
+
+/// Request body of `POST /api/v1/cluster/nodes/{node_id}/rpc`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NodeRpcBody {
+    method: String,
+    #[serde(default)]
+    params: serde_json::Value,
+}
+
+/// `POST /api/v1/cluster/nodes/{node_id}/rpc` — reverse RPC on a connected sub-node.
+pub(crate) async fn invoke_node_rpc(
+    State(state): State<AppState>,
+    Path(node_id): Path<String>,
+    body: Result<Json<NodeRpcBody>, JsonRejection>,
+) -> Result<impl IntoResponse, ControlApiError> {
+    store(&state)?;
+    if state.is_cluster_sub_node() {
+        return Err(ControlApiError::NotFound {
+            what: "cluster".to_owned(),
+        });
+    }
+    let body = json_body(body, "cluster.role.invalid")?;
+    let broadcast = state.cluster_broadcast().ok_or_else(|| ControlApiError::NotFound {
+        what: "cluster".to_owned(),
+    })?;
+    let response = broadcast
+        .invoke_rpc(
+            &node_id,
+            &body.method,
+            body.params,
+            RPC_DEFAULT_TIMEOUT,
+        )
+        .await?;
+    if let Some(error) = response.error {
+        return Err(ControlApiError::Module {
+            code: rpc_error_code(&error.code),
+            params: error.params,
+        });
+    }
+    Ok(success(response.data.unwrap_or(serde_json::Value::Null)))
+}
+
 pub(crate) async fn get_write(
     State(state): State<AppState>,
     Path(request_id): Path<String>,

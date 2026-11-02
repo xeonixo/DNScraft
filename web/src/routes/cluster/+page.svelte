@@ -5,19 +5,27 @@
 	import GroupedList from '$lib/components/GroupedList.svelte';
 	import GroupedRow from '$lib/components/GroupedRow.svelte';
 	import Icon from '$lib/components/Icon.svelte';
+	import Segmented from '$lib/components/Segmented.svelte';
 	import Sheet from '$lib/components/Sheet.svelte';
+	import Switch from '$lib/components/Switch.svelte';
 	import {
+		getClusterSettings,
+		invokeClusterNodeRpc,
 		listClusterNodes,
 		mintJoinToken,
+		putClusterSettings,
 		revokeClusterNode,
 		removeClusterNode,
 		updateClusterNode,
 		type ClusterNode,
+		type ClusterSettings,
+		type ClusterTransportMode,
 	} from '$lib/api/cluster';
 	import { failureOf, settle, type Result } from '$lib/api/result';
 	import { auth } from '$lib/auth/state.svelte';
 	import NodeHubPanel from '$lib/cluster/NodeHubPanel.svelte';
 	import { nodeLag, nodeRoleLabel, nodeStatusLabel, nodeVerdict } from '$lib/cluster/nodes';
+	import { announce } from '$lib/live.svelte';
 	import { displayText } from '$lib/safe-text';
 	import { formatDateTime, formatFingerprint, formatNumber } from '$lib/format';
 	import { getLocale } from '$lib/i18n/locale';
@@ -51,6 +59,24 @@
 	let busy = $state(false);
 	let failure = $state<{ code: string; params: Record<string, unknown> } | null>(null);
 
+	let clusterSettings = $state<ClusterSettings | null>(null);
+	let settingsBusy = $state(false);
+	let settingsFailure = $state<{ code: string; params: Record<string, unknown> } | null>(null);
+	let rpcBusy = $state(false);
+	let rpcResult = $state<string | null>(null);
+
+	const transportModeOptions: { value: ClusterTransportMode; label: string }[] = [
+		{ value: 'auto', label: m.cluster_settings_transport_auto() },
+		{ value: 'prefer_quic', label: m.cluster_settings_transport_prefer_quic() },
+		{ value: 'h2_only', label: m.cluster_settings_transport_h2_only() },
+	];
+
+	function liveTransportLabel(active: string | undefined): string {
+		if (active === 'quic') return 'QUIC';
+		if (active === 'h2') return 'HTTP/2';
+		return m.cluster_settings_transport_live_none();
+	}
+
 	/** Software version, config version, and last contact; local has no peer contact to show. */
 	function nodeMeta(node: ClusterNode): string {
 		const software = node.software_version ? `v${node.software_version}` : '—';
@@ -66,6 +92,97 @@
 
 	async function load(): Promise<void> {
 		result = await settle(listClusterNodes());
+		if (result.kind === 'ok') {
+			await loadSettings();
+		}
+	}
+
+	async function loadSettings(): Promise<void> {
+		try {
+			clusterSettings = await getClusterSettings();
+		} catch {
+			clusterSettings = null;
+		}
+	}
+
+	async function saveTransportMode(mode: ClusterTransportMode): Promise<void> {
+		if (!isAdmin || !clusterSettings) return;
+		settingsBusy = true;
+		settingsFailure = null;
+		const previous = clusterSettings.transport.mode;
+		clusterSettings = { ...clusterSettings, transport: { ...clusterSettings.transport, mode } };
+		try {
+			clusterSettings = await putClusterSettings({ transport: { mode } });
+			announce(m.cluster_settings_saved());
+		} catch (cause) {
+			clusterSettings = {
+				...clusterSettings,
+				transport: { ...clusterSettings.transport, mode: previous },
+			};
+			settingsFailure = failureOf(cause);
+		} finally {
+			settingsBusy = false;
+		}
+	}
+
+	async function saveCompressionEnabled(enabled: boolean): Promise<void> {
+		if (!isAdmin || !clusterSettings) return;
+		settingsBusy = true;
+		settingsFailure = null;
+		const previous = clusterSettings.compression.enabled;
+		clusterSettings = {
+			...clusterSettings,
+			compression: { ...clusterSettings.compression, enabled },
+		};
+		try {
+			clusterSettings = await putClusterSettings({ compression: { enabled } });
+			announce(m.cluster_settings_saved());
+		} catch (cause) {
+			clusterSettings = {
+				...clusterSettings,
+				compression: { ...clusterSettings.compression, enabled: previous },
+			};
+			settingsFailure = failureOf(cause);
+		} finally {
+			settingsBusy = false;
+		}
+	}
+
+	async function saveReverseEnabled(enabled: boolean): Promise<void> {
+		if (!isAdmin || !clusterSettings) return;
+		settingsBusy = true;
+		settingsFailure = null;
+		const previous = clusterSettings.reverse_rpc.enabled;
+		clusterSettings = {
+			...clusterSettings,
+			reverse_rpc: { ...clusterSettings.reverse_rpc, enabled },
+		};
+		try {
+			clusterSettings = await putClusterSettings({ reverse_rpc: { enabled } });
+			announce(m.cluster_settings_saved());
+		} catch (cause) {
+			clusterSettings = {
+				...clusterSettings,
+				reverse_rpc: { ...clusterSettings.reverse_rpc, enabled: previous },
+			};
+			settingsFailure = failureOf(cause);
+		} finally {
+			settingsBusy = false;
+		}
+	}
+
+	async function runNodeStatusRpc(node: ClusterNode): Promise<void> {
+		rpcBusy = true;
+		rpcResult = null;
+		failure = null;
+		try {
+			const data = await invokeClusterNodeRpc(node.node_id, { method: 'node.status' });
+			rpcResult = JSON.stringify(data, null, 2);
+		} catch (cause) {
+			failure = failureOf(cause);
+		} finally {
+			rpcBusy = false;
+		}
 	}
 
 	async function submitJoin(): Promise<void> {
@@ -180,6 +297,73 @@
 		})}
 	</p>
 
+	{#if clusterSettings}
+		{#if settingsFailure}
+			<div class="notice">
+				<ErrorNotice code={settingsFailure.code} params={settingsFailure.params} />
+			</div>
+		{/if}
+		{#if clusterSettings.restart_required}
+			<p class="restart-banner" role="status">{m.cluster_settings_restart_required()}</p>
+		{/if}
+		<GroupedList header={m.cluster_settings_transport_group()}>
+			<GroupedRow label={m.cluster_settings_transport_mode()}>
+				{#snippet trailing()}
+					<Segmented
+						options={transportModeOptions}
+						value={clusterSettings.transport.mode}
+						label={m.cluster_settings_transport_mode()}
+						onchange={(mode) => {
+							if (isAdmin && !settingsBusy) void saveTransportMode(mode as ClusterTransportMode);
+						}}
+					/>
+				{/snippet}
+			</GroupedRow>
+			{#if clusterSettings.status?.active}
+				<GroupedRow
+					label={m.cluster_settings_transport_live({
+						transport: liveTransportLabel(clusterSettings.status.active),
+					})}
+					detail={clusterSettings.status.fallback_reason
+						? m.cluster_settings_transport_fallback({
+								reason: clusterSettings.status.fallback_reason,
+							})
+						: undefined}
+				/>
+			{/if}
+		</GroupedList>
+		<GroupedList header={m.cluster_settings_compression_group()}>
+			<GroupedRow
+				label={m.cluster_settings_compression_enabled()}
+				detail={m.cluster_settings_compression_note()}
+			>
+				{#snippet trailing()}
+					<Switch
+						checked={clusterSettings.compression.enabled}
+						disabled={!isAdmin || settingsBusy}
+						aria-label={m.cluster_settings_compression_enabled()}
+						onchange={(event) => void saveCompressionEnabled(event.currentTarget.checked)}
+					/>
+				{/snippet}
+			</GroupedRow>
+		</GroupedList>
+		<GroupedList header={m.cluster_settings_reverse_group()}>
+			<GroupedRow
+				label={m.cluster_settings_reverse_enabled()}
+				detail={m.cluster_settings_reverse_note()}
+			>
+				{#snippet trailing()}
+					<Switch
+						checked={clusterSettings.reverse_rpc.enabled}
+						disabled={!isAdmin || settingsBusy}
+						aria-label={m.cluster_settings_reverse_enabled()}
+						onchange={(event) => void saveReverseEnabled(event.currentTarget.checked)}
+					/>
+				{/snippet}
+			</GroupedRow>
+		</GroupedList>
+	{/if}
+
 	<GroupedList header={m.cluster_nodes_group()}>
 		{#each nodeRows as { node, lag } (node.node_id)}
 			<GroupedRow
@@ -196,7 +380,12 @@
 					</span>
 				{/snippet}
 				{#snippet trailing()}
-					<Button onclick={() => (detail = node)}>{m.cluster_detail()}</Button>
+					<Button
+						onclick={() => {
+							detail = node;
+							rpcResult = null;
+						}}>{m.cluster_detail()}</Button
+					>
 					{#if isAdmin && !node.revoked && node.role !== 'master' && node.local !== true}
 						<Button variant="danger" disabled={busy} onclick={() => (revokeTarget = node)}>
 							{m.cluster_revoke()}
@@ -315,7 +504,16 @@
 		{#if !detail.revoked}
 			<NodeHubPanel nodeId={detailNodeId} {isAdmin} />
 		{/if}
+		{#if rpcResult}
+			<p class="hint">{m.cluster_rpc_status_result()}</p>
+			<pre class="mono rpc-result">{rpcResult}</pre>
+		{/if}
 		<div class="actions">
+			{#if isAdmin && detail.connected && detail.local !== true && detail.role !== 'master'}
+				<Button disabled={rpcBusy} onclick={() => void runNodeStatusRpc(detail)}>
+					{m.cluster_rpc_status()}
+				</Button>
+			{/if}
 			{#if isAdmin && !detail.revoked}
 				<Button
 					onclick={() => {
@@ -442,6 +640,16 @@
 		margin: 0.75rem 0;
 	}
 
+	.restart-banner {
+		margin: 0 0 0.75rem;
+		padding: 0.75rem 1rem;
+		border: 1px solid var(--warn);
+		border-radius: 0.5rem;
+		background: color-mix(in srgb, var(--warn) 12%, transparent);
+		color: var(--label-1);
+		font-size: 0.875rem;
+	}
+
 	.hint + .field-label {
 		margin-top: 0.75rem;
 	}
@@ -469,6 +677,15 @@
 		padding: 0.5rem;
 		overflow-x: auto;
 		word-break: break-all;
+		background: var(--surface-2);
+		border-radius: var(--r-control);
+	}
+
+	.rpc-result {
+		margin: 0.5rem 0 0;
+		padding: 0.5rem;
+		overflow-x: auto;
+		font-size: 0.75rem;
 		background: var(--surface-2);
 		border-radius: var(--r-control);
 	}

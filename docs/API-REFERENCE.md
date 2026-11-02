@@ -289,6 +289,23 @@ binary must call `run_backup_if_due` periodically; it runs at most once per 24 h
 |---|---|---|
 | GET | `/api/v1/alerts` | Active alerts: `active_count` and `items` (`id`, `severity`, `module`, `params`, `target_route`). Sources: readiness (`system.not_ready`), listener bind failures, resolver upstreams/priming, TLS (revoked/expired/expiring, DynDNS stale, self-signed, store corrupt, engine error, DNS conflicts, missing Cloudflare token), filter-list update failures, cluster (master unreachable, node offline/disconnected, sync degraded, lag, apply failed, heartbeat warnings), UniFi sync/IP conflicts, query-log drops, backup failure, and cached update-check unreachable. |
 
+### Cluster (admin; mounted only when `role` is `master` or `sub_node`)
+
+Protocol v2 Prefer-QUIC → HTTP/2 fallback, optional zstd, reverse RPC. See
+[SPEC-cluster.md](SPEC-cluster.md) and [ADR-0008](adr/0008-cluster-transport-v2.md).
+`GET /api/v1/status` may include `cluster.protocol_version`, `cluster.active_transport`
+(`quic` / `h2` / `none`), and `cluster.fallback_reason`.
+
+| Method | Path | Summary |
+|---|---|---|
+| GET | `/api/v1/cluster/nodes` | Local node + registry peers (`node_id`, fingerprint, lag, `active_transport`, …). |
+| POST | `/api/v1/cluster/join-tokens` | Mint one-time join token for `node_id` (master). Plaintext shown once. |
+| PUT | `/api/v1/cluster/nodes/{node_id}` | Display name / hostname metadata. |
+| DELETE | `/api/v1/cluster/nodes/{node_id}` | Revoke; `?remove=true` deletes an already-revoked id. |
+| GET | `/api/v1/cluster/writes/{request_id}` | Offline write queue entry state. |
+| GET / PUT | `/api/v1/cluster/settings` | Node-local transport / compression / reverse-RPC prefs (not in fleet config snapshot). |
+| POST | `/api/v1/cluster/nodes/{node_id}/rpc` | Master → connected sub reverse RPC (`node.status`, `node.diagnostics`, `config.reapply`, `runtime.exec`). |
+
 ### Auth
 
 | Method | Path | Role | Summary |

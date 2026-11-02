@@ -51,3 +51,38 @@ export const updateClusterNode = (
 	body: { display_name: string; hostname: string },
 ): Promise<{ node_id: string; display_name: string | null; hostname: string | null }> =>
 	put(`/cluster/nodes/${encodeURIComponent(nodeId)}`, { body });
+
+export type ClusterTransportMode = 'auto' | 'prefer_quic' | 'h2_only';
+
+export interface ClusterSettings {
+	transport: {
+		mode: ClusterTransportMode;
+		quic_connect_timeout_ms?: number;
+	};
+	compression: { enabled: boolean; level?: number };
+	reverse_rpc: { enabled: boolean };
+	status?: {
+		mode: ClusterTransportMode;
+		active: 'quic' | 'h2' | 'none';
+		fallback_reason?: string | null;
+		protocol_version?: number | null;
+	};
+	restart_required?: boolean;
+}
+
+export type ClusterSettingsUpdate = {
+	transport?: { mode?: ClusterTransportMode };
+	compression?: { enabled?: boolean };
+	reverse_rpc?: { enabled?: boolean };
+};
+
+export const getClusterSettings = (): Promise<ClusterSettings> =>
+	get<ClusterSettings>('/cluster/settings');
+
+export const putClusterSettings = (body: ClusterSettingsUpdate): Promise<ClusterSettings> =>
+	put('/cluster/settings', { body });
+
+export const invokeClusterNodeRpc = (
+	nodeId: string,
+	body: { method: string; params?: unknown },
+): Promise<unknown> => post(`/cluster/nodes/${encodeURIComponent(nodeId)}/rpc`, { body });

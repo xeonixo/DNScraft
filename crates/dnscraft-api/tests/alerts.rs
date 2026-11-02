@@ -307,6 +307,9 @@ async fn cluster_sub_node_problems_come_from_status_handle() {
                 params: None,
             },
         ],
+        protocol_version: None,
+        active_transport: None,
+        fallback_reason: None,
     });
     let state = state.with_cluster_status(handle);
     let (status, body) = get_alerts(state, &viewer).await;
@@ -352,6 +355,9 @@ async fn master_reports_degraded_sync_and_fresh_disconnected_nodes() {
         degraded_nodes: 2,
         last_apply_error: None,
         warnings: Vec::new(),
+        protocol_version: None,
+        active_transport: None,
+        fallback_reason: None,
     });
     let state = state
         .with_cluster_role(dnscraft_cluster::Role::Master)

@@ -119,7 +119,7 @@ shares sockets with public DoH/DoT/DoQ listeners.
 | [`dnscraft-listeners`](crates/dnscraft-listeners/README.md) | Do53 / DoT / DoH / DoQ |
 | [`dnscraft-api`](crates/dnscraft-api/README.md) | REST, auth, query log, stats, MCP/cluster wiring |
 | [`dnscraft-mcp`](crates/dnscraft-mcp/README.md) | MCP protocol + 34 tools, resources, prompts |
-| [`dnscraft-cluster`](crates/dnscraft-cluster/README.md) | Master/sub-node protocol |
+| [`dnscraft-cluster`](crates/dnscraft-cluster/README.md) | Master/sub-node protocol (Prefer-QUIC → HTTP/2, reverse RPC; [ADR-0008](docs/adr/0008-cluster-transport-v2.md)) |
 | [`web/`](web/README.md) | SvelteKit SPA |
 
 Build order and module ids: [`CAPABILITY-MAP.md`](CAPABILITY-MAP.md).

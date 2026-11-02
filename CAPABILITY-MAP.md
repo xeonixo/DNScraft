@@ -17,7 +17,7 @@ Status matches [tasks/progress.md](tasks/progress.md) "Current state".
 | `control-api` | REST API, configuration, query log (filterable by device), statistics, OIDC (Authentik) + local break-glass login, locale-neutral error codes | policy, clients | [SPEC-control-api.md](docs/SPEC-control-api.md) | complete |
 | `web-ui` | TypeScript frontend, fully internationalized, embedded into the binary as static assets (`web-ui` Cargo feature) | control-api | [SPEC-web-ui.md](docs/SPEC-web-ui.md) | SPA screens shipped (dashboard, query log, policy, filtering including blocked services, listeners, cluster, settings, public web access); rust-embed via the `web-ui` feature; release still copies `web/build` → `embed-web-ui/` |
 | `mcp` | MCP v2 for AI assistants: 34 tools, safe resources/prompts, OAuth connectors, classify-before-allow; internal listener only | control-api | [SPEC-mcp.md](docs/SPEC-mcp.md) | complete |
-| `cluster` | Master/sub-nodes: config sync, writes from any node (forwarded to master, offline fallback), keep serving without the master, log/stats aggregation on the master | control-api | [SPEC-cluster.md](docs/SPEC-cluster.md) | complete (wired into the `dnscraft` binary) |
+| `cluster` | Master/sub-nodes: Prefer-QUIC/HTTP/3 with HTTP/2 fallback (ADR-0008), zstd, reverse RPC over sub-initiated sessions, config sync, write relay + offline queue, log/stats aggregation; settings via UI/API | control-api | [SPEC-cluster.md](docs/SPEC-cluster.md), [ADR-0008](docs/adr/0008-cluster-transport-v2.md) | complete v2 transport (wired into the `dnscraft` binary) |
 
 ## Build order
 

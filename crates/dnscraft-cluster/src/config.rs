@@ -15,13 +15,17 @@ use dnscraft_common::config::check_https_url;
 use dnscraft_common::net::is_private;
 
 use crate::error::ClusterError;
+use crate::settings::{
+    CompressionSettings, ReverseRpcSettings, TransportSettings,
+};
+use crate::transport::{DEFAULT_QUIC_CONNECT_TIMEOUT, TransportMode};
 
 /// Default one-time join-token lifetime (15 min).
 pub const DEFAULT_TOKEN_TTL: Duration = Duration::from_secs(15 * 60);
 /// Default issued node-certificate lifetime (90 days).
 pub const DEFAULT_NODE_CERT_TTL: Duration = Duration::from_secs(90 * 24 * 3600);
-/// Default cluster listener port when `[cluster.listen]` omits `port`.
-pub const DEFAULT_CLUSTER_PORT: u16 = 8443;
+/// Default cluster listener port when `[cluster.listen]` omits `port` (v2: 443).
+pub const DEFAULT_CLUSTER_PORT: u16 = 443;
 /// Default heartbeat interval.
 pub const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 /// Default timeout waiting for a master response.
@@ -102,6 +106,120 @@ pub struct ClusterConfig {
     /// Cluster certificate and key paths.
     #[serde(default)]
     pub tls: TlsPaths,
+    /// Prefer-QUIC dial / dual-stack listen policy.
+    #[serde(default)]
+    pub transport: BootstrapTransport,
+    /// zstd compression defaults (overridable via settings API).
+    #[serde(default)]
+    pub compression: BootstrapCompression,
+    /// Reverse RPC / CONNECT defaults.
+    #[serde(default)]
+    pub reverse_rpc: BootstrapReverseRpc,
+}
+
+/// `[cluster.transport]` bootstrap table.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BootstrapTransport {
+    /// `auto` | `prefer_quic` | `h2_only`.
+    #[serde(default)]
+    pub mode: TransportMode,
+    /// QUIC connect budget before HTTP/2 fallback.
+    #[serde(
+        default = "default_quic_connect_timeout",
+        deserialize_with = "de_duration"
+    )]
+    pub quic_connect_timeout: Duration,
+}
+
+impl Default for BootstrapTransport {
+    fn default() -> Self {
+        Self {
+            mode: TransportMode::Auto,
+            quic_connect_timeout: DEFAULT_QUIC_CONNECT_TIMEOUT,
+        }
+    }
+}
+
+impl BootstrapTransport {
+    /// Converts to the settings/API shape.
+    pub fn to_settings(&self) -> TransportSettings {
+        TransportSettings {
+            mode: self.mode,
+            quic_connect_timeout_ms: self.quic_connect_timeout.as_millis() as u64,
+        }
+    }
+}
+
+fn default_quic_connect_timeout() -> Duration {
+    DEFAULT_QUIC_CONNECT_TIMEOUT
+}
+
+/// `[cluster.compression]` bootstrap table.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BootstrapCompression {
+    /// Advertise/use zstd when the peer supports it.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Level 1–3.
+    #[serde(default = "default_compression_level")]
+    pub level: i32,
+}
+
+impl Default for BootstrapCompression {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            level: 3,
+        }
+    }
+}
+
+impl BootstrapCompression {
+    /// Converts to the settings/API shape.
+    pub fn to_settings(&self) -> CompressionSettings {
+        CompressionSettings {
+            enabled: self.enabled,
+            level: self.level.clamp(1, 3),
+        }
+    }
+}
+
+fn default_compression_level() -> i32 {
+    3
+}
+
+/// `[cluster.reverse_rpc]` bootstrap table.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BootstrapReverseRpc {
+    /// Enable typed reverse RPCs.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Enable loopback CONNECT (off by default).
+    #[serde(default)]
+    pub connect_enabled: bool,
+}
+
+impl Default for BootstrapReverseRpc {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            connect_enabled: false,
+        }
+    }
+}
+
+impl BootstrapReverseRpc {
+    /// Converts to the settings/API shape (default method/path allowlists).
+    pub fn to_settings(&self) -> ReverseRpcSettings {
+        ReverseRpcSettings {
+            enabled: self.enabled,
+            connect_enabled: self.connect_enabled,
+            ..ReverseRpcSettings::default()
+        }
+    }
 }
 
 impl ClusterConfig {
@@ -587,7 +705,7 @@ bind = "10.0.0.5"
     const SUB_NODE: &str = r#"
 role = "sub_node"
 node_id = "node-a"
-master_url = "https://master.example.com:8443"
+master_url = "https://master.example.com:443"
 "#;
 
     #[test]
@@ -618,7 +736,7 @@ bind = "127.0.0.1"
         let err = parse(
             r#"
 role = "standalone"
-master_url = "https://master.example.com:8443"
+master_url = "https://master.example.com:443"
 "#,
         )
         .unwrap_err();
@@ -639,7 +757,7 @@ node_id = "node-a"
         let err = parse(
             r#"
 role = "sub_node"
-master_url = "https://master.example.com:8443"
+master_url = "https://master.example.com:443"
 "#,
         )
         .unwrap_err();
@@ -652,7 +770,7 @@ master_url = "https://master.example.com:8443"
             r#"
 role = "sub_node"
 node_id = "node-a"
-master_url = "https://master.example.com:8443"
+master_url = "https://master.example.com:443"
 
 [cluster.listen]
 bind = "127.0.0.1"
@@ -688,7 +806,7 @@ bind = "127.0.0.1"
             r#"
 role = "master"
 node_id = "node-a"
-master_url = "https://master.example.com:8443"
+master_url = "https://master.example.com:443"
 
 [cluster.listen]
 bind = "127.0.0.1"
@@ -733,7 +851,7 @@ bind = "127.0.0.1"
             r#"
 role = "sub_node"
 node_id = "node-a"
-master_url = "http://master.example.com:8443"
+master_url = "http://master.example.com:443"
 "#,
         )
         .unwrap_err();
@@ -781,7 +899,7 @@ master_url = "http://master.example.com:8443"
         assert_eq!(config.log.max_inflight_batches, 4);
         assert_eq!(config.quota.max_log_bytes_per_second, 2 * 1024 * 1024);
         assert_eq!(config.quota.clock_skew_warning, Duration::from_secs(300));
-        assert_eq!(config.listen.unwrap().port, 8443);
+        assert_eq!(config.listen.unwrap().port, 443);
     }
 
     #[test]

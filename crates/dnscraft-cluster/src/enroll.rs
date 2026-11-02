@@ -23,8 +23,15 @@ use crate::config::validate_node_id;
 use crate::error::ClusterError;
 use crate::store::ClusterStore;
 
-/// Cluster enroll protocol version.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Highest cluster protocol version this build speaks (v2: QUIC prefer, zstd, reverse RPC).
+pub const PROTOCOL_VERSION: u32 = 2;
+/// Oldest protocol version the master still accepts (v1 HTTP/2 peers).
+pub const PROTOCOL_VERSION_MIN: u32 = 1;
+
+/// Returns true when `version` is in [`PROTOCOL_VERSION_MIN`]..=[`PROTOCOL_VERSION`].
+pub fn protocol_supported(version: u32) -> bool {
+    (PROTOCOL_VERSION_MIN..=PROTOCOL_VERSION).contains(&version)
+}
 
 /// A sub-node's enrollment request (`POST /cluster/v1/enroll` body).
 ///
@@ -56,7 +63,7 @@ impl EnrollRequest {
 
     /// Rejects a request from an incompatible cluster protocol version.
     pub fn check_protocol(&self) -> Result<(), ClusterError> {
-        if self.protocol == PROTOCOL_VERSION {
+        if protocol_supported(self.protocol) {
             Ok(())
         } else {
             Err(ClusterError::ProtocolVersion)
@@ -150,7 +157,7 @@ impl RenewRequest {
 
     /// Rejects a request from an incompatible cluster protocol version.
     pub fn check_protocol(&self) -> Result<(), ClusterError> {
-        if self.protocol == PROTOCOL_VERSION {
+        if protocol_supported(self.protocol) {
             Ok(())
         } else {
             Err(ClusterError::ProtocolVersion)

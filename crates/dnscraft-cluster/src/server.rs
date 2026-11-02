@@ -1,7 +1,9 @@
 //! Master-side mTLS listener for the cluster control plane.
 //!
 //! A second internal listener (separate from control-api) serves
-//! `/cluster/v1/*` over TLS 1.3 + HTTP/2. Every presented client certificate
+//! `/cluster/v1/*` over TLS 1.3 + HTTP/2, with the same routes on UDP + QUIC
+//! (HTTP/3, ALPN `h3`) when the listener binds successfully. Every presented
+//! client certificate
 //! must chain to the dedicated cluster CA; after the handshake the leaf's
 //! `node_id` SAN and SHA-256 fingerprint are checked against the durable node
 //! registry before any protected route runs. `node_id` is therefore always the
@@ -57,6 +59,7 @@ use crate::error::ClusterError;
 use crate::log::{LogAck, LogBatch, LogIngest};
 use crate::quota::QuotaLimiter;
 use crate::relay::{RuntimeCommand, WriteExecutor, WriteRelay};
+use crate::rpc::{RpcPending, RpcRequest, RpcResponse, SharedRpcPending, wait_rpc};
 use crate::store::ClusterStore;
 use crate::sync::{
     AuthSnapshotPush, CAP_CLOUDFLARE_TOKEN, CAP_TLS_CERTIFICATE, ClientsDirectoryPush, ConfigAck,
@@ -71,15 +74,15 @@ const NDJSON: &str = "application/x-ndjson";
 /// Concurrent cluster connections (handshaking, idle or streaming) the master
 /// accepts. One sub-node holds about one stream plus short uploads, so this is
 /// far above a fleet's size. Per-node caps are in [`MAX_CONNECTIONS_PER_NODE`].
-const MAX_CONNECTIONS: usize = 128;
+pub(crate) const MAX_CONNECTIONS: usize = 128;
 
 /// Concurrent connections one authenticated node may hold: its downstream
 /// stream plus a few short uploads (heartbeat, ack, logs, relay). Connections
 /// beyond it are dropped after the handshake.
-const MAX_CONNECTIONS_PER_NODE: usize = 8;
+pub(crate) const MAX_CONNECTIONS_PER_NODE: usize = 8;
 
 /// Time allowed for the mTLS handshake, so a silent peer cannot hold a slot.
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Master hook that signs a sub-node's TLS certificate request.
 ///
@@ -106,7 +109,7 @@ pub struct TlsCsrRequest {
 impl TlsCsrRequest {
     /// Rejects a request from an incompatible cluster protocol version.
     pub fn check_protocol(&self) -> Result<(), ClusterError> {
-        if self.protocol == PROTOCOL_VERSION {
+        if crate::enroll::protocol_supported(self.protocol) {
             Ok(())
         } else {
             Err(ClusterError::ProtocolVersion)
@@ -220,6 +223,7 @@ pub struct HeartbeatResponse {
 pub struct ClusterBroadcast {
     config_sync: Arc<ConfigSync>,
     clock: Arc<dyn Clock>,
+    rpc_pending: SharedRpcPending,
 }
 
 impl ClusterBroadcast {
@@ -288,6 +292,40 @@ impl ClusterBroadcast {
             .collect()
     }
 
+    /// Invokes a reverse RPC on a connected protocol-v2 node and waits for the reply.
+    pub async fn invoke_rpc(
+        &self,
+        node_id: &str,
+        method: &str,
+        params: serde_json::Value,
+        timeout: Duration,
+    ) -> Result<RpcResponse, ClusterError> {
+        let request_id = format!(
+            "rpc-{}-{}",
+            self.clock
+                .now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+            node_id
+        );
+        let request = RpcRequest {
+            request_id: request_id.clone(),
+            method: method.to_owned(),
+            params,
+            timeout_ms: Some(timeout.as_millis() as u64),
+        };
+        let rx = self.rpc_pending.register(request_id.clone());
+        self.config_sync
+            .send_to(node_id, StreamRecord::RpcRequest(request));
+        wait_rpc(&self.rpc_pending, &request_id, rx, timeout).await
+    }
+
+    /// Shared pending-RPC registry (also used by `/cluster/v1/rpc-reply`).
+    pub fn rpc_pending(&self) -> SharedRpcPending {
+        Arc::clone(&self.rpc_pending)
+    }
+
     /// Pushes a UniFi API key to the profile's `sync_owner` only.
     pub fn push_unifi_secret(&self, node_id: &str, profile_id: &str, api_key: Option<&str>) {
         self.config_sync.send_to(
@@ -346,6 +384,9 @@ pub struct ClusterServer {
     tls_source: Arc<OnceLock<Arc<dyn TlsCertificateSource>>>,
     shutdown: watch::Sender<bool>,
     handle: Option<tokio::task::JoinHandle<()>>,
+    quic_endpoint: Option<quinn::Endpoint>,
+    quic_handle: Option<tokio::task::JoinHandle<()>>,
+    rpc_pending: SharedRpcPending,
 }
 
 impl ClusterServer {
@@ -405,6 +446,7 @@ impl ClusterServer {
             Arc::new(OnceLock::new());
         let tls_source: Arc<OnceLock<Arc<dyn TlsCertificateSource>>> = Arc::new(OnceLock::new());
 
+        let rpc_pending: SharedRpcPending = Arc::new(RpcPending::new());
         let state = Arc::new(ServerState {
             ca,
             store,
@@ -419,11 +461,37 @@ impl ClusterServer {
             write_executor,
             log_ingest,
             auth_snapshot,
+            rpc_pending: Arc::clone(&rpc_pending),
         });
         let router = router(Arc::clone(&state));
 
         let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
         let node_slots: NodeSlots = Arc::new(Mutex::new(HashMap::new()));
+        let quic_tls = crate::quic::quic_server_tls_config(
+            state.ca.cert_pem(),
+            &server_cert_pem,
+            &server_key_pem,
+        )?;
+        let mut quic_endpoint = None;
+        let mut quic_handle = None;
+        match crate::quic::bind_quic_endpoint(addr, quic_tls).await {
+            Ok(endpoint) => {
+                let loop_params = crate::quic::QuicAcceptLoop {
+                    endpoint: endpoint.clone(),
+                    router: cluster_router(Arc::clone(&state)),
+                    slots: Arc::clone(&slots),
+                    node_slots: Arc::clone(&node_slots),
+                    shutdown: shutdown_rx.clone(),
+                };
+                quic_handle = Some(tokio::spawn(async move {
+                    crate::quic::run_quic_accept_loop(loop_params).await;
+                }));
+                quic_endpoint = Some(endpoint);
+            }
+            Err(ClusterError::TransportQuic { .. }) => {}
+            Err(error) => return Err(error),
+        }
+
         let handle = tokio::spawn(async move {
             loop {
                 // Take a slot before accepting: connections beyond the cap wait
@@ -508,6 +576,9 @@ impl ClusterServer {
             tls_source,
             shutdown,
             handle: Some(handle),
+            quic_endpoint,
+            quic_handle,
+            rpc_pending,
         })
     }
 
@@ -553,6 +624,7 @@ impl ClusterServer {
         ClusterBroadcast {
             config_sync: Arc::clone(&self.config_sync),
             clock: Arc::clone(&self.clock),
+            rpc_pending: Arc::clone(&self.rpc_pending),
         }
     }
 
@@ -607,6 +679,12 @@ impl ClusterServer {
     /// signals shutdown.
     pub async fn shutdown(mut self) {
         let _ = self.shutdown.send(true);
+        if let Some(endpoint) = self.quic_endpoint.take() {
+            endpoint.close(quinn::VarInt::from_u32(0), b"shutdown");
+        }
+        if let Some(handle) = self.quic_handle.take() {
+            let _ = handle.await;
+        }
         if let Some(handle) = self.handle.take() {
             let _ = handle.await;
         }
@@ -634,17 +712,18 @@ struct ServerState {
     write_executor: Arc<dyn WriteExecutor>,
     log_ingest: Arc<dyn LogIngest>,
     auth_snapshot: Option<Arc<dyn AuthSnapshotSource>>,
+    rpc_pending: SharedRpcPending,
 }
 
 /// Authenticated peer identity extracted from the client certificate chain.
 #[derive(Clone, Debug)]
-struct PeerIdentity {
+pub(crate) struct PeerIdentity {
     fingerprint: String,
-    node_id: Option<String>,
+    pub(crate) node_id: Option<String>,
 }
 
 impl PeerIdentity {
-    fn from_der(der: &[u8]) -> Self {
+    pub(crate) fn from_der(der: &[u8]) -> Self {
         Self {
             fingerprint: cert_fingerprint(der),
             node_id: node_id_from_der(der),
@@ -653,17 +732,17 @@ impl PeerIdentity {
 }
 
 /// Connections currently open per authenticated `node_id`.
-type NodeSlots = Arc<Mutex<HashMap<String, usize>>>;
+pub(crate) type NodeSlots = Arc<Mutex<HashMap<String, usize>>>;
 
 /// One of a node's connection slots, released when the connection ends.
-struct NodeSlot {
+pub(crate) struct NodeSlot {
     slots: NodeSlots,
     node_id: String,
 }
 
 impl NodeSlot {
     /// Takes a slot for `node_id`, or `None` when it is at its cap.
-    fn acquire(slots: &NodeSlots, node_id: String) -> Option<Self> {
+    pub(crate) fn acquire(slots: &NodeSlots, node_id: String) -> Option<Self> {
         let mut map = slots.lock().unwrap_or_else(PoisonError::into_inner);
         let count = map.entry(node_id.clone()).or_insert(0);
         if *count >= MAX_CONNECTIONS_PER_NODE {
@@ -695,7 +774,15 @@ struct AuthenticatedNode(String);
 
 /// TCP peer address of the current cluster connection (from `TcpListener::accept`).
 #[derive(Clone, Copy, Debug)]
-struct PeerSocketAddr(SocketAddr);
+pub(crate) struct PeerSocketAddr(pub SocketAddr);
+
+/// Cluster axum router (TCP/HTTP/2 and QUIC/HTTP/3).
+pub(crate) type ClusterRouter = Router;
+
+#[allow(private_interfaces)]
+pub(crate) fn cluster_router(state: Arc<ServerState>) -> ClusterRouter {
+    router(state)
+}
 
 fn router(state: Arc<ServerState>) -> Router {
     let protected = Router::new()
@@ -707,6 +794,7 @@ fn router(state: Arc<ServerState>) -> Router {
         .route("/cluster/v1/renew", post(renew))
         .route("/cluster/v1/tls/certificate", post(tls_certificate))
         .route("/cluster/v1/clients-directory", post(clients_directory))
+        .route("/cluster/v1/rpc-reply", post(rpc_reply))
         .route_layer(middleware::from_fn_with_state(
             Arc::clone(&state),
             authenticate,
@@ -798,7 +886,7 @@ async fn heartbeat(
     peer_addr: Option<Extension<PeerSocketAddr>>,
     Json(request): Json<HeartbeatRequest>,
 ) -> Response {
-    if request.protocol != PROTOCOL_VERSION {
+    if !crate::enroll::protocol_supported(request.protocol) {
         return error_response(&ClusterError::ProtocolVersion);
     }
     if !state.quotas.allow_heartbeat(&auth.0, state.clock.now()) {
@@ -920,7 +1008,7 @@ async fn stream(
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.parse::<u32>().ok())
     });
-    if peer_protocol.is_some_and(|version| version != PROTOCOL_VERSION) {
+    if peer_protocol.is_some_and(|version| !crate::enroll::protocol_supported(version)) {
         return error_record(&ClusterError::ProtocolVersion);
     }
 
@@ -1094,6 +1182,21 @@ async fn config_ack(
     {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(error) => error_response(&error),
+    }
+}
+
+/// `POST /cluster/v1/rpc-reply` — completes a reverse RPC waiter on the master.
+async fn rpc_reply(
+    State(state): State<Arc<ServerState>>,
+    Extension(_auth): Extension<AuthenticatedNode>,
+    Json(response): Json<RpcResponse>,
+) -> Response {
+    if state.rpc_pending.complete(response) {
+        Json(json!({ "ok": true })).into_response()
+    } else {
+        error_response(&ClusterError::RpcUnavailable {
+            reason: "no waiter for request_id".to_owned(),
+        })
     }
 }
 

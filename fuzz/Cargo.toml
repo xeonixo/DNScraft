@@ -98,6 +98,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "cluster_settings"
+path = "fuzz_targets/cluster_settings.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cluster_zstd"
+path = "fuzz_targets/cluster_zstd.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "control_api_config"
 path = "fuzz_targets/control_api_config.rs"
 test = false

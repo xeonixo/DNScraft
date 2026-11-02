@@ -1,45 +1,15 @@
 //! Cluster identity and transport for DNScraft.
 //!
 //! A DNScraft cluster is one `master` plus zero or more `sub_node`s, connected
-//! hub-and-spoke with mutual TLS under a dedicated cluster CA. This crate owns:
-//!
-//! - [`ClusterConfig`] — node-local `[cluster]` bootstrap configuration and
-//!   role-consistency validation ([`Role`]).
-//! - [`ClusterError`] — stable `cluster.<area>.<reason>` error codes.
-//! - [`ClusterCa`] — the master's dedicated cluster CA (key mode `0600`).
-//! - [`ClusterStore`] — the durable master registry for nodes and one-time
-//!   join tokens (SQLite in the data directory).
-//! - [`enroll`] / [`EnrollRequest`] / [`EnrollResponse`] — the in-process
-//!   master-side enrollment protocol and its wire shape.
-//! - [`PendingNodeIdentity`] / [`NodeIdentity`] — sub-node key + CSR
-//!   generation and durable certificate/key storage.
-//! - [`ClusterServer`] — the master's separate mTLS HTTP/2 listener with
-//!   enroll, stream and heartbeat routes.
-//! - [`ClusterClient`] — the sub-node's outbound mTLS client (the master never
-//!   dials a sub-node).
-//! - [`StreamRecord`] / [`Hello`] / [`ConfigPush`] / [`ConfigAck`] — the NDJSON
-//!   stream records, plus [`ConfigApplier`] and [`ConfigSync`] for full-snapshot
-//!   configuration push, digest verification, acknowledgement, lag, and retry.
-//! - [`TlsRenewed`] / [`CertInstaller`] and [`AuthSnapshotPush`] /
-//!   [`AuthSnapshotApplier`] — master pushes for TLS certificate hot-reload and
-//!   encrypted auth-state replication.
-//! - [`WriteRelay`] / [`WriteExecutor`] / [`RelayResponse`] — live write relay
-//!   from a sub-node to the master (the caller re-checks RBAC and executes the
-//!   canonical handler).
-//! - [`OfflineWriteQueue`] — the durable FIFO of keyed config writes buffered
-//!   while the master is unreachable, with replay conflict/expiry semantics.
-//! - [`RuntimeCommand`] / [`RuntimeCommandApplier`] — volatile runtime-command
-//!   broadcast to every connected node (never persisted or queued).
-//! - [`LogOutbox`] / [`LogIngest`] — caller-supplied query-log hooks;
-//!   [`LogStreamer`] batches contiguous unacked rows into a [`LogBatch`] and
-//!   [`ClusterServer`] acknowledges the highest contiguous [`LogAck`]. Records
-//!   are opaque, and [`Backfill`] resumes after an outage with `cluster.log_gap`
-//!   when the local buffer overran.
+//! hub-and-spoke with mutual TLS under a dedicated cluster CA. Protocol v2
+//! prefers QUIC/HTTP/3 with HTTP/2 fallback, optional zstd compression, and a
+//! reverse control channel over the sub-initiated session (ADR-0008).
 
 #![deny(missing_docs)]
 
 mod ca;
 mod client;
+mod compress;
 mod config;
 mod enroll;
 mod error;
@@ -47,18 +17,28 @@ mod identity;
 mod log;
 mod offline;
 mod quota;
+mod quic;
 mod relay;
+mod rpc;
 mod server;
+mod settings;
 mod store;
 mod sync;
+mod transport;
 
 pub use ca::{ClusterCa, cert_fingerprint};
 pub use client::{ClusterClient, ClusterStream};
-pub use config::{
-    ClusterConfig, JoinConfig, ListenConfig, LogConfig, OfflineWritesConfig, QuotaConfig, Role,
-    TimingConfig, TlsPaths,
+pub use compress::{
+    CAP_COMPRESS_ZSTD, DEFAULT_LEVEL as ZSTD_DEFAULT_LEVEL, ZstdEnvelope, wants_zstd,
 };
-pub use enroll::{EnrollRequest, EnrollResponse, PROTOCOL_VERSION, RenewRequest, enroll};
+pub use config::{
+    BootstrapCompression, BootstrapReverseRpc, BootstrapTransport, ClusterConfig, JoinConfig,
+    ListenConfig, LogConfig, OfflineWritesConfig, QuotaConfig, Role, TimingConfig, TlsPaths,
+};
+pub use enroll::{
+    EnrollRequest, EnrollResponse, PROTOCOL_VERSION, PROTOCOL_VERSION_MIN, RenewRequest, enroll,
+    protocol_supported,
+};
 pub use error::ClusterError;
 pub use identity::{NodeIdentity, PendingNodeIdentity};
 pub use log::{
@@ -71,10 +51,22 @@ pub use offline::{
 pub use relay::{
     RelayResponse, RelayedActor, RuntimeCommand, RuntimeCommandApplier, WriteExecutor, WriteRelay,
 };
+pub use rpc::{
+    CAP_REVERSE_CONNECT, CAP_REVERSE_RPC, DEFAULT_CONNECT_PATH_PREFIXES, DEFAULT_RPC_METHODS,
+    RPC_CONFIG_REAPPLY, RPC_NODE_DIAGNOSTICS, RPC_NODE_STATUS, RPC_RUNTIME_EXEC, RpcErrorBody,
+    RpcPending, RpcRequest, RpcResponse, SharedRpcPending, connect_host_is_loopback,
+    connect_path_allowed, ensure_connect_request, ensure_method, method_allowed, wait_rpc,
+    wants_reverse_connect, wants_reverse_rpc,
+};
 pub use server::{
     AuthSnapshotSource, CloudflareTokenSource, ClusterBroadcast, ClusterServer,
     ClusterServerConfig, HeartbeatRequest, HeartbeatResponse, StatusWarning, TlsCertificateSource,
     TlsCsrRequest, TlsCsrResponse, TlsCsrSigner,
+};
+pub use settings::{
+    ClusterSettings, ClusterSettingsUpdate, CompressionSettings, CompressionSettingsUpdate,
+    ListenOverride, ReverseRpcSettings, ReverseRpcSettingsUpdate, TransportSettings,
+    TransportSettingsUpdate,
 };
 pub use store::{ClusterNode, ClusterStore, MintedJoinToken};
 pub use sync::{
@@ -82,6 +74,9 @@ pub use sync::{
     CertInstaller, ClientsDirectoryPush, CloudflareTokenPush, ConfigAck, ConfigApplier, ConfigPush,
     ConfigSync, Hello, NodeLag, SecretPush, StreamError, StreamRecord, TlsCertificatePush,
     TlsRenewed, canonical_snapshot_bytes, snapshot_digest,
+};
+pub use transport::{
+    ActiveTransport, DEFAULT_QUIC_CONNECT_TIMEOUT, FallbackReason, TransportMode, TransportStatus,
 };
 
 /// Lowercase hex SHA-256 of `bytes` (used for fingerprints and token hashes).

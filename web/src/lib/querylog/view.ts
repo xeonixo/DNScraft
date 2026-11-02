@@ -89,6 +89,30 @@ export function trackerForName(record: QueryRecord, name: string): TrackerLabel 
 	return null;
 }
 
+const KIND_ORDER: Record<TrackerKind, number> = { tracking: 0, functional: 1, unclear: 2 };
+
+/**
+ * Unique tracker labels for a list row: the queried name plus every labeled CNAME hop.
+ * Deduped by name; tracking kinds first, then functional, then unclear (chain order within a kind).
+ */
+export function trackersOf(record: QueryRecord): TrackerLabel[] {
+	const seen = new Set<string>();
+	const out: TrackerLabel[] = [];
+	const push = (label: TrackerLabel | null | undefined) => {
+		if (!label || seen.has(label.name)) return;
+		seen.add(label.name);
+		out.push(label);
+	};
+	push(trackerOf(record.tracker));
+	for (const step of record.steps) {
+		if (step.stage !== 'cname_chain') continue;
+		for (const hop of cnameChainOf(step).hops) push(hop.tracker);
+	}
+	return out.sort(
+		(a, b) => KIND_ORDER[trackerKind(a.category)] - KIND_ORDER[trackerKind(b.category)],
+	);
+}
+
 /** Translated provenance of the rule that decided a query (stable identifier when unknown). */
 export function provenanceLabel(reason: string): string {
 	switch (reason) {

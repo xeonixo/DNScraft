@@ -9,6 +9,7 @@ import {
 	trackerCategoryLabel,
 	trackerForName,
 	trackerKind,
+	trackersOf,
 	verdictLabel,
 	verdictStyle,
 } from './view';
@@ -134,5 +135,90 @@ describe('trackerForName', () => {
 		expect(trackerForName(record, 'a.example')?.name).toBe('Own');
 		expect(trackerForName(record, 'b.example')?.name).toBe('Hop');
 		expect(trackerForName(record, 'c.example')).toBeNull();
+	});
+});
+
+describe('trackersOf', () => {
+	it('returns only the queried-name label when there is no chain', () => {
+		const record = {
+			query: { name: 'ads.example', type: 'A', class: 'IN' },
+			tracker: { name: 'Ads', category: 'advertising' },
+			steps: [],
+		} as unknown as QueryRecord;
+		expect(trackersOf(record).map((t) => t.name)).toEqual(['Ads']);
+	});
+
+	it('surfaces a hop label when the queried name is unlabeled (CDN chain)', () => {
+		const record = {
+			query: { name: 'downloads.cursor.com', type: 'AAAA', class: 'IN' },
+			steps: [
+				{
+					stage: 'cname_chain',
+					verdict: 'resolved',
+					hops: [
+						{ name: 'downloads.cursor.com', verdict: 'pass' },
+						{
+							name: 'downloads.cursor.com.cdn.cloudflare.net',
+							verdict: 'pass',
+							tracker: { name: 'CloudFlare', category: 'cdn' },
+						},
+					],
+				},
+			],
+		} as unknown as QueryRecord;
+		expect(trackersOf(record)).toEqual([{ name: 'CloudFlare', category: 'cdn' }]);
+	});
+
+	it('dedupes when the first hop repeats the queried-name tracker', () => {
+		const record = {
+			query: { name: 'a.example', type: 'A', class: 'IN' },
+			tracker: { name: 'Own', category: 'cdn' },
+			steps: [
+				{
+					stage: 'cname_chain',
+					verdict: 'resolved',
+					hops: [
+						{
+							name: 'a.example',
+							verdict: 'pass',
+							tracker: { name: 'Own', category: 'cdn' },
+						},
+						{
+							name: 'b.example',
+							verdict: 'pass',
+							tracker: { name: 'Hop', category: 'advertising' },
+						},
+					],
+				},
+			],
+		} as unknown as QueryRecord;
+		expect(trackersOf(record).map((t) => t.name)).toEqual(['Hop', 'Own']);
+	});
+
+	it('orders tracking before functional before unclear', () => {
+		const record = {
+			query: { name: 'a.example', type: 'A', class: 'IN' },
+			tracker: { name: 'Misc', category: 'misc' },
+			steps: [
+				{
+					stage: 'cname_chain',
+					verdict: 'resolved',
+					hops: [
+						{ name: 'a.example', verdict: 'pass' },
+						{
+							name: 'cdn.example',
+							verdict: 'pass',
+							tracker: { name: 'CDN', category: 'cdn' },
+						},
+						{
+							name: 'ads.example',
+							verdict: 'pass',
+							tracker: { name: 'Ads', category: 'advertising' },
+						},
+					],
+				},
+			],
+		} as unknown as QueryRecord;
+		expect(trackersOf(record).map((t) => t.name)).toEqual(['Ads', 'CDN', 'Misc']);
 	});
 });

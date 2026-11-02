@@ -4,12 +4,13 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import StatusMark from './StatusMark.svelte';
 	import Value from './Value.svelte';
-	import { answersOf, trackerOf, type QueryRecord } from '$lib/api/query-log';
+	import { answersOf, type QueryRecord } from '$lib/api/query-log';
 	import { unicodeName } from './domain-display';
 	import { displayText, neutralize } from '$lib/safe-text';
 	import { formatDateTime, formatMilliseconds, formatTime } from '$lib/format';
 	import { getLocale } from '$lib/i18n/locale';
-	import { answerSummary, microsToMilliseconds, statusOf, statusStyle } from './view';
+	import TrackerBadge from './TrackerBadge.svelte';
+	import { answerSummary, microsToMilliseconds, statusOf, statusStyle, trackersOf } from './view';
 	import { nodeLabel } from '$lib/cluster/nodes';
 	import { m } from '$lib/paraglide/messages';
 
@@ -30,7 +31,7 @@
 		{@const style = statusStyle(statusOf(record))}
 		{@const unicode = unicodeName(record.query.name)}
 		{@const answers = technical ? answerSummary(answersOf(record)) : ''}
-		{@const tracker = trackerOf(record.tracker)}
+		{@const trackers = trackersOf(record)}
 		{@const client = displayText(
 			record.client?.display_name ?? record.client_id ?? record.source_ip,
 			32,
@@ -49,9 +50,9 @@
 								locale,
 							)}{/if}</span
 					>
-					{#if tracker}
-						<span class="tracker">{displayText(tracker.name, 24).text}</span>
-					{/if}
+					{#each trackers as tracker (tracker.name)}
+						<TrackerBadge {tracker} />
+					{/each}
 					{#if answers !== ''}
 						<span class="answers mono">{displayText(answers, 48).text}</span>
 					{/if}
@@ -118,11 +119,6 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		max-width: 12rem;
-	}
-
-	.tracker {
-		font-weight: 600;
-		color: var(--label);
 	}
 
 	.answers {

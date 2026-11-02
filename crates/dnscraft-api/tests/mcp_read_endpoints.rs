@@ -21,11 +21,11 @@ use dnscraft_api::{
     SessionStore, TokenStore,
 };
 use dnscraft_filtering::{
-    BlockMode, FilterConfig, FilterEngine, FilterSetConfig, EmptyBodies, ListBodies,
+    BlockMode, EmptyBodies, FilterConfig, FilterEngine, FilterSetConfig, ListBodies,
     ManualClock as FilterClock, SetId, SnapshotBuilder,
 };
 use dnscraft_policy::{
-    NoClients, PolicyConfig, PolicyEngine, ProfileConfig, ProfileId, ViewConfig, ViewId,
+    NoClients, NodeId, PolicyConfig, PolicyEngine, ProfileConfig, ProfileId, ViewConfig, ViewId,
     ViewRecordConfig,
 };
 use dnscraft_proto::{Name, RData};
@@ -348,6 +348,137 @@ async fn explain_block_resolves_a_profile_to_its_configured_filter_set() {
         response["error"]["code"],
         "policy.config.unknown_filter_set"
     );
+}
+
+#[tokio::test]
+async fn policy_test_query_rejects_invalid_client_id() {
+    let h = harness().await;
+    let (status, response) = send(
+        &h.state,
+        "POST",
+        "/api/v1/policy/test-query",
+        Some(&h.admin),
+        Some(json!({
+            "domain": "local.example.com",
+            "qtype": "A",
+            "source_ip": "192.0.2.10",
+            "protocol": "udp53",
+            "client_id": "iPhone"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{response}");
+    assert_eq!(response["error"]["code"], "mcp.invalid_input");
+}
+
+#[tokio::test]
+async fn policy_test_query_selects_node_restricted_view_for_source_ip() {
+    let filter = filter_engine();
+    let policy = Arc::new(
+        PolicyEngine::new(
+            PolicyConfig {
+                views: vec![
+                    ViewConfig {
+                        id: ViewId::new("lan").unwrap(),
+                        is_default: false,
+                        subnets: vec!["192.0.2.0/24".parse().unwrap()],
+                        nodes: vec![NodeId::new("node-1").unwrap()],
+                        profile: ProfileId::new("default").unwrap(),
+                    },
+                    view(),
+                ],
+                profiles: vec![profile()],
+                records: vec![local_record()],
+                ..PolicyConfig::default()
+            },
+            Arc::clone(&filter),
+            Arc::new(Resolver::new(ResolverConfig::default()).await.unwrap()),
+            Arc::new(NoClients),
+            Arc::new(FilterClock::new(
+                SystemTime::UNIX_EPOCH + Duration::from_secs(NOW),
+            )),
+        )
+        .unwrap(),
+    );
+    let db = Db::open_in_memory(Arc::new(ManualClock::new(
+        SystemTime::UNIX_EPOCH + Duration::from_secs(NOW),
+    )))
+    .await
+    .unwrap();
+    let tokens = TokenStore::new(db.clone(), MAX_TTL);
+    let admin = tokens
+        .create(
+            "admin-node".to_owned(),
+            "admin".to_owned(),
+            Scope::Admin,
+            None,
+        )
+        .await
+        .unwrap();
+    let admin = admin.plaintext().expose().to_owned();
+    let auth = AuthState::new(
+        SessionStore::new(db.clone(), IDLE, ABSOLUTE),
+        TokenStore::new(db.clone(), MAX_TTL),
+    );
+    let service = Arc::new(ConfigService::new(
+        ConfigStore::new(db),
+        Audit::new(
+            Db::open_in_memory(Arc::new(ManualClock::new(
+                SystemTime::UNIX_EPOCH + Duration::from_secs(NOW),
+            )))
+            .await
+            .unwrap(),
+        ),
+        ModuleAppliers::default(),
+        "node-1",
+    ));
+
+    let matched = AppState::new()
+        .with_auth(auth.clone())
+        .with_config_service(Arc::clone(&service))
+        .with_filter_engine(Arc::clone(&filter))
+        .with_policy_engine(Arc::clone(&policy))
+        .with_node_id("node-1");
+    let (status, response) = send(
+        &matched,
+        "POST",
+        "/api/v1/policy/test-query",
+        Some(&admin),
+        Some(json!({
+            "domain": "local.example.com",
+            "qtype": "A",
+            "source_ip": "192.0.2.10",
+            "protocol": "udp53"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["data"]["view_id"], "lan");
+    assert_eq!(response["data"]["selection"]["cause"], "subnet");
+    assert_eq!(response["data"]["selection"]["prefix"], "192.0.2.0/24");
+
+    // Default AppState node_id is "local": the node-restricted LAN view is absent.
+    let missed = AppState::new()
+        .with_auth(auth)
+        .with_config_service(service)
+        .with_filter_engine(filter)
+        .with_policy_engine(policy);
+    let (status, response) = send(
+        &missed,
+        "POST",
+        "/api/v1/policy/test-query",
+        Some(&admin),
+        Some(json!({
+            "domain": "local.example.com",
+            "qtype": "A",
+            "source_ip": "192.0.2.10",
+            "protocol": "udp53"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["data"]["view_id"], "default");
+    assert_eq!(response["data"]["selection"]["cause"], "default");
 }
 
 #[tokio::test]

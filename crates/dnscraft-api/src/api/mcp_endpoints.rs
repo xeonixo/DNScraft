@@ -116,7 +116,7 @@ pub(crate) async fn test_query(
         source_ip: Some(body.source_ip),
         protocol: body.protocol,
     };
-    let (_, record) = mcp_backend::run_test_query(policy, &params).await?;
+    let (_, record) = mcp_backend::run_test_query(policy, &params, Some(state.node_id())).await?;
     Ok(success(record))
 }
 

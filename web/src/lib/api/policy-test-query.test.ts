@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseTestQueryRecords } from './policy';
+import { isValidClientId, parseTestQueryRecords, parseTestQuerySelection } from './policy';
 
 describe('parseTestQueryRecords', () => {
 	it('reads control-api records with qtype/data', () => {
@@ -24,5 +24,29 @@ describe('parseTestQueryRecords', () => {
 
 	it('skips empty junk', () => {
 		expect(parseTestQueryRecords([null, {}, 'x'])).toEqual([]);
+	});
+});
+
+describe('parseTestQuerySelection', () => {
+	it('reads subnet and default causes', () => {
+		expect(parseTestQuerySelection({ cause: 'subnet', prefix: '192.0.2.0/24' })).toEqual({
+			cause: 'subnet',
+			prefix: '192.0.2.0/24',
+		});
+		expect(parseTestQuerySelection({ cause: 'default' })).toEqual({ cause: 'default' });
+		expect(parseTestQuerySelection({ cause: 'client_id' })).toEqual({ cause: 'client_id' });
+	});
+
+	it('rejects unknown shapes', () => {
+		expect(parseTestQuerySelection(null)).toBeNull();
+		expect(parseTestQuerySelection({ cause: 'guest' })).toBeNull();
+	});
+});
+
+describe('isValidClientId', () => {
+	it('accepts DNS-label client ids and rejects uppercase', () => {
+		expect(isValidClientId('iphone-k7q2x9')).toBe(true);
+		expect(isValidClientId('iPhone')).toBe(false);
+		expect(isValidClientId('')).toBe(false);
 	});
 });

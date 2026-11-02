@@ -557,10 +557,29 @@ impl TestQueryArgs {
             ),
             None => None,
         };
+        let client_id = match self
+            .client_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            None => None,
+            Some(raw) => {
+                // Same label rules as policy::ClientId — reject early with a clear reason.
+                if raw.len() > 63
+                    || !raw
+                        .bytes()
+                        .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-'))
+                {
+                    return Err(invalid_input("client_id must match [a-z0-9-]{1,63}"));
+                }
+                Some(raw.to_owned())
+            }
+        };
         Ok(TestQueryParams {
             domain,
             qtype: self.qtype.unwrap_or_default(),
-            client_id: self.client_id,
+            client_id,
             source_ip,
             protocol: self.protocol.unwrap_or_default().as_str().to_owned(),
         })

@@ -495,6 +495,7 @@ describe('policy screens', () => {
 				profile_id: 'default',
 				filter_set_id: 'default',
 				answer_source: 'local_view',
+				selection: { cause: 'subnet', prefix: '172.20.10.0/24' },
 				steps: [
 					{ stage: 'select', verdict: 'selected' },
 					{ stage: 'local_view', verdict: 'answered' },
@@ -508,9 +509,13 @@ describe('policy screens', () => {
 		const user = userEvent.setup();
 		render(TestQueryPage);
 		await user.click(screen.getByRole('button', { name: m.test_query_run() }));
-		expect(await screen.findByText('172.20.10.10 · TTL 60')).toBeInTheDocument();
-		expect(screen.getByText('NOERROR')).toBeInTheDocument();
-		expect(screen.getByText('zuhauseserver')).toBeInTheDocument();
+		expect(await screen.findByText('172.20.10.10')).toBeInTheDocument();
+		expect(screen.getByText(m.query_log_answer_ttl({ ttl: '60' }))).toBeInTheDocument();
+		expect(screen.getAllByText('NOERROR').length).toBeGreaterThan(0);
+		expect(screen.getAllByText('zuhauseserver').length).toBeGreaterThan(0);
+		expect(
+			screen.getByText(m.querylog_cause_subnet({ prefix: '172.20.10.0/24' })),
+		).toBeInTheDocument();
 	});
 
 	it('builds guided filter rules without typed special characters', () => {

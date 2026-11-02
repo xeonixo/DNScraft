@@ -90,6 +90,11 @@ export interface TestQueryAnswer {
 	records: TestQueryAnswerRecord[];
 }
 
+export interface TestQuerySelection {
+	cause: 'subnet' | 'default' | 'client_id';
+	prefix?: string;
+}
+
 export interface TestQueryResult {
 	steps: DecisionStep[];
 	view_id?: string;
@@ -99,6 +104,7 @@ export interface TestQueryResult {
 	forward_zone?: string | null;
 	dnssec?: string | null;
 	client_id?: string | null;
+	selection?: TestQuerySelection;
 	filter?: unknown;
 	rcode?: string;
 	answer?: TestQueryAnswer;
@@ -109,6 +115,21 @@ export interface TestQueryResult {
 		total_us?: number;
 	};
 	[key: string]: unknown;
+}
+
+/** DoH/DoT Client-ID label: same rules as policy::ClientId. */
+export function isValidClientId(value: string): boolean {
+	return /^[a-z0-9-]{1,63}$/.test(value);
+}
+
+/** Normalize the selection object from a test-query / query-log decision. */
+export function parseTestQuerySelection(raw: unknown): TestQuerySelection | null {
+	if (!raw || typeof raw !== 'object') return null;
+	const row = raw as Record<string, unknown>;
+	const cause = row.cause;
+	if (cause !== 'subnet' && cause !== 'default' && cause !== 'client_id') return null;
+	const prefix = typeof row.prefix === 'string' ? row.prefix : undefined;
+	return cause === 'subnet' ? { cause, prefix } : { cause };
 }
 
 /** Normalize answer records from either control-api or MCP wire shapes. */

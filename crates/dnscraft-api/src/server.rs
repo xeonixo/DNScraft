@@ -83,6 +83,8 @@ pub struct AppState {
     webhook_trust_roots: Vec<Vec<u8>>,
     /// Build version reported by `GET /api/v1/status`.
     version: String,
+    /// Process node id used for policy selection in dry-runs (`test-query`).
+    node_id: String,
 }
 
 impl Default for AppState {
@@ -134,6 +136,7 @@ impl AppState {
             service_catalog: None,
             webhook_trust_roots: Vec::new(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
+            node_id: "local".to_owned(),
         }
     }
 
@@ -192,6 +195,17 @@ impl AppState {
     /// The build version reported by `GET /api/v1/status`.
     pub(crate) fn version(&self) -> &str {
         &self.version
+    }
+
+    /// Sets the process node id used by `POST /api/v1/policy/test-query`.
+    pub fn with_node_id(mut self, node_id: impl Into<String>) -> Self {
+        self.node_id = node_id.into();
+        self
+    }
+
+    /// Process node id (same identity listeners stamp on live queries).
+    pub(crate) fn node_id(&self) -> &str {
+        &self.node_id
     }
 
     /// Overrides the GitHub latest-release endpoint (tests and mirrors).

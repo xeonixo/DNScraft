@@ -22,7 +22,7 @@ use dnscraft_tls::CertResolver;
 use tokio::task::JoinHandle;
 
 use crate::engine::{EngineDirectory, Engines};
-use crate::{CLUSTER_DB_FILE, CONFIG_NODE_ID, Config, Enrollment, Error};
+use crate::{CLUSTER_DB_FILE, Config, Enrollment, Error};
 
 /// How long [`start`] waits after spawning `serve` to catch an immediate
 /// startup failure (invalid config, bind error, TLS setup).
@@ -81,6 +81,9 @@ pub(crate) async fn start(
             format!("control-api config: {error}"),
         )
     })?;
+    let process_node_id = config
+        .node_id()
+        .map_err(|e| Error::startup("dnscraft.startup.node_id", format!("node_id: {e}")))?;
 
     // Same list the control API uses for XFF; DoH attribution and admission honour it too.
     set.set_trusted_proxies(api_config.trusted_proxies.clone());
@@ -205,6 +208,7 @@ pub(crate) async fn start(
         .with_query_log(Arc::clone(query_log))
         .with_mcp_config(mcp_config.clone())
         .with_version(env!("CARGO_PKG_VERSION"))
+        .with_node_id(process_node_id.as_str())
         .with_db(db.clone())
         .with_backup_dir(data_dir.join("backups"))
         .with_web_bans(Arc::new(ListenerBans {
@@ -271,7 +275,7 @@ pub(crate) async fn start(
                     .map(|set| set.status())
                     .unwrap_or_default()
             }),
-            CONFIG_NODE_ID,
+            process_node_id.as_str(),
             env!("CARGO_PKG_VERSION"),
             mcp_config,
             oidc_issuer,

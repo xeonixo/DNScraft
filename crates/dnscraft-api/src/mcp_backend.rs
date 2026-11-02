@@ -1365,15 +1365,23 @@ fn find_stored_rule<'a>(
 
 /// Runs a dry-run query and returns the tool-shaped result plus the full
 /// decision record (including the synthesized answer).
+///
+/// `node_id` is the process identity listeners stamp on live queries. Without
+/// it, node-restricted views never match (same as a request with no node).
 pub(crate) async fn run_test_query(
     policy: &dnscraft_policy::PolicyEngine,
     params: &dnscraft_mcp::dto::TestQueryParams,
+    node_id: Option<&str>,
 ) -> Result<(TestQueryResult, Value), ControlApiError> {
-    let source_ip: IpAddr = params
-        .source_ip
-        .as_deref()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(IpAddr::from([127, 0, 0, 1]));
+    let source_ip: IpAddr = match params.source_ip.as_deref() {
+        Some(raw) => raw.parse().map_err(|_| {
+            mcp_error(
+                "mcp.invalid_input",
+                json!({ "reason": "source_ip must be an IP address" }),
+            )
+        })?,
+        None => IpAddr::from([127, 0, 0, 1]),
+    };
     let listener_id =
         dnscraft_policy::ListenerId::new("mcp-test").map_err(|_| ControlApiError::Internal {
             message: "invalid listener id".to_owned(),
@@ -1383,15 +1391,36 @@ pub(crate) async fn run_test_query(
             code: "filter_name.invalid_char",
             params: Some(json!({ "domain": params.domain })),
         })?;
+    let node_id = match node_id.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(raw) => {
+            Some(
+                dnscraft_policy::NodeId::new(raw).map_err(|_| ControlApiError::Internal {
+                    message: format!("invalid process node id: {raw}"),
+                })?,
+            )
+        }
+        None => None,
+    };
+    let client_id = match params
+        .client_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        None => None,
+        Some(raw) => Some(dnscraft_policy::ClientId::new(raw).map_err(|_| {
+            mcp_error(
+                "mcp.invalid_input",
+                json!({ "reason": "client_id must match [a-z0-9-]{1,63}" }),
+            )
+        })?),
+    };
     let ctx = RequestContext {
         source_ip,
         protocol: policy_protocol(&params.protocol),
         listener_id,
-        node_id: None,
-        client_id: params
-            .client_id
-            .as_deref()
-            .and_then(|id| dnscraft_policy::ClientId::new(id).ok()),
+        node_id,
+        client_id,
         query: dnscraft_resolver::Query {
             name,
             qtype: dnscraft_proto::RecordType(filter_qtype(params.qtype)),
@@ -1604,10 +1633,14 @@ impl McpBackend for ControlMcpBackend {
         &self,
         params: dnscraft_mcp::dto::TestQueryParams,
     ) -> Result<TestQueryResult, BackendError> {
-        run_test_query(self.policy_engine()?, &params)
-            .await
-            .map(|(result, _)| result)
-            .map_err(backend_error)
+        run_test_query(
+            self.policy_engine()?,
+            &params,
+            Some(self.inner.node_id.as_str()),
+        )
+        .await
+        .map(|(result, _)| result)
+        .map_err(backend_error)
     }
 
     async fn get_stats(&self, params: StatsParams) -> Result<StatsResult, BackendError> {

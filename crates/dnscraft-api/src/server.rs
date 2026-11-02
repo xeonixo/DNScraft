@@ -193,7 +193,8 @@ impl AppState {
         self
     }
 
-    pub(crate) fn service_catalog(&self) -> Option<&Arc<dyn ServiceCatalogProvider>> {
+    /// The blocked-services catalog provider, if one is attached.
+    pub fn service_catalog(&self) -> Option<&Arc<dyn ServiceCatalogProvider>> {
         self.service_catalog.as_ref()
     }
 
@@ -710,7 +711,7 @@ impl AppState {
     }
 
     /// The TLS admin surface, if one is attached.
-    pub(crate) fn tls_admin(&self) -> Option<&Arc<dyn TlsAdmin>> {
+    pub fn tls_admin(&self) -> Option<&Arc<dyn TlsAdmin>> {
         self.tls_admin.as_ref()
     }
 

@@ -263,6 +263,8 @@ pub(crate) async fn start(
         // Weak: the listener set is consumed on shutdown, so the status
         // closure must not keep it alive.
         let listeners = Arc::downgrade(set);
+        let tls_admin = state.tls_admin().cloned();
+        let service_catalog = state.service_catalog().cloned();
         state = state.with_mcp_backend(mcp_backend_inner(
             Arc::clone(&engines.filtering),
             Arc::clone(&engines.policy),
@@ -284,8 +286,8 @@ pub(crate) async fn start(
             env!("CARGO_PKG_VERSION"),
             mcp_config,
             oidc_issuer,
-            state.tls_admin().cloned(),
-            state.service_catalog().cloned(),
+            tls_admin,
+            service_catalog,
         ));
     }
 

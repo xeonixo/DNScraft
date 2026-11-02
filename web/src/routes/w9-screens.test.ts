@@ -426,6 +426,7 @@ describe('cluster node detail', () => {
 		expect(within(dialog).getByText('192.0.2.91:8443')).toBeInTheDocument();
 		expect(within(dialog).getByText(m.cluster_transport_mtls())).toBeInTheDocument();
 		expect(within(dialog).getByText(m.cluster_connection_connected())).toBeInTheDocument();
+		expect(within(dialog).getByText(m.cluster_field_software_version())).toBeInTheDocument();
 		expect(within(dialog).getByText(m.cluster_field_applied_version())).toBeInTheDocument();
 		expect(within(dialog).getByText('7')).toBeInTheDocument();
 	});

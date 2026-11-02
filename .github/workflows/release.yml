@@ -86,11 +86,37 @@ jobs:
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(for f in digest-*; do echo "${IMAGE,,}@$(cat "$f")"; done)
 
+      # Full history + tags so we can build notes from commits since the previous tag.
+      # (--generate-notes only lists merged PRs; this repo releases from direct commits.)
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
       - name: GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           img=${IMAGE,,}:${GITHUB_REF_NAME#v}
           pre=""; case "$GITHUB_REF_NAME" in *-*) pre="--prerelease";; esac
+          prev=$(git tag --list 'v*' --sort=-v:refname \
+            | awk -v cur="$GITHUB_REF_NAME" '$0 != cur { print; exit }')
+          {
+            echo "Image: \`docker pull $img\`"
+            echo
+            echo "## Changes"
+            echo
+            if [ -n "$prev" ]; then
+              git log --pretty=format:'- %s (%h)' --no-merges "$prev..$GITHUB_REF_NAME" \
+                | grep -vE '^- chore: release v' || true
+              echo
+              echo
+              echo "**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${prev}...${GITHUB_REF_NAME}"
+            else
+              git log --pretty=format:'- %s (%h)' --no-merges "$GITHUB_REF_NAME" \
+                | grep -vE '^- chore: release v' || true
+              echo
+            fi
+          } > /tmp/release-notes.md
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-            --generate-notes $pre --notes "Image: \`docker pull $img\`"
+            --notes-file /tmp/release-notes.md $pre

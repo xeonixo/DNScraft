@@ -31,7 +31,7 @@ Base images are pinned by digest in both Dockerfiles, and GitHub Actions in the 
 
 ### Releases
 
-Pushing a tag `vX.Y.Z` runs [`release.yml`](../.github/workflows/release.yml). The tag must equal the `dnscraft` crate version, or the workflow fails. It builds the glibc image for `linux/amd64` and `linux/arm64` on native runners in parallel, pushes it to `ghcr.io/xeonixo/dnscraft` as `X.Y.Z` and `X.Y` (plus `latest` for stable releases), and creates a GitHub Release. Tags containing a `-` (for example `v0.2.0-rc.1`) become pre-releases and do not move `latest` or `X.Y`.
+Pushing a tag `vX.Y.Z` runs [`release.yml`](../.github/workflows/release.yml). The tag must equal the `dnscraft` crate version, or the workflow fails. It builds the glibc image for `linux/amd64` and `linux/arm64` on native runners in parallel, pushes it to `ghcr.io/xeonixo/dnscraft` as `X.Y.Z` and `X.Y` (plus `latest` for stable releases), and creates a GitHub Release whose notes list commits since the previous tag (plus the `docker pull` line). Tags containing a `-` (for example `v0.2.0-rc.1`) become pre-releases and do not move `latest` or `X.Y`.
 
 ```bash
 # bump version in crates/*/Cargo.toml, commit, then:

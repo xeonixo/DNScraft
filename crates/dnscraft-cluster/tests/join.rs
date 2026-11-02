@@ -290,6 +290,10 @@ async fn enroll_connect_hello_and_heartbeat() {
 
     let node = master.store.get_node("node-a").await.unwrap().unwrap();
     assert_eq!(node.applied_config_version, Some(3));
+    assert_eq!(
+        node.software_version.as_deref(),
+        Some(env!("CARGO_PKG_VERSION"))
+    );
     assert_eq!(node.last_seen, Some(unix_now(&master.clock)));
 
     // A payload `node_id` is ignored: the master uses the certificate identity.

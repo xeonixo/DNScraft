@@ -196,6 +196,7 @@ async fn list_nodes_returns_joined_nodes_with_role() {
             "joined_at": rfc3339(NOW),
             "last_seen": rfc3339(NOW),
             "applied_config_version": Value::Null,
+            "software_version": Value::Null,
             "revoked": false,
             "local": false,
             "connected": false,

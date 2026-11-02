@@ -518,6 +518,7 @@ impl ClusterClient {
             applied_version,
             queue_depth,
             time: Some(rfc3339(self.clock.now())),
+            software_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
         };
         let body = serde_json::to_vec(&request).map_err(|error| ClusterError::Internal {
             message: format!("encode heartbeat: {error}"),

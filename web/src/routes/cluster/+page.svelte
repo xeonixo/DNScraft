@@ -50,16 +50,17 @@
 	let busy = $state(false);
 	let failure = $state<{ code: string; params: Record<string, unknown> } | null>(null);
 
-	/** Config version plus last contact; the node this page runs on has no peer contact to show. */
+	/** Software version, config version, and last contact; local has no peer contact to show. */
 	function nodeMeta(node: ClusterNode): string {
+		const software = node.software_version ? `v${node.software_version}` : '—';
 		const version = node.applied_config_version ?? '—';
 		if (!node.last_seen && (node.local === true || node.role === 'master')) {
-			return m.cluster_node_meta_local({ version });
+			return m.cluster_node_meta_local({ software, version });
 		}
 		const seen = node.last_seen
 			? formatDateTime(new Date(node.last_seen), locale)
 			: m.cluster_never_seen();
-		return m.cluster_node_meta({ version, seen });
+		return m.cluster_node_meta({ software, version, seen });
 	}
 
 	async function load(): Promise<void> {
@@ -297,6 +298,11 @@
 				detail={detail.last_seen
 					? formatDateTime(new Date(detail.last_seen), locale)
 					: m.cluster_never_seen()}
+				detailMono
+			/>
+			<GroupedRow
+				label={m.cluster_field_software_version()}
+				detail={detail.software_version ? `v${detail.software_version}` : m.cluster_value_unknown()}
 				detailMono
 			/>
 			<GroupedRow

@@ -84,6 +84,8 @@ const MIGRATIONS: &[&str] = &[
         display_name  TEXT,
         hostname      TEXT
     );",
+    // v8: running software version last reported in a heartbeat.
+    "ALTER TABLE cluster_nodes ADD COLUMN software_version TEXT;",
 ];
 
 /// One registered cluster node.
@@ -103,6 +105,8 @@ pub struct ClusterNode {
     pub revoked: bool,
     /// Peer socket address of the last authenticated connection (`ip:port`).
     pub remote_addr: Option<String>,
+    /// Running software version last reported in a heartbeat.
+    pub software_version: Option<String>,
 }
 
 /// A freshly minted join token. The plaintext is shown once and never stored;
@@ -289,6 +293,7 @@ impl ClusterStore {
             applied_config_version: None,
             revoked: false,
             remote_addr: None,
+            software_version: None,
         };
         let insert = node.clone();
 
@@ -362,6 +367,7 @@ impl ClusterStore {
             applied_config_version: None,
             revoked: false,
             remote_addr: None,
+            software_version: None,
         };
         let insert = node.clone();
         self.with_conn(move |conn| {
@@ -403,7 +409,7 @@ impl ClusterStore {
         self.with_conn(move |conn| {
             conn.query_row(
                 "SELECT node_id, fingerprint, joined_at, last_seen,
-                        applied_config_version, revoked, remote_addr
+                        applied_config_version, revoked, remote_addr, software_version
                  FROM cluster_nodes WHERE node_id = ?1",
                 params![node_id],
                 node_from_row,
@@ -420,7 +426,7 @@ impl ClusterStore {
             let mut statement = conn
                 .prepare(
                     "SELECT node_id, fingerprint, joined_at, last_seen,
-                            applied_config_version, revoked, remote_addr
+                            applied_config_version, revoked, remote_addr, software_version
                      FROM cluster_nodes ORDER BY node_id",
                 )
                 .map_err(db_err)?;
@@ -513,6 +519,29 @@ impl ClusterStore {
             let changed = conn
                 .execute(
                     "UPDATE cluster_nodes SET applied_config_version = ?1 WHERE node_id = ?2",
+                    params![version, node_id],
+                )
+                .map_err(db_err)?;
+            if changed == 0 {
+                return Err(ClusterError::NodeUnknown { node_id });
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// Records the software version a node reported in a heartbeat.
+    pub async fn set_software_version(
+        &self,
+        node_id: &str,
+        version: &str,
+    ) -> Result<(), ClusterError> {
+        let node_id = node_id.to_owned();
+        let version = version.to_owned();
+        self.with_conn(move |conn| {
+            let changed = conn
+                .execute(
+                    "UPDATE cluster_nodes SET software_version = ?1 WHERE node_id = ?2",
                     params![version, node_id],
                 )
                 .map_err(db_err)?;
@@ -739,6 +768,7 @@ fn node_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ClusterNode> {
         applied_config_version: row.get(4)?,
         revoked: row.get::<_, i64>(5)? != 0,
         remote_addr: row.get(6)?,
+        software_version: row.get(7)?,
     })
 }
 
@@ -1033,9 +1063,11 @@ mod tests {
             .set_applied_config_version("node-a", 42)
             .await
             .unwrap();
+        store.set_software_version("node-a", "0.1.5").await.unwrap();
         let node = store.get_node("node-a").await.unwrap().unwrap();
         assert_eq!(node.last_seen, Some(1_700_000_030));
         assert_eq!(node.applied_config_version, Some(42));
+        assert_eq!(node.software_version.as_deref(), Some("0.1.5"));
         assert_eq!(node.remote_addr.as_deref(), Some("192.0.2.10:4433"));
 
         store.mark_seen("node-a", None).await.unwrap();

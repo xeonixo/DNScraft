@@ -91,6 +91,7 @@ describe('Sidebar', () => {
 	it('shows standalone in the footer when status has no cluster', async () => {
 		render(Sidebar, { props: { currentPath: '/dashboard' } });
 		expect(await screen.findByText(m.sidebar_node_standalone())).toBeInTheDocument();
+		expect(await screen.findByText(m.sidebar_version({ version: '1.0.0' }))).toBeInTheDocument();
 	});
 
 	it('shows the cluster role in the footer when status includes cluster', async () => {
@@ -111,6 +112,7 @@ describe('Sidebar', () => {
 		render(Sidebar, { props: { currentPath: '/dashboard' } });
 		expect(await screen.findByText(new RegExp(m.sidebar_node_sub()))).toBeInTheDocument();
 		expect(screen.getByText(new RegExp(m.sidebar_node_lag({ lag: '3' })))).toBeInTheDocument();
+		expect(screen.getByText(m.sidebar_version({ version: '1.0.0' }))).toBeInTheDocument();
 	});
 
 	it('is closed on compact widths unless the drawer is open', async () => {

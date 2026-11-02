@@ -242,6 +242,7 @@ async fn heartbeat(
         applied_version: None,
         queue_depth,
         time,
+        software_version: None,
     };
     let response = http_client(master.server.ca_cert_pem(), identity)
         .post(format!("{}/cluster/v1/heartbeat", master.url))
@@ -402,6 +403,7 @@ async fn heartbeat_flood_is_rejected_per_node() {
         applied_version: None,
         queue_depth: 0,
         time: None,
+        software_version: None,
     };
     let raw = http_client(master.server.ca_cert_pem(), &identity);
     let mut last_status = 0;
@@ -482,6 +484,7 @@ async fn node_ahead_of_the_master_is_a_master_conflict_warning() {
         applied_version: Some(4),
         queue_depth: 0,
         time: None,
+        software_version: Some("0.1.5".to_owned()),
     };
     let response = http_client(master.server.ca_cert_pem(), &identity)
         .post(format!("{}/cluster/v1/heartbeat", master.url))

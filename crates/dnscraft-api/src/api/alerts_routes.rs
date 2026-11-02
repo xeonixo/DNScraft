@@ -503,6 +503,7 @@ mod tests {
             applied_config_version: None,
             revoked,
             remote_addr: None,
+            software_version: None,
         }
     }
 

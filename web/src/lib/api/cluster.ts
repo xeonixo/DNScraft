@@ -8,6 +8,8 @@ export interface ClusterNode {
 	joined_at: string | null;
 	last_seen: string | null;
 	applied_config_version: number | null;
+	/** Running software version from heartbeat (or this process for `local`). */
+	software_version?: string | null;
 	revoked: boolean;
 	/** This process; peers are `false`. */
 	local?: boolean;

@@ -44,6 +44,7 @@
 
 	let nodeLabel = $state<string>(m.sidebar_node_unknown());
 	let nodeDot = $state<NodeDot>('unknown');
+	let softwareVersion = $state<string | null>(null);
 	let alertCount = $state(0);
 
 	function applyNodeStatus(cluster: StatusCluster): void {
@@ -69,6 +70,7 @@
 	async function refreshNodeStatus(): Promise<boolean> {
 		try {
 			const status = await getStatus();
+			softwareVersion = status.version || null;
 			if (!status.cluster) {
 				nodeLabel = m.sidebar_node_standalone();
 				nodeDot = 'ok';
@@ -79,6 +81,7 @@
 		} catch {
 			nodeLabel = m.sidebar_node_unknown();
 			nodeDot = 'unknown';
+			softwareVersion = null;
 			return false;
 		}
 	}
@@ -157,6 +160,9 @@
 			></span>
 			{nodeLabel}
 		</p>
+		{#if softwareVersion}
+			<p class="version">{m.sidebar_version({ version: softwareVersion })}</p>
+		{/if}
 		<a class="foot-link" href={resolve(navFeedback.path)} onclick={() => onnavigate?.()}>
 			{navFeedback.label()}
 		</a>
@@ -308,6 +314,14 @@
 		gap: 0.4375rem;
 		margin: 0;
 		color: var(--label-2);
+	}
+
+	.version {
+		margin: 0.125rem 0 0;
+		padding-left: 0.9375rem;
+		font-size: 0.75rem;
+		font-variant-numeric: tabular-nums;
+		color: var(--label-3);
 	}
 
 	.node-dot {

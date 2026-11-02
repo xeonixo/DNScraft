@@ -182,6 +182,11 @@ pub struct HeartbeatRequest {
     /// malformed values are accepted without a skew check.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub time: Option<String>,
+    /// Running software version of the node (crate version), when known.
+    ///
+    /// Optional so older peers keep working; ignored when empty or overlong.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub software_version: Option<String>,
 }
 
 /// A non-fatal condition reported alongside a successful heartbeat.
@@ -808,6 +813,15 @@ async fn heartbeat(
             .store
             .set_applied_config_version(&auth.0, version)
             .await
+    {
+        return error_response(&error);
+    }
+    if let Some(version) = request
+        .software_version
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty() && v.chars().count() <= 64 && !v.chars().any(char::is_control))
+        && let Err(error) = state.store.set_software_version(&auth.0, version).await
     {
         return error_response(&error);
     }

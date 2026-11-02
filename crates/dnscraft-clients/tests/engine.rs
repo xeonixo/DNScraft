@@ -614,13 +614,21 @@ async fn ip_conflicts_surface_in_status() {
             online: true,
         })
         .collect();
-    eng.set_cached_observations_for_test(conflicting);
+    eng.set_cached_observations_for_test(conflicting.clone());
 
     let cfg = cfg_for(&mock, Duration::from_secs(3600));
+    eng.apply_config_with_secret(cfg.clone(), |_| Ok(Secret::new(API_KEY)))
+        .await
+        .unwrap();
+    let first = eng.status().ip_conflicts;
+    assert!(first >= 1);
+
+    // Same conflict set again must not accumulate — status is last-sync.
+    eng.set_cached_observations_for_test(conflicting);
     eng.apply_config_with_secret(cfg, |_| Ok(Secret::new(API_KEY)))
         .await
         .unwrap();
-    assert!(eng.status().ip_conflicts >= 1);
+    assert_eq!(eng.status().ip_conflicts, first);
 }
 
 #[tokio::test]

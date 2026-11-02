@@ -1022,15 +1022,14 @@ impl ClientEngine {
     }
 
     fn record_merge_stats(&self, stats: &MergeStats) {
-        if stats.ip_conflicts == 0 {
-            return;
-        }
         let mut st = self
             .inner
             .status
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        st.ip_conflicts = st.ip_conflicts.saturating_add(stats.ip_conflicts);
+        // Last-sync count (not cumulative): alerts and the UI show the live
+        // conflict load, and clear when a merge finds none.
+        st.ip_conflicts = stats.ip_conflicts;
     }
 
     fn on_sync_error(&self, err: &ClientsError) {

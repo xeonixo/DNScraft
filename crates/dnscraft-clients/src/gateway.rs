@@ -24,6 +24,7 @@ pub const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 const API_KEY_HEADER: &str = "X-API-KEY";
 
 /// HTTP client bound to one gateway base URL and TLS trust mode.
+#[derive(Clone)]
 pub struct GatewayClient {
     http: Client,
     base_url: String,

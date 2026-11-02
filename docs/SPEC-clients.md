@@ -129,7 +129,7 @@ pub struct ClientInfo {
 pub struct VlanInfo {
     pub id: u16,                // 802.1Q vlanId from UniFi networks
     pub name: String,           // network name, e.g. "IoT"
-    pub domain_name: Option<String>, // per-network DHCP domain, if set (source UNVERIFIED, see Local domain)
+    pub domain_name: Option<String>, // per-network DHCP domain (Integration OpenAPI 10.6.106 + classic domain_name)
 }
 
 pub struct ClientLookup { /* Arc snapshot + indexes */ }
@@ -169,12 +169,11 @@ FQDN = `<dns_label>.<local_domain>`. The parent domain is **not** a single fixed
 string when UniFi already publishes one:
 
 1. **Per-network UniFi DHCP domain** — use for clients on that network/VLAN.
-   Different VLANs may have different domains. **Unverified:** a DHCP
-   `domainName` field is **not** in the research table above and may not exist
-   on the Integration network schemas. The likely source is the classic
-   `rest/networkconf` `domain_name` field, also unverified until checked against
-   a real (not mock) response at implementation time; if neither exists, step 1
-   yields nothing and step 2 applies.
+   Different VLANs may have different domains. **Verified (OpenAPI 10.6.106):**
+   Integration network details expose
+   `ipv4Configuration.dhcpConfiguration.domainName` (DHCP server mode). Classic
+   `rest/networkconf` `domain_name` remains the merge enrichment path when
+   classic clients are enabled. If neither yields a domain, step 2 applies.
 2. Else **config `local_domain`** (default `home.arpa`) — fallback when UniFi
    omits `domainName`, UniFi is disabled, or the client has no network match.
 3. **DNScraft override** — if the admin sets `local_domain_mode = "config"` (or
@@ -447,10 +446,11 @@ domain from UniFi when present.
 
 ## Decisions (owner, 2026-10-25)
 
-1. **Local domain:** dynamic — prefer UniFi per-network DHCP `domainName` (source unverified, see Local domain) when
-   present (`local_domain_mode = "unifi_then_config"`); else config
-   `local_domain` default `home.arpa` (RFC 8375). Admin may force config-only
-   or set a per-manual `domain`.
+1. **Local domain:** dynamic — prefer UniFi per-network DHCP `domainName`
+   (Integration `ipv4Configuration.dhcpConfiguration.domainName` / classic
+   `domain_name`) when present (`local_domain_mode = "unifi_then_config"`); else
+   config `local_domain` default `home.arpa` (RFC 8375). Admin may force
+   config-only or set a per-manual `domain`.
 2. **Poll interval:** 60 s ±10 % jitter.
 3. **Offline retain:** 7 days (`online = false`), then evict.
 4. **IPv6:** complete — classic `stat/sta` (etc.) is **on by default**
@@ -482,7 +482,8 @@ domain from UniFi when present.
     (assignment persisted in the disk cache) instead of smaller-id wins; IP
     conflicts resolved online > retained-offline > most recently seen; label
     folding uses `idna` UTS 46 (no `unicode-normalization` unless proven
-    necessary); per-network DHCP domain source marked **unverified**
-    (`rest/networkconf` `domain_name` likely); unknown names under a local domain
-    are left to the normal pipeline (policy); `by_ip`/`by_name` return
-    `Option<Arc<ClientInfo>>`, `local_domains()` returns `Arc<[String]>`.
+    necessary); per-network DHCP domain verified on Integration OpenAPI 10.6.106
+    (`ipv4Configuration.dhcpConfiguration.domainName`) plus classic
+    `domain_name`; unknown names under a local domain are left to the normal
+    pipeline (policy); `by_ip`/`by_name` return `Option<Arc<ClientInfo>>`,
+    `local_domains()` returns `Arc<[String]>`.

@@ -177,6 +177,11 @@ impl MockGateway {
         self.state.lock().await.response_delay = delay;
     }
 
+    /// Updates the API key the mock accepts (for key-rotation tests).
+    pub async fn set_expected_key(&self, api_key: &str) {
+        self.state.lock().await.expected_key = api_key.to_owned();
+    }
+
     pub async fn take_log(&self) -> Vec<RecordedRequest> {
         std::mem::take(&mut *self.log.lock().await)
     }
@@ -351,9 +356,19 @@ fn integration_response(fx: &IntegrationFixture, path: &str, query: &str) -> Opt
 
     // /sites/{site}/networks
     if let Some(site) = match_networks_list(rest) {
-        let list = fx.networks.get(site).cloned().unwrap_or_default();
+        let offset = query_param(query, "offset").unwrap_or(0);
+        let limit = query_param(query, "limit").unwrap_or(25);
+        let all = fx.networks.get(site).cloned().unwrap_or_default();
+        let slice: Vec<Value> = all.into_iter().skip(offset).take(limit).collect();
         return Some(MockResp::Ok(
-            json!({ "data": list }).to_string().into_bytes(),
+            json!({
+                "offset": offset,
+                "limit": limit,
+                "count": slice.len(),
+                "data": slice,
+            })
+            .to_string()
+            .into_bytes(),
         ));
     }
 

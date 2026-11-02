@@ -54,7 +54,7 @@ pub struct NetworkInfo {
     pub ipv4_prefix: Option<IpNet>,
     /// IPv6 prefix from gateway-managed details.
     pub ipv6_prefix: Option<IpNet>,
-    /// Per-network DHCP domain (source unverified until O1).
+    /// Per-network DHCP domain (Integration: `ipv4Configuration.dhcpConfiguration.domainName`, OpenAPI 10.6.106; classic: `domain_name`).
     pub domain_name: Option<String>,
 }
 

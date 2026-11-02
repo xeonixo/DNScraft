@@ -1204,3 +1204,31 @@ async fn non_owner_sync_returns_not_owner() {
     assert_eq!(err.code(), "clients.sync.not_owner");
     assert!(!eng.is_sync_owner());
 }
+
+#[tokio::test]
+async fn set_api_key_rebuilds_gateway_so_rotation_takes_effect() {
+    const KEY_B: &str = "rotated-unifi-api-key-do-not-leak";
+    let mock = MockGateway::start(API_KEY, CertKind::SelfSigned).await;
+    seed(&mock).await;
+    let clock = Arc::new(ManualClock::new(start()));
+    let eng = engine(&mock, Arc::clone(&clock) as Arc<_>, Duration::from_secs(3600)).await;
+    await_initial_sync(&eng).await;
+    let _ = mock.take_log().await;
+
+    // Mock now only accepts the rotated key; a cached GatewayClient with KEY_A
+    // would get 401 on every request.
+    mock.set_expected_key(KEY_B).await;
+    eng.set_api_key(Some(Secret::new(KEY_B)));
+    let report = eng.sync_now().await.expect("sync after key rotation");
+    assert!(!report.superseded);
+    assert!(eng.status().last_error.is_none());
+    let log = mock.take_log().await;
+    assert!(
+        log.iter().any(|r| {
+            r.headers
+                .get("x-api-key")
+                .is_some_and(|v| v == KEY_B)
+        }),
+        "expected rotated key in request headers; log={log:?}"
+    );
+}

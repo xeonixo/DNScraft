@@ -117,8 +117,8 @@ struct Inner {
     /// Serialises merge+install for [`ClientEngine::run_sync`] and
     /// [`ClientEngine::apply_config`] (gateway fetch runs outside this lock).
     sync_lock: AsyncMutex<()>,
-    /// Reused [`GatewayClient`] rebuilt when UniFi connection settings change.
-    gateway: Mutex<Option<(UnifiConfig, Arc<GatewayClient>)>>,
+    /// Reused [`GatewayClient`] rebuilt when UniFi connection settings or API key change.
+    gateway: Mutex<Option<(UnifiConfig, Secret, Arc<GatewayClient>)>>,
     /// Monotonic id assigned to each gateway fetch before it starts.
     next_fetch_seq: AtomicU64,
     /// Highest fetch (or apply_config) sequence that has installed a snapshot.
@@ -482,6 +482,18 @@ impl ClientEngine {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             old.unifi != config.unifi
         };
+        let key_changed = {
+            let old = self
+                .inner
+                .api_key
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match (old.as_ref(), fresh_key.as_ref()) {
+                (Some(a), Some(b)) => a != b,
+                (None, Some(_)) | (Some(_), None) => true,
+                (None, None) => false,
+            }
+        };
         *self
             .inner
             .config
@@ -494,7 +506,7 @@ impl ClientEngine {
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(key);
         }
-        if unifi_changed {
+        if unifi_changed || key_changed {
             *self
                 .inner
                 .gateway
@@ -607,12 +619,19 @@ impl ClientEngine {
     }
 
     /// Installs or clears the in-memory UniFi API key (from kv / `SecretPush`).
+    ///
+    /// Also drops any cached [`GatewayClient`] so the next sync uses the new key.
     pub fn set_api_key(&self, key: Option<Secret>) {
         *self
             .inner
             .api_key
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = key;
+        *self
+            .inner
+            .gateway
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
     /// Bound UniFi profile id for this node, when configured.
@@ -860,13 +879,14 @@ impl ClientEngine {
             .gateway
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some((cfg, gw)) = slot.as_ref()
+        if let Some((cfg, cached_key, gw)) = slot.as_ref()
             && cfg == unifi
+            && cached_key == &key
         {
             return Ok(Arc::clone(gw));
         }
-        let gw = Arc::new(GatewayClient::new(unifi, key)?);
-        *slot = Some((unifi.clone(), Arc::clone(&gw)));
+        let gw = Arc::new(GatewayClient::new(unifi, key.clone())?);
+        *slot = Some((unifi.clone(), key, Arc::clone(&gw)));
         Ok(gw)
     }
 

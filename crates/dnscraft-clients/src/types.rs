@@ -113,7 +113,7 @@ pub struct VlanInfo {
     pub id: u16,
     /// Network name, e.g. `"IoT"`.
     pub name: String,
-    /// Per-network DHCP domain, if UniFi publishes one (source unverified).
+    /// Per-network DHCP domain, if UniFi publishes one (Integration OpenAPI 10.6.106 / classic `domain_name`).
     pub domain_name: Option<String>,
 }
 

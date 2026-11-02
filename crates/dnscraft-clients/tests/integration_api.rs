@@ -65,7 +65,11 @@ fn network_details(host: &str, prefix: u8) -> Value {
         "vlanId": 40,
         "ipv4Configuration": {
             "hostIpAddress": host,
-            "prefixLength": prefix
+            "prefixLength": prefix,
+            "dhcpConfiguration": {
+                "mode": "SERVER",
+                "domainName": "iot.home.arpa"
+            }
         }
     })
 }
@@ -107,6 +111,10 @@ async fn one_site_auto_picked() {
     assert_eq!(pfx.prefix_len(), 24);
     assert!(pfx.contains(&IpAddr::from_str("198.51.100.10").unwrap()));
     assert_eq!(fetched.networks[0].vlan_id, Some(40));
+    assert_eq!(
+        fetched.networks[0].domain_name.as_deref(),
+        Some("iot.home.arpa")
+    );
     assert_eq!(fetched.observations.len(), 1);
     assert_eq!(
         fetched.observations[0].addresses,
@@ -125,6 +133,85 @@ async fn two_sites_without_site_id_errors() {
     let gw = client_for(&mock, None).await;
     let err = fetch_integration(&gw, None).await.expect_err("multi site");
     assert_eq!(err.code(), "clients.config.invalid");
+}
+
+#[tokio::test]
+async fn unknown_configured_site_id_errors() {
+    let mock = MockGateway::start(API_KEY, CertKind::SelfSigned).await;
+    mock.set_integration(IntegrationFixture {
+        sites: vec![site(SITE_A, "Default")],
+        ..IntegrationFixture::default()
+    })
+    .await;
+    let gw = client_for(&mock, Some(SITE_B)).await;
+    let err = fetch_integration(&gw, Some(SITE_B))
+        .await
+        .expect_err("unknown site");
+    assert_eq!(err.code(), "clients.config.invalid");
+    assert!(err.to_string().contains("not found"));
+}
+
+#[tokio::test]
+async fn thirty_networks_paginated_and_details_fetched() {
+    let mock = MockGateway::start(API_KEY, CertKind::SelfSigned).await;
+    let mut overviews = Vec::with_capacity(30);
+    let mut details = HashMap::new();
+    for i in 0..30 {
+        let id = format!("net-{i:02}");
+        overviews.push(network_overview(&id, &format!("Vlan{i}"), 10 + i as u16));
+        details.insert(
+            format!("{SITE_A}/{id}"),
+            json!({
+                "id": id,
+                "name": format!("Vlan{i}"),
+                "vlanId": 10 + i,
+                "ipv4Configuration": {
+                    "hostIpAddress": format!("10.{i}.0.1"),
+                    "prefixLength": 24,
+                    "dhcpConfiguration": {
+                        "mode": "SERVER",
+                        "domainName": format!("vlan{i}.home.arpa")
+                    }
+                }
+            }),
+        );
+    }
+    mock.set_integration(IntegrationFixture {
+        sites: vec![site(SITE_A, "Default")],
+        networks: HashMap::from([(SITE_A.into(), overviews)]),
+        network_details: details,
+        clients: HashMap::from([(SITE_A.into(), vec![])]),
+        ..IntegrationFixture::default()
+    })
+    .await;
+
+    let gw = client_for(&mock, Some(SITE_A)).await;
+    let _ = mock.take_log().await;
+    let fetched = fetch_integration(&gw, Some(SITE_A)).await.unwrap();
+    assert_eq!(fetched.networks.len(), 30);
+    assert_eq!(
+        fetched.networks[29].domain_name.as_deref(),
+        Some("vlan29.home.arpa")
+    );
+
+    let log = mock.take_log().await;
+    let list_reqs: Vec<_> = log
+        .iter()
+        .filter(|r| r.path.contains("/networks?") || r.path.ends_with("/networks"))
+        .filter(|r| !r.path.contains("/networks/"))
+        .collect();
+    // Default API page size is 25; with limit=200 we expect a single list page.
+    assert_eq!(list_reqs.len(), 1, "expected one networks list page; {list_reqs:?}");
+    assert!(
+        list_reqs[0].path.contains("limit=200"),
+        "expected limit=200 in {}",
+        list_reqs[0].path
+    );
+    let detail_reqs = log
+        .iter()
+        .filter(|r| r.path.contains("/networks/") && !r.path.contains('?'))
+        .count();
+    assert_eq!(detail_reqs, 30);
 }
 
 #[tokio::test]

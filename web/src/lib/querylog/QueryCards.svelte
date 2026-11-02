@@ -10,15 +10,18 @@
 	import { formatDateTime, formatMilliseconds, formatTime } from '$lib/format';
 	import { getLocale } from '$lib/i18n/locale';
 	import { answerSummary, microsToMilliseconds, statusOf, statusStyle } from './view';
+	import { nodeLabel } from '$lib/cluster/nodes';
 	import { m } from '$lib/paraglide/messages';
 
 	interface Props {
 		rows: QueryRecord[];
 		/** Adds the answer code and latency to the meta line. */
 		technical?: boolean;
+		/** Cluster display names keyed by node id. */
+		nodeNames?: Record<string, string>;
 	}
 
-	let { rows, technical = false }: Props = $props();
+	let { rows, technical = false, nodeNames = {} }: Props = $props();
 	const locale = getLocale();
 </script>
 
@@ -40,7 +43,7 @@
 					<span class="client">{client}</span>
 					<span class="mono"
 						>{record.query.type} · {record.protocol}{#if record.node_id}
-							· {record.node_id}{/if}{#if technical}
+							· {nodeLabel(record.node_id, nodeNames)}{/if}{#if technical}
 							· {record.rcode} · {formatMilliseconds(
 								microsToMilliseconds(record.timings.total_us),
 								locale,

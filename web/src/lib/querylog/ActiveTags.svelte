@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Icon from '$lib/components/Icon.svelte';
+	import { nodeLabel } from '$lib/cluster/nodes';
 	import Value from './Value.svelte';
 	import { activeGroups, type Draft, type FilterKey } from './filters';
 	import { m } from '$lib/paraglide/messages';
@@ -9,9 +10,11 @@
 		/** Clears the given filter keys (one tag) and returns to the first page. */
 		onremove: (keys: FilterKey[]) => void;
 		onclear: () => void;
+		/** Cluster display names keyed by node id. */
+		nodeNames?: Record<string, string>;
 	}
 
-	let { draft, onremove, onclear }: Props = $props();
+	let { draft, onremove, onclear, nodeNames = {} }: Props = $props();
 
 	/** One tag per active filter group: its translated name, and the value when it has one. */
 	const tags = $derived(
@@ -82,7 +85,7 @@
 			case 'device_id':
 				return draft.device_id;
 			case 'node_id':
-				return draft.node_id;
+				return draft.node_id === '' ? null : nodeLabel(draft.node_id, nodeNames);
 			case 'subnet':
 				return draft.subnet;
 			case 'view_id':

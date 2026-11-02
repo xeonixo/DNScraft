@@ -24,6 +24,7 @@
 		formatTime,
 	} from '$lib/format';
 	import { getLocale } from '$lib/i18n/locale';
+	import { nodeLabel } from '$lib/cluster/nodes';
 	import { m } from '$lib/paraglide/messages';
 
 	interface Props {
@@ -33,9 +34,11 @@
 		technical: boolean;
 		/** Query string that filters the list by one client; without it the name is plain text. */
 		clientSearch?: (filter: { client_id: string } | { device_id: string }) => string;
+		/** Cluster display names keyed by node id. */
+		nodeNames?: Record<string, string>;
 	}
 
-	let { rows, compact, technical, clientSearch }: Props = $props();
+	let { rows, compact, technical, clientSearch, nodeNames = {} }: Props = $props();
 	const locale = getLocale();
 	const day = (iso: string) => formatDay(new Date(iso), locale);
 
@@ -141,7 +144,7 @@
 						</span>
 						<span class="sub mono"
 							>{record.protocol}{#if record.node_id}
-								· <Value value={record.node_id} mono />{/if}</span
+								· <Value value={nodeLabel(record.node_id, nodeNames)} mono />{/if}</span
 						>
 					</td>
 					<td>
@@ -183,7 +186,7 @@
 		<dl>
 			{#if hit.node_id}
 				<dt>{m.querylog_row_node()}</dt>
-				<dd class="mono">{hit.node_id}</dd>
+				<dd class="mono">{nodeLabel(hit.node_id, nodeNames)}</dd>
 			{/if}
 			<dt>{m.querylog_row_rcode()}</dt>
 			<dd class="mono">{hit.rcode}</dd>

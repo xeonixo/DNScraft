@@ -11,6 +11,7 @@
 	import Segmented from '$lib/components/Segmented.svelte';
 	import Sheet from '$lib/components/Sheet.svelte';
 	import Switch from '$lib/components/Switch.svelte';
+	import { listClusterNodes } from '$lib/api/cluster';
 	import { exportHref, listQueryLog, type QueryPage, type QueryRecord } from '$lib/api/query-log';
 	import { openQueryLogStream } from '$lib/api/query-log-stream';
 	import { settle, type Result } from '$lib/api/result';
@@ -109,6 +110,8 @@
 	let streamDropped = $state(0);
 	let loadingMore = $state(false);
 	let sentinel = $state<HTMLElement | null>(null);
+	/** Cluster display names for node ids in the list and filter tags. */
+	let nodeNames = $state<Record<string, string>>({});
 	const loaded = $derived(result.kind === 'ok' ? result.data : null);
 
 	/** A server-rejected filter or page value, mapped back to the field that caused it. */
@@ -224,6 +227,17 @@
 
 	onMount(() => {
 		void loadOverview();
+		listClusterNodes()
+			.then((nodes) => {
+				nodeNames = Object.fromEntries(
+					nodes
+						.filter((node) => node.display_name)
+						.map((node) => [node.node_id, node.display_name!]),
+				);
+			})
+			.catch(() => {
+				nodeNames = {};
+			});
 		const media = globalThis.matchMedia?.(WIDE_QUERY);
 		const onChange = (event: MediaQueryListEvent): void => {
 			wide = event.matches;
@@ -418,7 +432,7 @@
 	/>
 </div>
 
-<ActiveTags {draft} onremove={removeKeys} onclear={clearAll} />
+<ActiveTags {draft} {nodeNames} onremove={removeKeys} onclear={clearAll} />
 
 {#if invalid}
 	<GroupedList>
@@ -453,10 +467,11 @@
 			rows={loaded.queries}
 			compact={density === 'compact'}
 			{technical}
+			{nodeNames}
 			clientSearch={(filter) => toSearchParams({ ...draft, ...filter, offset: '' }).toString()}
 		/>
 	{:else}
-		<QueryCards rows={loaded.queries} {technical} />
+		<QueryCards rows={loaded.queries} {technical} {nodeNames} />
 	{/if}
 	{#if loaded.has_more}
 		<div class="sentinel" bind:this={sentinel} aria-hidden="true"></div>

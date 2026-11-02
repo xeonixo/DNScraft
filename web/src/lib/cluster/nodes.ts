@@ -20,6 +20,11 @@ export function nodeChoicesFor(
 	return ids;
 }
 
+/** Display name when the cluster overview set one; otherwise the raw node id. */
+export function nodeLabel(nodeId: string, names: Record<string, string>): string {
+	return names[nodeId] || nodeId;
+}
+
 export function toggleNodeId(selected: readonly string[], id: string, checked: boolean): string[] {
 	if (checked) {
 		return selected.includes(id) ? [...selected] : [...selected, id];

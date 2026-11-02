@@ -777,7 +777,73 @@ async fn query_log_shows_client_id_label_unless_a_directory_client_matches() {
         .await
         .unwrap();
     assert_eq!(page.records[0]["client_id"], "ghost");
-    assert_eq!(page.records[0]["client"], Value::Null);
+    assert_eq!(page.records[0]["client"]["id"], "ghost");
+    assert_eq!(page.records[0]["client"]["display_name"], "ghost");
+    assert_eq!(page.records[0]["client"]["source"], "client_id");
+}
+
+#[tokio::test]
+async fn ingest_remote_rewrites_local_node_id_and_reenriches_clients() {
+    let clock = Arc::new(ManualClock::new(base_time()));
+    let db = Db::open_in_memory(clock).await.unwrap();
+    let log = QueryLog::new(db, dnscraft_api::QueryLogConfig::default(), "master")
+        .with_client_enricher(Arc::new(FakeClients));
+
+    // Sub-node wire shape: JSON still says `local`, no client object yet.
+    let wire = json!({
+        "id": "r-remote",
+        "time_us": (BASE_SECS as i64) * 1_000_000,
+        "source_ip": "192.0.2.10",
+        "query_name": "ads.example.com",
+        "listener_id": "lan-udp",
+        "protocol": "udp53",
+        "source_ip_truncated": false,
+        "client_id": null,
+        "client_name": null,
+        "query_type": "A",
+        "query_class": "IN",
+        "view_id": "lan",
+        "profile_id": "default",
+        "status": "allowed",
+        "answer_source": "cache",
+        "rcode": "NOERROR",
+        "record": {
+            "id": "r-remote",
+            "node_id": "local",
+            "source_ip": "192.0.2.10",
+            "client_id": null,
+            "client": null,
+            "query": { "name": "ads.example.com", "type": "A", "class": "IN" },
+            "status": "allowed",
+        }
+    });
+
+    assert_eq!(log.ingest_remote("node-b", 1, 1, &[wire]).await.unwrap(), 1);
+
+    let page = log
+        .list(&QueryLogFilter {
+            node_id: Some("node-b".to_owned()),
+            limit: 10,
+            ..default_filter()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.records.len(), 1);
+    let record = &page.records[0];
+    assert_eq!(record["node_id"], "node-b");
+    assert_eq!(record["client"]["display_name"], "iPhone");
+    assert_eq!(record["client"]["source"], "unifi");
+    assert_eq!(record["device_id"], "client-0001");
+
+    let only_clients = log
+        .list(&QueryLogFilter {
+            only_with_clients: true,
+            limit: 10,
+            ..default_filter()
+        })
+        .await
+        .unwrap();
+    assert_eq!(only_clients.records.len(), 1);
 }
 
 #[tokio::test]

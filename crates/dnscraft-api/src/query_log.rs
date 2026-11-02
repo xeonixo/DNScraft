@@ -154,7 +154,7 @@ pub struct QueryLogFilter {
     pub status: Option<String>,
     /// Shorthand for `status = blocked`.
     pub only_blocked: bool,
-    /// Return only rows with client-directory data.
+    /// Return only rows with a client id, display name, or device key.
     pub only_with_clients: bool,
     /// Sort column.
     pub order_by: OrderBy,
@@ -337,22 +337,36 @@ impl QueryLog {
         }
         let (clause, clause_values) = filter_clause(filter);
         let ids: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
-        self.db
+        let fetched = self
+            .db
             .with_read_conn(move |conn| {
                 let placeholders = vec!["?"; ids.len()].join(",");
                 let sql = format!(
-                    "SELECT record FROM query_log WHERE id IN ({placeholders}){clause}
+                    "SELECT record, status, node_id FROM query_log
+                     WHERE id IN ({placeholders}){clause}
                      ORDER BY time ASC, rowid ASC"
                 );
                 let mut values: Vec<Value> = ids.into_iter().map(Value::Text).collect();
                 values.extend(clause_values);
                 let mut stmt = conn.prepare(&sql).map_err(db_err)?;
                 let rows = stmt
-                    .query_map(params_from_iter(values), |row| row.get::<_, String>(0))
+                    .query_map(params_from_iter(values), |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    })
                     .map_err(db_err)?;
                 rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
             })
-            .await
+            .await?;
+        fetched
+            .into_iter()
+            .map(|(raw, status, node_id)| {
+                hydrate_record(raw, status, node_id).map(|record| record.to_string())
+            })
+            .collect()
     }
 
     /// Attaches the sink returned by [`Self::channel`], so the stats overview
@@ -594,7 +608,7 @@ impl QueryLog {
                 .map_err(read_error)?
         };
 
-        let mut sql = String::from("SELECT record, status FROM query_log WHERE 1 = 1");
+        let mut sql = String::from("SELECT record, status, node_id FROM query_log WHERE 1 = 1");
         sql.push_str(&conditions);
         let column = match filter.order_by {
             OrderBy::Time => "time",
@@ -620,10 +634,14 @@ impl QueryLog {
                 let mut stmt = conn.prepare(&sql).map_err(db_err)?;
                 let rows = stmt
                     .query_map(params_from_iter(values), |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
                     })
                     .map_err(db_err)?;
-                rows.collect::<Result<Vec<(String, String)>, _>>()
+                rows.collect::<Result<Vec<(String, String, String)>, _>>()
                     .map_err(db_err)
             })
             .await
@@ -631,8 +649,8 @@ impl QueryLog {
 
         let has_more = fetched.len() > limit as usize;
         let mut records = Vec::with_capacity(fetched.len().min(limit as usize));
-        for (raw, status) in fetched.into_iter().take(limit as usize) {
-            records.push(attach_status(raw, status)?);
+        for (raw, status, node_id) in fetched.into_iter().take(limit as usize) {
+            records.push(hydrate_record(raw, status, node_id)?);
         }
         Ok(QueryLogPage {
             records,
@@ -656,17 +674,23 @@ impl QueryLog {
     ) -> Result<Vec<(i64, String)>, ControlApiError> {
         let (conditions, mut values) = filter_clause(filter);
         let sql = format!(
-            "SELECT rowid, record FROM query_log WHERE 1 = 1{conditions}
+            "SELECT rowid, record, status, node_id FROM query_log WHERE 1 = 1{conditions}
              AND rowid > ? ORDER BY rowid LIMIT ?"
         );
         values.push(Value::Integer(after_rowid));
         values.push(Value::Integer(i64::from(page.max(1))));
-        self.db
+        let fetched = self
+            .db
             .with_read_conn(move |conn| {
                 let mut stmt = conn.prepare(&sql).map_err(db_err)?;
                 let rows = stmt
                     .query_map(params_from_iter(values), |row| {
-                        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
                     })
                     .map_err(db_err)?;
                 rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
@@ -674,7 +698,17 @@ impl QueryLog {
             .await
             .map_err(|error| ControlApiError::QueryLogExport {
                 message: error.to_string(),
+            })?;
+        fetched
+            .into_iter()
+            .map(|(rowid, raw, status, node_id)| {
+                hydrate_record(raw, status, node_id)
+                    .map(|record| (rowid, record.to_string()))
+                    .map_err(|error| ControlApiError::QueryLogExport {
+                        message: error.to_string(),
+                    })
             })
+            .collect()
     }
 
     /// Loads one record by id, or `None` when it is absent (or aged out).
@@ -685,9 +719,15 @@ impl QueryLog {
             .with_read_conn(move |conn| {
                 use rusqlite::OptionalExtension as _;
                 conn.query_row(
-                    "SELECT record, status FROM query_log WHERE id = ?1",
+                    "SELECT record, status, node_id FROM query_log WHERE id = ?1",
                     params![id],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
                 )
                 .optional()
                 .map_err(db_err)
@@ -696,7 +736,7 @@ impl QueryLog {
             .map_err(read_error)?;
         match raw {
             None => Ok(None),
-            Some((raw, status)) => attach_status(raw, status).map(Some),
+            Some((raw, status, node_id)) => hydrate_record(raw, status, node_id).map(Some),
         }
     }
 
@@ -799,22 +839,25 @@ impl QueryLog {
             });
         }
         let node_id = node_id.to_owned();
+        let enricher = self.enricher.clone();
         let rows = records
             .iter()
             .enumerate()
             .map(|(offset, value)| {
-                let row: RemoteRow = serde_json::from_value(value.clone()).map_err(|error| {
+                let mut row: RemoteRow = serde_json::from_value(value.clone()).map_err(|error| {
                     ControlApiError::QueryLogInvalid {
                         reason: format!("invalid remote query-log record: {error}"),
                     }
                 })?;
                 row.validate()?;
+                let device_id =
+                    prepare_remote_row(&mut row, &node_id, enricher.as_deref());
                 let seq = first_seq.checked_add(offset as u64).ok_or_else(|| {
                     ControlApiError::QueryLogInvalid {
                         reason: "log sequence number overflow".to_owned(),
                     }
                 })?;
-                Ok((row, seq))
+                Ok((row, seq, device_id))
             })
             .collect::<Result<Vec<_>, ControlApiError>>()?;
 
@@ -822,7 +865,7 @@ impl QueryLog {
         self.db
             .with_conn(move |conn| {
                 let tx = conn.transaction().map_err(db_err)?;
-                for (row, seq) in &rows {
+                for (row, seq, device_id) in &rows {
                     let seq =
                         i64::try_from(*seq).map_err(|_| ControlApiError::QueryLogInvalid {
                             reason: "log sequence number out of range".to_owned(),
@@ -845,12 +888,6 @@ impl QueryLog {
                         }
                         continue;
                     }
-                    // Replicated rows keep the device key the sub-node stored in the record.
-                    let device_id = row
-                        .record
-                        .get("device_id")
-                        .and_then(Json::as_str)
-                        .map(str::to_owned);
                     tx.execute(
                         "INSERT INTO query_log (
                              id, time, node_id, source_ip, query_name, listener_id,
@@ -1049,18 +1086,67 @@ pub(crate) fn register_sql_functions(conn: &Connection) -> rusqlite::Result<()> 
     )
 }
 
-/// Puts the denormalised `status` column on a record that was stored without one.
-fn attach_status(raw: String, status: String) -> Result<Json, ControlApiError> {
+/// Merges denormalised columns into the stored JSON document on read.
+///
+/// `status` fills records written before that field was embedded. `node_id`
+/// always comes from the SQL column so cluster ingest (and older sub-node rows
+/// that still say `"local"` inside the document) agree with filters.
+fn hydrate_record(raw: String, status: String, node_id: String) -> Result<Json, ControlApiError> {
     let mut record: Json =
         serde_json::from_str(&raw).map_err(|_| ControlApiError::QueryLogRead {
             message: "stored query-log record is not valid JSON".to_owned(),
         })?;
-    if record.get("status").and_then(Json::as_str).is_none()
-        && let Some(obj) = record.as_object_mut()
-    {
-        obj.insert("status".to_owned(), Json::String(status));
+    if let Some(obj) = record.as_object_mut() {
+        if obj.get("status").and_then(Json::as_str).is_none() {
+            obj.insert("status".to_owned(), Json::String(status));
+        }
+        obj.insert("node_id".to_owned(), Json::String(node_id));
     }
     Ok(record)
+}
+
+/// Stamps the enrolled node id and re-enriches the client from the master's
+/// directory before a remote row is stored.
+fn prepare_remote_row(
+    row: &mut RemoteRow,
+    node_id: &str,
+    enricher: Option<&dyn ClientEnricher>,
+) -> Option<String> {
+    if let Some(obj) = row.record.as_object_mut() {
+        obj.insert("node_id".to_owned(), Json::String(node_id.to_owned()));
+    }
+    let mut device_id = row
+        .record
+        .get("device_id")
+        .and_then(Json::as_str)
+        .map(str::to_owned);
+    let directory = enricher.and_then(|enricher| {
+        row.source_ip
+            .parse::<IpAddr>()
+            .ok()
+            .and_then(|ip| enricher.by_ip(ip))
+    });
+    if let Some(client) = directory {
+        row.client_name = Some(client.display_name.clone());
+        if matches!(client.source.as_str(), "unifi" | "manual") && !client.id.is_empty() {
+            device_id = Some(client.id.clone());
+        }
+        if let Some(obj) = row.record.as_object_mut() {
+            obj.insert("client".to_owned(), client_json(&client));
+            if let Some(device_id) = &device_id {
+                obj.insert("device_id".to_owned(), Json::String(device_id.clone()));
+            }
+        }
+    } else if row.record.get("client").and_then(Json::as_object).is_none()
+        && let Some(client) =
+            resolve_client(None, row.client_id.as_deref(), row.client_name.as_deref())
+    {
+        row.client_name = Some(client.display_name.clone());
+        if let Some(obj) = row.record.as_object_mut() {
+            obj.insert("client".to_owned(), client_json(&client));
+        }
+    }
+    device_id
 }
 
 /// Builds the shared `WHERE` conditions for a [`QueryLogFilter`].
@@ -1141,7 +1227,9 @@ fn filter_clause(filter: &QueryLogFilter) -> (String, Vec<Value>) {
         sql.push_str(" AND status = 'blocked'");
     }
     if filter.only_with_clients {
-        sql.push_str(" AND client_name IS NOT NULL");
+        sql.push_str(
+            " AND (client_name IS NOT NULL OR client_id IS NOT NULL OR device_id IS NOT NULL)",
+        );
     }
     (sql, values)
 }
@@ -1533,18 +1621,17 @@ fn block_mode_str(mode: BlockMode) -> &'static str {
 }
 
 /// Picks the client shown for a record. A directory match by source IP wins;
-/// otherwise a registered Client ID with a label stands in for the client.
-/// Without either, there is no client.
+/// otherwise a registered Client ID stands in (label when present, else the id).
 pub(crate) fn resolve_client(
     directory: Option<ClientView>,
     client_id: Option<&str>,
     label: Option<&str>,
 ) -> Option<ClientView> {
     directory.or_else(|| {
-        let (id, label) = (client_id?, label?);
+        let id = client_id?;
         Some(ClientView {
             id: id.to_owned(),
-            display_name: label.to_owned(),
+            display_name: label.unwrap_or(id).to_owned(),
             source: "client_id".to_owned(),
             ..ClientView::default()
         })
@@ -1928,8 +2015,11 @@ mod tests {
     }
 
     #[test]
-    fn no_label_or_no_client_id_leaves_the_record_unchanged() {
-        assert_eq!(resolve_client(None, Some("anna-phone"), None), None);
+    fn client_id_without_label_uses_the_id_as_the_name() {
+        let client = resolve_client(None, Some("anna-phone"), None).unwrap();
+        assert_eq!(client.id, "anna-phone");
+        assert_eq!(client.display_name, "anna-phone");
+        assert_eq!(client.source, "client_id");
         assert_eq!(resolve_client(None, None, Some("Anna's iPhone")), None);
         assert_eq!(resolve_client(None, None, None), None);
         let directory = directory_client("iPhone");

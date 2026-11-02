@@ -302,21 +302,16 @@ pub async fn build_with_enrollment(
     let node_id = config
         .node_id()
         .map_err(|e| Error::startup("dnscraft.startup.node_id", format!("node_id: {e}")))?;
-    // The master's own rows carry its real node id so the node filter finds them. A sub-node
-    // keeps `local`: its outbox sequence counters are keyed by it and replication re-labels
-    // the rows with the enrolled id on the master.
-    let log_node_id = if cluster.as_ref().map(|c| c.role) == Some(Role::SubNode) {
-        CONFIG_NODE_ID
-    } else {
-        node_id.as_str()
-    };
+    // Every node stamps its enrolled (or standalone) id so filters and the UI agree
+    // without a later rewrite. Cluster ingest still re-labels the SQL column from the
+    // mTLS identity for defence in depth.
     let (query_sink, query_rx) = QueryLog::channel(QUERY_LOG_CHANNEL_CAPACITY);
     // The sink is attached so the overview reports `query_log.dropped`.
     let query_log = Arc::new(
         QueryLog::new(
             db.clone(),
             config.control_api.query_log.clone(),
-            log_node_id,
+            node_id.as_str(),
         )
         .with_client_enricher(Arc::new(engine::EngineClients {
             engine: Arc::clone(&engines.clients),

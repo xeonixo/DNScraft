@@ -232,6 +232,21 @@
 				{@render fieldError('client_name_substr')}
 			</div>
 			<div class="field-wrap">
+				<label class="field-label" for={inputId('device_id')}>{m.querylog_device_id()}</label>
+				<input
+					id={inputId('device_id')}
+					class="field mono-field"
+					type="text"
+					maxlength="128"
+					autocomplete="off"
+					spellcheck="false"
+					bind:value={draft.device_id}
+					aria-invalid={errorOf('device_id') !== null}
+					aria-describedby={errorOf('device_id') !== null ? errorId('device_id') : undefined}
+				/>
+				{@render fieldError('device_id')}
+			</div>
+			<div class="field-wrap">
 				<label class="field-label" for={inputId('node_id')}>{m.querylog_node_id()}</label>
 				{#if nodeChoices === null}
 					<input

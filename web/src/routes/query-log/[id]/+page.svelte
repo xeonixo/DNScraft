@@ -34,17 +34,21 @@
 		trackerCategoryLabel,
 		trackerForName,
 	} from '$lib/querylog/view';
+	import { listClusterNodes } from '$lib/api/cluster';
+	import { nodeLabel } from '$lib/cluster/nodes';
 	import { formatDateTime, formatMilliseconds, formatNumber } from '$lib/format';
 	import { getLocale } from '$lib/i18n/locale';
 	import { domainLabel } from '$lib/policy/display';
 	import { m } from '$lib/paraglide/messages';
 	import { displayText, FULL_LIMIT } from '$lib/safe-text';
+	import { onMount } from 'svelte';
 
 	const locale = getLocale();
 	const isAdmin = $derived(auth.role === 'admin');
 	const id = $derived(page.params.id ?? '');
 
 	let result = $state<Result<QueryRecord>>({ kind: 'loading' });
+	let nodeNames = $state<Record<string, string>>({});
 	let ruleOpen = $state(false);
 	// The rule sheet's name and default action: the query's own name, or one CNAME hop's name.
 	let ruleDomain = $state('');
@@ -62,6 +66,25 @@
 		const current = id;
 		void load(current);
 	});
+
+	onMount(() => {
+		listClusterNodes()
+			.then((nodes) => {
+				nodeNames = Object.fromEntries(
+					nodes
+						.filter((node) => node.display_name)
+						.map((node) => [node.node_id, node.display_name!]),
+				);
+			})
+			.catch(() => {
+				nodeNames = {};
+			});
+	});
+
+	function clientsHref(record: QueryRecord): string {
+		const needle = record.device_id ?? record.client?.id ?? record.client_id ?? record.source_ip;
+		return `${resolve('/clients')}?q=${encodeURIComponent(needle)}`;
+	}
 
 	function openRule(domain: string, action: RuleAction): void {
 		outcome = null;
@@ -143,7 +166,7 @@
 			{/if}
 			<p class="meta">
 				<span class="item">{record.query.type}</span>
-				<a class="item link" href={resolve('/clients')}>{displayText(device, 60).text}</a>
+				<a class="item link" href={clientsHref(record)}>{displayText(device, 60).text}</a>
 				<span class="item">{formatDateTime(new Date(record.time), locale)}</span>
 				<span class="item"
 					>{record.filter
@@ -235,7 +258,11 @@
 					{/if}
 					<FieldRow label={m.querylog_row_protocol()} value={record.protocol} mono />
 					<FieldRow label={m.querylog_row_listener()} value={record.listener_id} mono />
-					<FieldRow label={m.querylog_row_node()} value={record.node_id} mono />
+					<FieldRow
+						label={m.querylog_row_node()}
+						value={nodeLabel(record.node_id, nodeNames)}
+						mono
+					/>
 				</GroupedList>
 
 				<GroupedList header={m.querylog_section_device()}>

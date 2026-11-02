@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { nodeLag } from './nodes';
+import { nodeLabel, nodeLag } from './nodes';
+
+describe('nodeLabel', () => {
+	it('prefers the cluster display name and falls back to the id', () => {
+		expect(nodeLabel('n1', { n1: 'Kitchen' })).toBe('Kitchen');
+		expect(nodeLabel('n2', { n1: 'Kitchen' })).toBe('n2');
+	});
+});
 
 describe('nodeLag', () => {
 	it('measures each node against the newest applied version of the non-revoked nodes', () => {

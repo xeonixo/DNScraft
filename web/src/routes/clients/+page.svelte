@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
 	import Button from '$lib/components/Button.svelte';
 	import ConfirmSheet from '$lib/components/ConfirmSheet.svelte';
@@ -135,6 +136,8 @@
 	}
 
 	onMount(() => {
+		const fromUrl = page.url.searchParams.get('q');
+		if (fromUrl) search = fromUrl;
 		void load();
 	});
 </script>

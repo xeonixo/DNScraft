@@ -14,11 +14,16 @@ export interface UpdateCheck {
 /** `GET/PUT /api/v1/web-access` (system_routes.rs): public sources may reach the web UI. */
 export interface WebAccess {
 	public_enabled: boolean;
+	/** Empty means no extra restriction on public sources. */
+	allowed_cidrs: string[];
+	version?: number;
 }
 
 export const getWebAccess = (): Promise<WebAccess> => get('/web-access');
-export const putWebAccess = (publicEnabled: boolean): Promise<WebAccess> =>
-	put('/web-access', { body: { public_enabled: publicEnabled } });
+export const putWebAccess = (body: {
+	public_enabled: boolean;
+	allowed_cidrs: string[];
+}): Promise<WebAccess> => put('/web-access', { body });
 
 /** `GET /api/v1/web-bans`: sources currently banned by the shared strike table. */
 export interface WebBan {

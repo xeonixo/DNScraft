@@ -41,7 +41,7 @@ use super::listener_routes::{delete_listener, list_listeners, put_listener};
 use super::mcp_endpoints::{
     add_custom_rule, allow_temporarily, confirm_mcp_proposal, explain_block, get_filter_pause,
     list_mcp_proposals, list_mcp_rules, pause_filter_set, reject_mcp_proposal, remove_custom_rule,
-    resume_filter_set, test_query,
+    remove_temporary_allow, resume_filter_set, test_query,
 };
 use super::notifications_routes::{get_notifications, post_notification_test, put_notifications};
 use super::oauth;
@@ -98,7 +98,10 @@ pub(crate) fn build_router(state: AppState) -> Router {
             "/filtering/custom-rules",
             post(add_custom_rule).delete(remove_custom_rule),
         )
-        .route("/filtering/temporary-allows", post(allow_temporarily))
+        .route(
+            "/filtering/temporary-allows",
+            post(allow_temporarily).delete(remove_temporary_allow),
+        )
         .route(
             "/filtering/pause",
             get(get_filter_pause).post(pause_filter_set),

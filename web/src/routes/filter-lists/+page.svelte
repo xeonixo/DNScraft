@@ -377,6 +377,7 @@
 <div class="filter-lists">
 	<div class="page-head">
 		<p class="lead">{m.filter_lists_lead()}</p>
+		<p class="lead-note">{m.filter_lists_refresh_unavailable()}</p>
 		{#if isAdmin}
 			<div class="head-actions">
 				<Button variant="secondary" onclick={openRecommend}>{m.filter_lists_recommended()}</Button>
@@ -663,10 +664,15 @@
 		justify-content: space-between;
 		gap: var(--space-4);
 	}
-	.lead {
+	.lead,
+	.lead-note {
 		max-width: 40rem;
 		margin: 0;
 		color: var(--label-2);
+	}
+	.lead-note {
+		font-size: 0.8125rem;
+		color: var(--label-3);
 	}
 	.head-actions {
 		display: flex;

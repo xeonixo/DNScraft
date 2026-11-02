@@ -3,7 +3,7 @@
 > Spec: [SPEC-listeners.md](../../docs/SPEC-listeners.md) (approved 2026-10-25) · Project spec: [SPEC.md](../../docs/SPEC.md) ·
 > Tasks: [listeners-todo.md](listeners-todo.md) · Resume log: [progress.md](../progress.md) ·
 > Neighbours: [policy-plan.md](policy-plan.md), [tls-plan.md](tls-plan.md)
-> Built by **one Cursor agent**, one task per session (template B in [cursor-next.md](../cursor-next.md)); Claude reviews at every checkpoint.
+> Built by **one Cursor agent**, one task per session (template B in [cursor-next.md](cursor-next.md)); Claude reviews at every checkpoint.
 
 ## Overview
 

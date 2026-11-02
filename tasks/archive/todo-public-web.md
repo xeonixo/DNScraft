@@ -1,10 +1,8 @@
 # Todo: Web-UI/API öffentlich erreichbar, im UI einstellbar, mit Fail2ban-Sperre (PW1–PW3)
 
-> Nothing here is implemented. Today the UI/API is private-only: `route()` in
-> `crates/dnscraft-listeners/src/doh.rs` hands non-DoH paths to the web handler only when
-> `private_source()` holds; `ControlApiConfig::validate()` rejects non-private `bind`.
-> Phase 0 (owner sign-off on the open decisions) comes before code. Owners: `dnscraft-listeners`
-> (routing), `dnscraft-api` (ban + settings endpoint), `web` (settings page).
+> Archived 2026-11-02 — core shipped (opt-in public via shared DoH listener, bans, settings,
+> `allowed_cidrs`). Deferred notes below stay open ideas, not a live task list.
+> Spec: [`SPEC-control-api.md`](../../docs/SPEC-control-api.md). Log: [`progress.md`](../progress.md).
 
 ## Already there (reuse, don't rebuild)
 
@@ -14,16 +12,18 @@
 
 ## PW1 — Öffentlicher Web-Zugang (opt-in)
 
-- [ ] Phase 0 decisions: (a) default off, enabled per setting; (b) UI/API reachable on the shared
-      public DoH listener only, never an own wildcard socket (keeps `ensure_internal_socket`); (c) while
-      public, `/api/v1/auth/local/login` and OIDC only, everything else needs a session as today;
-      (d) TLS mandatory (shared listener already terminates TLS); (e) optional allowlist of CIDRs.
-- [x] `route()` (done: `WebSlot::set_public`, `doh.rs::route`; not yet wired to a setting/UI → PW3): replace `private_source` with `private_source || web_public_enabled`; flag lives in
-      `WebSlot`/shared state and is hot-swappable (no restart).
-- [ ] Tests: `public_source_gets_web_handler_when_enabled`, `public_source_gets_404_when_disabled`,
-      `public_toggle_applies_without_restart`; keep `public_listener_routes_the_web_handler_for_private_sources_only` for the default.
-- [ ] Spec: update `docs/SPEC-control-api.md` "Internal-only binding" + README security row 9 — the
-      invariant becomes "no own public socket; public only via shared listener when opted in".
+- [x] Phase 0 decisions, shipped as proposed: (a) default off, enabled per setting; (b) UI/API reachable on the shared
+      public DoH listener only, never an own public socket; (c) sign-in stays required (login and OIDC are public,
+      everything else needs a session as today); (d) TLS is the shared listener's; (e) optional `allowed_cidrs`
+      (empty = no extra restriction; private sources always allowed). Done 2026-11-02.
+- [x] `route()`: `WebSlot::set_public` / `set_public_cidrs`, `doh.rs` `web_allowed`. Private sources always;
+      public sources only while public access is on, the peer matches the allowlist, and the peer is not banned.
+      Hot-swappable (no restart).
+- [x] Tests: `public_source_gets_web_handler_only_while_public_access_is_enabled`,
+      `public_listener_routes_the_web_handler_for_private_sources_only`,
+      `public_web_cidr_allowlist_filters_public_sources_only`.
+- [x] Spec: SPEC-control-api success criterion 9 matches the opt-in shared-listener exception.
+      There is no numbered README security row; `deploy/README.md` states the same rule.
 
 ## PW2 — Fail2ban-Sperre für Web-Zugriffe
 
@@ -43,13 +43,13 @@ the unban has no audit row (tracing only). Add when needed.
 
 ## PW3 — Einstellungen im UI
 
-- [x] `GET/PUT /api/v1/web-access` (admin), `public_enabled` only so far, stored in
+- [x] `GET/PUT /api/v1/web-access` (admin): `public_enabled` and optional `allowed_cidrs`, stored in
       `control_api_settings.web_access`, applied live via `ModuleAppliers.web` (boot, replace, cluster sync).
-      Still open: `allowed_cidrs`, `ban_*` (with PW2).
-- [x] (toggle only: `web/src/lib/settings/WebAccessPanel.svelte`; ban list with unban done) Web: Seite unter Einstellungen — Schalter „Öffentlich erreichbar" mit Warnhinweis
-      (nur HTTPS, Admin-Passwort/OIDC prüfen), Ban-Parameter, Tabelle gesperrter IPs mit „Entsperren".
-      Lead with the toggle + current ban count; thresholds as secondary fields.
+      `ban_*` stay in listeners public config (not this setting); see PW2 open items.
+- [x] Web: `web/src/lib/settings/WebAccessPanel.svelte` — switch, CIDR textarea while public is on,
+      banned-address list with unban. Ban thresholds are not edited here.
 - [x] Lock-out guard: `PUT /web-access` with `public_enabled=true` refuses while
       `DNSCRAFT_ADMIN_PASSWORD_FILE` is set or neither OIDC nor a local account exists
       (`control_api.web_access.bootstrap_auth`, 2026-11-01).
-- [ ] Gates: `cargo fmt --check`, `cargo clippy`, `cargo test -p dnscraft-api -p dnscraft-listeners`, `pnpm check/lint/test`, Playwright toggle + unban flow; verify desktop/mobile/dark in browser.
+- [ ] Gates still open: full `cargo clippy`, `pnpm check/lint`, Playwright toggle + unban, desktop/mobile/dark.
+      CIDR behavior is covered by `cargo test -p dnscraft-listeners` / `dnscraft-api` web-access tests (2026-11-02).

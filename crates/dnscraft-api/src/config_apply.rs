@@ -923,8 +923,23 @@ impl ConfigService {
 
     /// Pushes `control_api_settings.web_access` into the listeners' web hand-off.
     fn apply_web_access_settings(&self, snapshot: &Value) {
-        if let Some(web) = self.modules.web.as_ref() {
-            web.set_public(crate::system::web_access_public(snapshot));
+        let Some(web) = self.modules.web.as_ref() else {
+            return;
+        };
+        let cidrs = crate::system::web_access_cidr_strings(snapshot);
+        match dnscraft_listeners::parse_public_cidrs(cidrs.iter().map(String::as_str)) {
+            Ok(nets) => {
+                web.set_public_cidrs(nets);
+                web.set_public(crate::system::web_access_public(snapshot));
+            }
+            Err(error) => {
+                tracing::error!(
+                    %error,
+                    "refusing public web access: allowed_cidrs did not parse"
+                );
+                web.set_public(false);
+                web.set_public_cidrs(Vec::new());
+            }
         }
     }
 
@@ -1277,9 +1292,50 @@ fn check_if_match(raw: Option<&str>, current: Option<i64>) -> Result<(), Control
 /// The MCP switches editable at runtime; applied over the TOML at startup.
 pub const MCP_SETTING_KEYS: [&str; 3] = ["enabled", "write_tools_enabled", "legacy_session_mode"];
 
+/// `control_api_settings.web_access`: `public_enabled` plus an optional CIDR allowlist.
+fn validate_web_access(value: &Value) -> Result<(), ControlApiError> {
+    let Some(object) = value.as_object() else {
+        return Err(config_invalid(
+            "control_api_settings.web_access must be an object",
+        ));
+    };
+    if !object.get("public_enabled").is_some_and(Value::is_boolean) {
+        return Err(config_invalid(
+            "control_api_settings.web_access.public_enabled must be a boolean",
+        ));
+    }
+    if let Some(list) = object.get("allowed_cidrs") {
+        let Some(items) = list.as_array() else {
+            return Err(config_invalid(
+                "control_api_settings.web_access.allowed_cidrs must be an array of CIDR strings",
+            ));
+        };
+        if items.iter().any(|item| !item.is_string()) {
+            return Err(config_invalid(
+                "control_api_settings.web_access.allowed_cidrs entries must be strings",
+            ));
+        }
+        let cidrs = items.iter().filter_map(Value::as_str);
+        if let Err(error) = dnscraft_listeners::parse_public_cidrs(cidrs) {
+            return Err(config_invalid(format!(
+                "control_api_settings.web_access.allowed_cidrs: {error}"
+            )));
+        }
+    }
+    for key in object.keys() {
+        if key != "public_enabled" && key != "allowed_cidrs" {
+            return Err(config_invalid(format!(
+                "unknown field `control_api_settings.web_access.{key}`"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Validates the non-secret runtime keys of `control_api_settings` (GA15).
 ///
-/// Accepted: `update_check` (bool), `web_access` (`public_enabled`), `backups` (`enabled`,
+/// Accepted: `update_check` (bool), `web_access` (`public_enabled`, optional `allowed_cidrs`),
+/// `backups` (`enabled`,
 /// `retention_count`), `query_log` (`retention_days` 1..=3650, `ip_truncate`,
 /// `stdout_queries`), `mcp` (boolean `enabled`, `write_tools_enabled`,
 /// `legacy_session_mode`) and `oidc` (`enabled`, `issuer`, `client_id`,
@@ -1298,15 +1354,7 @@ fn validate_control_api_settings(settings: &Value) -> Result<(), ControlApiError
                     ));
                 }
             }
-            "web_access" => {
-                if !value.as_object().is_some_and(|o| {
-                    o.len() == 1 && o.get("public_enabled").is_some_and(Value::is_boolean)
-                }) {
-                    return Err(config_invalid(
-                        "control_api_settings.web_access must be {\"public_enabled\": bool}",
-                    ));
-                }
-            }
+            "web_access" => validate_web_access(value)?,
             "backups" => {
                 let backups: crate::system::BackupSettings = serde_json::from_value(value.clone())
                     .map_err(|error| {

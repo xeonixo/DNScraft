@@ -66,11 +66,24 @@ describe('Sidebar', () => {
 		expect(container.querySelector('.sidebar-foot a')).toHaveAttribute('href', '/feedback');
 	});
 
-	it('shows every section item to a viewer', () => {
+	it('shows viewer section items to a viewer', () => {
 		const { container } = render(Sidebar, { props: { currentPath: '/dashboard' } });
 		const links = container.querySelectorAll('nav a.nav-item');
+		const expected = navSections.reduce(
+			(count, section) =>
+				count + section.items.filter((item) => item.minRole === 'viewer').length,
+			0,
+		);
+		// The viewer sections plus the Einstellungen item.
+		expect(links).toHaveLength(expected + 1);
+	});
+
+	it('shows every section item to an admin', () => {
+		const { container } = render(Sidebar, {
+			props: { currentPath: '/dashboard', role: 'admin' },
+		});
+		const links = container.querySelectorAll('nav a.nav-item');
 		const expected = navSections.reduce((count, section) => count + section.items.length, 0);
-		// The sections plus the Einstellungen item.
 		expect(links).toHaveLength(expected + 1);
 	});
 

@@ -1,4 +1,5 @@
-import { ApiError, get, post } from './client';
+import { ApiError, get, isRecord, post } from './client';
+import { CLIENT_MALFORMED } from './error-codes';
 import { NOT_READY_CODE } from './result';
 
 // Typed reads and writes for the dashboard. Only the fields the UI renders are declared; shapes
@@ -165,3 +166,99 @@ export const pauseFilterSet = (duration: PauseDuration): Promise<PauseResult> =>
 	post<PauseResult>('/filtering/pause', {
 		body: { filter_set_id: FILTER_SET, duration },
 	});
+
+/** Window of `GET /api/v1/stats/domains/{name}`. */
+export type DomainDays = 7 | 30;
+
+export interface DomainClientStat {
+	client: string;
+	queries: number;
+}
+
+export interface DomainDayStat {
+	day: string;
+	total: number;
+	blocked: number;
+}
+
+export interface DomainLastDecision {
+	id: string;
+	time: string;
+	status: string;
+	rule_text: string | null;
+	source: string | null;
+}
+
+/** Body of `GET /api/v1/stats/domains/{name}` (`QueryLog::domain_detail`). */
+export interface DomainStats {
+	domain: string;
+	retention_limited: boolean;
+	first_seen: string;
+	last_seen: string;
+	counts: { total: number; blocked: number; allowed: number };
+	top_clients: DomainClientStat[];
+	daily: DomainDayStat[];
+	last_decision: DomainLastDecision | null;
+}
+
+function finite(value: unknown): number {
+	if (typeof value !== 'number' || !Number.isFinite(value)) throw new ApiError(0, CLIENT_MALFORMED);
+	return value;
+}
+
+function parseClients(value: unknown): DomainClientStat[] {
+	if (!Array.isArray(value)) throw new ApiError(0, CLIENT_MALFORMED);
+	return value.map((item) => {
+		if (!isRecord(item) || typeof item.client !== 'string') throw new ApiError(0, CLIENT_MALFORMED);
+		return { client: item.client, queries: finite(item.queries) };
+	});
+}
+
+function parseDaily(value: unknown): DomainDayStat[] {
+	if (!Array.isArray(value)) throw new ApiError(0, CLIENT_MALFORMED);
+	return value.map((item) => {
+		if (!isRecord(item) || typeof item.day !== 'string') throw new ApiError(0, CLIENT_MALFORMED);
+		return { day: item.day, total: finite(item.total), blocked: finite(item.blocked) };
+	});
+}
+
+function parseDecision(value: unknown): DomainLastDecision | null {
+	if (value === null) return null;
+	if (!isRecord(value) || typeof value.id !== 'string') throw new ApiError(0, CLIENT_MALFORMED);
+	return {
+		id: value.id,
+		time: typeof value.time === 'string' ? value.time : '',
+		status: typeof value.status === 'string' ? value.status : '',
+		rule_text: typeof value.rule_text === 'string' ? value.rule_text : null,
+		source: typeof value.source === 'string' ? value.source : null,
+	};
+}
+
+/** One domain over the raw query log. `days` is 7 or 30; an unseen name is a 404. */
+export async function getDomainStats(name: string, days: DomainDays = 7): Promise<DomainStats> {
+	const data = await get<unknown>(`/stats/domains/${encodeURIComponent(name)}?days=${days}`);
+	if (
+		!isRecord(data) ||
+		typeof data.domain !== 'string' ||
+		typeof data.retention_limited !== 'boolean' ||
+		typeof data.first_seen !== 'string' ||
+		typeof data.last_seen !== 'string' ||
+		!isRecord(data.counts)
+	) {
+		throw new ApiError(0, CLIENT_MALFORMED);
+	}
+	return {
+		domain: data.domain,
+		retention_limited: data.retention_limited,
+		first_seen: data.first_seen,
+		last_seen: data.last_seen,
+		counts: {
+			total: finite(data.counts.total),
+			blocked: finite(data.counts.blocked),
+			allowed: finite(data.counts.allowed),
+		},
+		top_clients: parseClients(data.top_clients),
+		daily: parseDaily(data.daily),
+		last_decision: parseDecision(data.last_decision),
+	};
+}

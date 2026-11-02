@@ -1,6 +1,8 @@
 // Helpers for the DoH-Clients screen: suggested Client IDs, id/label checks, address parsing and
 // the "was it a home device" test used by the last-seen line. Pure, no DOM.
 
+import { rdataTexts, type RdataValue } from '$lib/api/policy';
+
 export const CLIENT_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
 export const LABEL_MAX = 64;
 
@@ -92,8 +94,8 @@ export function isIpLiteral(value: string): boolean {
 interface NameRecord {
 	name: string;
 	type: string;
-	rdata: string;
-	overrides: Record<string, string>;
+	rdata: RdataValue;
+	overrides: Record<string, RdataValue>;
 }
 
 const normName = (name: string): string => name.trim().replace(/\.$/, '').toLowerCase();
@@ -115,13 +117,15 @@ export function nameHasHomeAddress(
 		const home = here.some(
 			(row) =>
 				(row.type === 'A' || row.type === 'AAAA') &&
-				(isLanAddress(row.rdata.trim()) ||
+				(rdataTexts(row.rdata).some((text) => isLanAddress(text.trim())) ||
 					Object.keys(row.overrides).some((key) => homeViews.has(key))),
 		);
 		if (home) return true;
 		const cname = here.find((row) => row.type === 'CNAME');
 		if (!cname) return false;
-		current = normName(cname.rdata);
+		const target = rdataTexts(cname.rdata)[0];
+		if (!target) return false;
+		current = normName(target);
 	}
 	return false;
 }

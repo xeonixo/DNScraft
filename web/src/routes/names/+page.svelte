@@ -33,9 +33,13 @@
 		deleteRecord,
 		listRecords,
 		listViews,
+		rdataLabel,
+		rdataTexts,
+		rdataWire,
 		saveRecord,
 		type PolicyRecord,
 		type PolicyView,
+		type RdataValue,
 	} from '$lib/api/policy';
 	import { ApiError } from '$lib/api/client';
 	import { failureOf, settle, type Result } from '$lib/api/result';
@@ -66,7 +70,10 @@
 	let formName = $state('');
 	let formType = $state('A');
 	let formTtl = $state('60');
-	let formRdata = $state('');
+	/** Local targets. The first row keeps the "Local value" label. */
+	type ValueRow = { key: number; text: string };
+	let formValues = $state<ValueRow[]>([{ key: 0, text: '' }]);
+	let nextValueKey = 1;
 	let formPublicContent = $state('');
 	let formPublicProxied = $state(false);
 	/** Snapshot of public fields when the lookup finished — detects Öffentlich dirty. */
@@ -83,7 +90,7 @@
 	});
 
 	/** One editable deviation row. `noAnswer` → empty override string (NODATA). */
-	type OverrideRow = { key: number; view: string; value: string; noAnswer: boolean };
+	type OverrideRow = { key: number; view: string; values: string[]; noAnswer: boolean };
 	let overrideRows = $state<OverrideRow[]>([]);
 	let nextOverrideKey = 0;
 
@@ -139,7 +146,7 @@
 				type: record.type,
 				zone: zoneOfName(attachedZones, record.name).name,
 				ttl: record.ttl,
-				rdata: record.rdata,
+				rdata: rdataLabel(record.rdata),
 				local: record,
 				cf: null,
 			});
@@ -521,20 +528,27 @@
 		return null;
 	}
 
+	const localTexts = $derived(
+		formValues.map((row) => row.text.trim()).filter((text) => text !== ''),
+	);
+
 	const rdataError = $derived.by(() => {
 		// When Öffentlich is editable and non-empty, local default aligns to it on save.
-		const data =
-			publicEditable && formPublicContent.trim() !== ''
-				? formPublicContent.trim()
-				: formRdata.trim();
+		if (publicEditable && formPublicContent.trim() !== '') {
+			return validateRdata(formPublicContent.trim(), true);
+		}
 		const required = !(
 			(publicEditable && formPublicContent.trim() === '' && publicBaseline.recordId) ||
 			Object.values(overridesFromRows(overrideRows)).some(isOverrideData)
 		);
-		return validateRdata(
-			data,
-			required || formRdata.trim() !== '' || formPublicContent.trim() !== '',
-		);
+		if (localTexts.length === 0) {
+			return validateRdata('', required || formPublicContent.trim() !== '');
+		}
+		for (const text of localTexts) {
+			const error = validateRdata(text, true);
+			if (error) return error;
+		}
+		return null;
 	});
 
 	const publicContentError = $derived.by(() => {
@@ -545,15 +559,22 @@
 	});
 
 	const PUBLIC_OVERRIDE = '@public';
-	const isOverrideData = (value: string): boolean => value !== '' && value !== PUBLIC_OVERRIDE;
+	const isOverrideData = (value: RdataValue): boolean =>
+		rdataTexts(value).some((text) => text !== PUBLIC_OVERRIDE);
 
-	function rowsFromOverrides(map: Record<string, string>): OverrideRow[] {
-		return Object.entries(map).map(([view, value]) => ({
-			key: nextOverrideKey++,
-			view,
-			value: value === PUBLIC_OVERRIDE ? '' : value,
-			noAnswer: value === '',
-		}));
+	function rowsFromOverrides(map: Record<string, RdataValue>): OverrideRow[] {
+		return Object.entries(map).map(([view, value]) => {
+			if (value === '') {
+				return { key: nextOverrideKey++, view, values: [''], noAnswer: true };
+			}
+			const texts = value === PUBLIC_OVERRIDE ? [''] : rdataTexts(value);
+			return {
+				key: nextOverrideKey++,
+				view,
+				values: texts.length > 0 ? texts : [''],
+				noAnswer: false,
+			};
+		});
 	}
 
 	/**
@@ -561,8 +582,8 @@
 	 * Non-empty = replacement. A row with a view but neither value nor noAnswer
 	 * resolves publicly ("wie öffentlich"); rows without a view are dropped.
 	 */
-	function overridesFromRows(list: OverrideRow[]): Record<string, string> {
-		const map: Record<string, string> = {};
+	function overridesFromRows(list: OverrideRow[]): Record<string, RdataValue> {
+		const map: Record<string, RdataValue> = {};
 		for (const row of list) {
 			const view = row.view.trim();
 			if (view === '') continue;
@@ -570,7 +591,8 @@
 				map[view] = '';
 				continue;
 			}
-			map[view] = row.value.trim() || PUBLIC_OVERRIDE;
+			const texts = row.values.map((value) => value.trim()).filter((value) => value !== '');
+			map[view] = texts.length === 0 ? PUBLIC_OVERRIDE : rdataWire(texts);
 		}
 		return map;
 	}
@@ -590,7 +612,7 @@
 		if (!next) return;
 		overrideRows = [
 			...overrideRows,
-			{ key: nextOverrideKey++, view: next.id, value: '', noAnswer: false },
+			{ key: nextOverrideKey++, view: next.id, values: [''], noAnswer: false },
 		];
 	}
 
@@ -603,7 +625,7 @@
 		formName = '';
 		formType = 'A';
 		formTtl = '60';
-		formRdata = '';
+		formValues = [{ key: nextValueKey++, text: '' }];
 		formPublicContent = '';
 		formPublicProxied = false;
 		publicBaseline = { content: '', proxied: false, ttl: '60', recordId: null };
@@ -620,7 +642,7 @@
 		formName = record.name;
 		formType = record.type;
 		formTtl = String(record.ttl);
-		formRdata = record.rdata;
+		formValues = valuesFrom(record.rdata);
 		formPublicContent = '';
 		formPublicProxied = false;
 		publicBaseline = {
@@ -659,7 +681,7 @@
 		formName = record.name.replace(/\.+$/, '');
 		formType = record.record_type.toUpperCase();
 		formTtl = ttlFieldFor(record.ttl);
-		formRdata = record.content;
+		formValues = valuesFrom(record.content);
 		formPublicContent = '';
 		formPublicProxied = false;
 		publicBaseline = { content: '', proxied: false, ttl: formTtl, recordId: null };
@@ -697,10 +719,41 @@
 		publicLookup = { kind: 'idle' };
 	}
 
+	function valuesFrom(value: RdataValue): ValueRow[] {
+		const texts = rdataTexts(value);
+		const rows = (texts.length > 0 ? texts : ['']).map((text) => ({
+			key: nextValueKey++,
+			text,
+		}));
+		return rows;
+	}
+
+	function addValue(): void {
+		formValues = [...formValues, { key: nextValueKey++, text: '' }];
+	}
+
+	function removeValue(key: number): void {
+		const next = formValues.filter((row) => row.key !== key);
+		formValues = next.length > 0 ? next : [{ key: nextValueKey++, text: '' }];
+	}
+
+	function addOverrideValue(key: number): void {
+		overrideRows = overrideRows.map((row) =>
+			row.key === key ? { ...row, values: [...row.values, ''] } : row,
+		);
+	}
+
+	function removeOverrideValue(key: number, index: number): void {
+		overrideRows = overrideRows.map((row) => {
+			if (row.key !== key || row.values.length < 2) return row;
+			return { ...row, values: row.values.filter((_, i) => i !== index) };
+		});
+	}
+
 	function onPublicContentInput(): void {
 		const next = formPublicContent.trim();
-		if (next !== '' && publicEditable) {
-			formRdata = formPublicContent;
+		if (next !== '' && publicEditable && formValues[0]) {
+			formValues[0].text = formPublicContent;
 		}
 	}
 
@@ -720,12 +773,19 @@
 		const overrides = overridesFromRows(overrideRows);
 		const publicContent = formPublicContent.trim();
 		const writingPublic = publicEditable && publicDirty;
-		// Öffentlich non-empty → local default mirrors it; clearing public keeps formRdata.
-		let rdata = publicEditable && publicContent !== '' ? publicContent : formRdata.trim();
-		if (rdata === '' && editing) rdata = editing.rdata;
+		// Öffentlich non-empty → local default mirrors it; extra local targets stay.
+		let values =
+			publicEditable && publicContent !== ''
+				? [publicContent, ...localTexts.slice(1)]
+				: [...localTexts];
+		if (values.length === 0 && editing) values = rdataTexts(editing.rdata);
 		// Local-only record without a default answer: the backend needs a base value, so reuse an override.
-		if (rdata === '') rdata = Object.values(overrides).find(isOverrideData) ?? '';
-		if (rdata === '' || validateRdata(rdata, true)) return;
+		if (values.length === 0) {
+			const fallback = Object.values(overrides).find(isOverrideData);
+			values = fallback ? rdataTexts(fallback) : [];
+		}
+		if (values.length === 0 || values.some((value) => validateRdata(value, true))) return;
+		const rdata = rdataWire(values);
 
 		busy = true;
 		failure = null;
@@ -1004,6 +1064,9 @@
 					{#if showPublicClearHint}
 						<p class="hint muted" id="rec-public-clear">{m.names_public_clear_hint()}</p>
 					{/if}
+					{#if formType === 'CNAME'}
+						<p class="hint muted">{m.names_cname_cloudflare()}</p>
+					{/if}
 					{#if supportsProxied(formType)}
 						<div class="proxied-row">
 							<span class="proxied-label">{m.names_public_proxied_label()}</span>
@@ -1022,14 +1085,38 @@
 				{#if publicLookup.kind === 'loading'}
 					<p class="hint muted">{m.names_public_loading()}</p>
 				{/if}
-				<label class="sr-only" for="rec-rdata">{m.names_field_rdata()}</label>
-				<input
-					id="rec-rdata"
-					class="field mono"
-					bind:value={formRdata}
-					disabled={!isAdmin}
-					aria-invalid={rdataError ? 'true' : undefined}
-				/>
+				{#each formValues as row, i (row.key)}
+					<div class="value-row">
+						<label class="sr-only" for="rec-rdata-{row.key}"
+							>{i === 0
+								? m.names_field_rdata()
+								: m.names_value_extra({ n: String(i + 1) })}</label
+						>
+						<input
+							id="rec-rdata-{row.key}"
+							class="field mono"
+							bind:value={formValues[i].text}
+							disabled={!isAdmin}
+							aria-invalid={rdataError ? 'true' : undefined}
+						/>
+						{#if isAdmin && formValues.length > 1}
+							<button
+								type="button"
+								class="remove-override"
+								aria-label={m.names_value_remove()}
+								onclick={() => removeValue(row.key)}
+							>
+								<Icon name="x" size="1rem" />
+							</button>
+						{/if}
+					</div>
+				{/each}
+				{#if isAdmin}
+					<button type="button" class="text-action" onclick={addValue}>{m.names_value_add()}</button>
+				{/if}
+				{#if formType === 'CNAME'}
+					<p class="hint muted">{m.names_cname_rotate()}</p>
+				{/if}
 				{#if rdataError}<p class="error-text" role="alert">{rdataError}</p>{/if}
 				{#if publicLookup.kind === 'token_missing'}
 					<p class="hint muted">
@@ -1071,15 +1158,48 @@
 									<option value={viewId}>{viewId}</option>
 								{/each}
 							</select>
-							<label class="sr-only" for="ov-value-{row.key}">{m.names_overrides_value()}</label>
-							<input
-								id="ov-value-{row.key}"
-								class="field mono"
-								bind:value={overrideRows[i].value}
-								placeholder={row.noAnswer ? m.names_overrides_no_answer() : inheritPlaceholder}
-								autocomplete="off"
-								disabled={!isAdmin || row.noAnswer}
-							/>
+							<div class="override-values">
+								{#each row.values as text, j (`${row.key}-${j}`)}
+									<label class="sr-only" for="ov-value-{row.key}-{j}"
+										>{j === 0
+											? m.names_overrides_value()
+											: m.names_value_extra({ n: String(j + 1) })}</label
+									>
+									<input
+										id="ov-value-{row.key}-{j}"
+										class="field mono"
+										value={text}
+										oninput={(event) => {
+											overrideRows[i].values[j] = event.currentTarget.value;
+										}}
+										placeholder={j === 0
+											? row.noAnswer
+												? m.names_overrides_no_answer()
+												: inheritPlaceholder
+											: ''}
+										autocomplete="off"
+										disabled={!isAdmin || row.noAnswer}
+									/>
+								{/each}
+								{#if isAdmin && !row.noAnswer}
+									<button
+										type="button"
+										class="text-action"
+										onclick={() => addOverrideValue(row.key)}
+									>
+										{m.names_value_add()}
+									</button>
+								{/if}
+								{#if isAdmin && row.values.length > 1}
+									<button
+										type="button"
+										class="text-action"
+										onclick={() => removeOverrideValue(row.key, row.values.length - 1)}
+									>
+										{m.names_value_remove()}
+									</button>
+								{/if}
+							</div>
 							<div class="no-answer-row">
 								<span class="no-answer-label">{m.names_overrides_no_answer()}</span>
 								<Switch
@@ -1571,7 +1691,8 @@
 	.remove-override:hover {
 		color: var(--danger);
 	}
-	.add-override {
+	.add-override,
+	.text-action {
 		display: block;
 		margin: 0.5rem 0 0;
 		padding: 0;
@@ -1582,6 +1703,22 @@
 		font-weight: 500;
 		cursor: pointer;
 		text-align: start;
+	}
+	.value-row {
+		display: flex;
+		gap: 0.375rem;
+		align-items: center;
+		margin-top: 0.375rem;
+	}
+	.value-row .field {
+		flex: 1;
+		min-width: 0;
+	}
+	.override-values {
+		display: flex;
+		flex-direction: column;
+		gap: 0.375rem;
+		min-width: 0;
 	}
 	.footer-error {
 		margin-bottom: 0.75rem;

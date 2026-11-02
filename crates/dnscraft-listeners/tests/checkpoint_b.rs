@@ -87,7 +87,7 @@ async fn policy_engine() -> (Hierarchy, Arc<PolicyEngine>) {
         records: vec![ViewRecordConfig {
             name: Name::from_ascii("lan.example.test.").unwrap(),
             ttl: 60,
-            rdata: RData::A(Ipv4Addr::new(192, 0, 2, 99)),
+            rdata: vec![RData::A(Ipv4Addr::new(192, 0, 2, 99))],
             overrides: Default::default(),
         }],
         views: vec![view],

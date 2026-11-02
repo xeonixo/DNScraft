@@ -107,7 +107,9 @@ async fn web_access_is_off_by_default_and_applies_live() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["public_enabled"], false);
+    assert_eq!(body["data"]["allowed_cidrs"], json!([]));
     assert!(!slot.public());
+    assert!(slot.allows_public_cidr("203.0.113.9".parse().unwrap()));
 
     let put = |enabled: Value| json!({ "public_enabled": enabled });
     let (status, body) = call(
@@ -150,6 +152,102 @@ async fn web_access_is_off_by_default_and_applies_live() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn web_access_cidr_allowlist_applies_live_and_rejects_bad_entries() {
+    let clock = Arc::new(ManualClock::new(
+        UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+    ));
+    let db = Db::open_in_memory(clock.clone()).await.unwrap();
+    let slot = Arc::new(WebSlot::default());
+    let service = ConfigService::new(
+        ConfigStore::new(db.clone()),
+        Audit::new(db.clone()),
+        ModuleAppliers {
+            web: Some(slot.clone()),
+            ..ModuleAppliers::default()
+        },
+        "node-a",
+    );
+    let sessions = SessionStore::new(
+        db.clone(),
+        Duration::from_secs(3600),
+        Duration::from_secs(12 * 3600),
+    );
+    let tokens = TokenStore::new(db.clone(), Duration::from_secs(365 * 24 * 3600));
+    let local = LocalAccountStore::new(db.clone(), 5, Duration::from_secs(900));
+    local
+        .upsert("admin", "a-strong-password", Role::Admin)
+        .await
+        .unwrap();
+    let admin = tokens
+        .create(
+            "admin".to_owned(),
+            "admin-token".to_owned(),
+            Scope::Admin,
+            None,
+        )
+        .await
+        .unwrap();
+    let bearer = admin.plaintext().expose().to_owned();
+    let state = AppState::new()
+        .with_clock(clock)
+        .with_db(db)
+        .with_auth(AuthState::new(sessions, tokens).with_local_accounts(local))
+        .with_config_service(Arc::new(service));
+
+    let (status, body) = call(
+        &state,
+        Method::PUT,
+        "/api/v1/web-access",
+        Some(json!({
+            "public_enabled": true,
+            "allowed_cidrs": ["203.0.113.0/24", " 2001:db8::/32 "]
+        })),
+        Some(&bearer),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(slot.public());
+    assert!(slot.allows_public_cidr("203.0.113.9".parse().unwrap()));
+    assert!(slot.allows_public_cidr("2001:db8::1".parse().unwrap()));
+    assert!(!slot.allows_public_cidr("198.51.100.1".parse().unwrap()));
+    assert_eq!(
+        body["data"]["allowed_cidrs"],
+        json!(["203.0.113.0/24", "2001:db8::/32"])
+    );
+
+    let (status, body) = call(
+        &state,
+        Method::GET,
+        "/api/v1/web-access",
+        None,
+        Some(&bearer),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["public_enabled"], true);
+    assert_eq!(
+        body["data"]["allowed_cidrs"],
+        json!(["203.0.113.0/24", "2001:db8::/32"])
+    );
+
+    let (status, body) = call(
+        &state,
+        Method::PUT,
+        "/api/v1/web-access",
+        Some(json!({
+            "public_enabled": true,
+            "allowed_cidrs": ["not-a-cidr"]
+        })),
+        Some(&bearer),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "control_api.config.invalid");
+    assert!(slot.allows_public_cidr("203.0.113.9".parse().unwrap()));
+    assert!(!slot.allows_public_cidr("198.51.100.1".parse().unwrap()));
 }
 
 #[tokio::test]

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
+	import CommandPalette from './CommandPalette.svelte';
 	import Sidebar from './Sidebar.svelte';
 	import Toolbar from './Toolbar.svelte';
 	import { m } from '$lib/paraglide/messages';
@@ -56,6 +57,7 @@
 			{@render children()}
 		</div>
 	</main>
+	<CommandPalette {role} />
 </div>
 
 <style>

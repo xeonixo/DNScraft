@@ -1,3 +1,4 @@
+import { resolve } from '$app/paths';
 import type { RouteId } from '$app/types';
 import type { IconName } from '$lib/components/icons';
 import { m } from '$lib/paraglide/messages';
@@ -7,9 +8,21 @@ export type Role = 'viewer' | 'admin';
 
 /**
  * Routes that take no parameters. Navigation lists only these; a dynamic route (such as
- * /query-log/[id]) is linked with resolve(route, params) at the call site instead.
+ * /query-log/[id] or /dashboard/domains/[name]) is linked with resolve(route, params)
+ * at the call site instead. The bare /dashboard/domains directory is not a screen.
  */
-export type StaticRouteId = Exclude<RouteId, '/query-log/[id]'>;
+export type StaticRouteId = Exclude<
+	RouteId,
+	'/query-log/[id]' | '/dashboard/domains/[name]' | '/dashboard/domains'
+>;
+
+/**
+ * `resolve()` is overloaded per route literal, so a `StaticRouteId` union does not match
+ * one call signature. Cast once here for sidebar, settings tabs and palette links.
+ */
+export function routeHref(path: StaticRouteId): string {
+	return (resolve as unknown as (route: StaticRouteId) => string)(path);
+}
 
 export interface NavItem {
 	/** SvelteKit route path, also the key for the page title and the active item. */
@@ -49,31 +62,31 @@ export const navSections: NavSection[] = [
 	{
 		heading: () => m.nav_section_filtering(),
 		items: [
-			item('/filter-sets', () => m.nav_filter_sets(), 'layers'),
-			item('/filter-lists', () => m.nav_filter_lists(), 'list'),
-			item('/rules', () => m.nav_rules(), 'zap'),
+			item('/filter-sets', () => m.nav_filter_sets(), 'layers', 'admin'),
+			item('/filter-lists', () => m.nav_filter_lists(), 'list', 'admin'),
+			item('/rules', () => m.nav_rules(), 'zap', 'admin'),
 			item('/blocked-services', () => m.nav_blocked_services(), 'ban'),
 		],
 	},
 	{
 		heading: () => m.nav_section_dns_rules(),
 		items: [
-			item('/zones', () => m.nav_zones(), 'target'),
-			item('/names', () => m.nav_names(), 'text'),
-			item('/forward-zones', () => m.nav_forward_zones(), 'arrow-right'),
-			item('/resolver', () => m.nav_resolver(), 'globe'),
-			item('/profiles', () => m.nav_profiles(), 'sliders'),
+			item('/zones', () => m.nav_zones(), 'target', 'admin'),
+			item('/names', () => m.nav_names(), 'text', 'admin'),
+			item('/forward-zones', () => m.nav_forward_zones(), 'arrow-right', 'admin'),
+			item('/resolver', () => m.nav_resolver(), 'globe', 'admin'),
+			item('/profiles', () => m.nav_profiles(), 'sliders', 'admin'),
 			item('/test-query', () => m.nav_test_query(), 'play-circle'),
 		],
 	},
 	{
 		heading: () => m.nav_section_network(),
 		items: [
-			item('/clients', () => m.nav_clients(), 'user'),
-			item('/doh-clients', () => m.nav_doh_clients(), 'user-check'),
-			item('/listeners', () => m.nav_listeners(), 'network'),
-			item('/tls', () => m.nav_tls(), 'lock'),
-			item('/cluster', () => m.nav_nodes(), 'server'),
+			item('/clients', () => m.nav_clients(), 'user', 'admin'),
+			item('/doh-clients', () => m.nav_doh_clients(), 'user-check', 'admin'),
+			item('/listeners', () => m.nav_listeners(), 'network', 'admin'),
+			item('/tls', () => m.nav_tls(), 'lock', 'admin'),
+			item('/cluster', () => m.nav_nodes(), 'server', 'admin'),
 		],
 	},
 ];

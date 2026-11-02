@@ -16,6 +16,7 @@
 		listMcpProposals,
 		rejectMcpProposal,
 		removeMcpRule,
+		removeTemporaryAllow,
 		resumeFilterSet,
 		type McpProposal,
 		type McpRuleKind,
@@ -367,6 +368,21 @@
 		}
 	}
 
+	async function endAllow(row: ActiveRow): Promise<void> {
+		busy = true;
+		pageFailure = null;
+		notice = null;
+		try {
+			await removeTemporaryAllow(row.domain, row.setId);
+			notice = m.rules_allow_ended({ domain: displayText(row.domain, 80).text });
+			await load();
+		} catch (cause) {
+			pageFailure = failureOf(cause);
+		} finally {
+			busy = false;
+		}
+	}
+
 	async function resume(row: ActiveRow): Promise<void> {
 		busy = true;
 		pageFailure = null;
@@ -479,6 +495,16 @@
 								<span class="rule-domain mono">{displayText(allow.domain).text}</span>
 								<span class="rule-detail">{activeDetailOf(allow)}</span>
 							</span>
+							{#if isAdmin}
+								<button
+									type="button"
+									class="text-action"
+									disabled={busy}
+									onclick={() => void endAllow(allow)}
+								>
+									{m.rules_end_allow()}
+								</button>
+							{/if}
 							<StatusMark icon="check-circle" tone="ok" label={m.rules_mark_allowed()} />
 						</li>
 					{/each}

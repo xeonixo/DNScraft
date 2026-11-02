@@ -420,7 +420,8 @@ async fn unifi_sync_failure_and_ip_conflicts_raise_client_alerts() {
 async fn query_log_sink_drops_raise_an_alert() {
     let (state, viewer, _, db) = base_state().await;
     let (sink, _rx) = QueryLog::channel(1);
-    let log = Arc::new(QueryLog::new(db, QueryLogConfig::default(), "node-a").with_sink(sink.clone()));
+    let log =
+        Arc::new(QueryLog::new(db, QueryLogConfig::default(), "node-a").with_sink(sink.clone()));
     // Capacity 1 and no consumer: the first send fills the channel; later ones drop.
     assert!(sink.try_send(loggable_event(NOW)));
     assert!(!sink.try_send(loggable_event(NOW + 1)));

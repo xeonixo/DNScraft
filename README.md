@@ -35,7 +35,7 @@ cluster and an embedded web UI are part of the same binary.
 |------|--------|
 | `resolver`, `filtering`, `clients`, `tls`, `policy`, `listeners` | Complete |
 | `control-api`, `mcp`, `cluster` | Complete and wired into the `dnscraft` binary |
-| `web-ui` | App + mock usable; `rust-embed` behind `--features web-ui`. Docker image embeds it automatically; local release builds still need `web/build` → `crates/dnscraft-api/embed-web-ui/` |
+| `web-ui` | SPA screens in place (dashboard, query log, policy, filtering, listeners, settings including public web access). `rust-embed` behind `--features web-ui`. Docker image embeds it automatically; local release builds still need `web/build` → `crates/dnscraft-api/embed-web-ui/` |
 
 Details and resume point: [`tasks/progress.md`](tasks/progress.md). Module index:
 [`CAPABILITY-MAP.md`](CAPABILITY-MAP.md).
@@ -158,7 +158,7 @@ Full endpoint list: [`docs/API-REFERENCE.md`](docs/API-REFERENCE.md).
 | [`deploy/README.md`](deploy/README.md) | Docker images, ports, secrets |
 | [`fuzz/README.md`](fuzz/README.md) | Fuzz targets and CI |
 | [`tasks/progress.md`](tasks/progress.md) | Progress log / resume point |
-| [`tasks/cursor-next.md`](tasks/cursor-next.md) | Agent workflow rules |
+| [`tasks/archive/cursor-next.md`](tasks/archive/cursor-next.md) | Agent workflow rules (archived templates) |
 
 ADRs: [0001 recursion](docs/adr/0001-recursion-engine.md) ·
 [0002 ring-only crypto](docs/adr/0002-ring-only-crypto.md) ·

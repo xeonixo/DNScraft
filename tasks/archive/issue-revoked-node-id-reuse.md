@@ -1,3 +1,15 @@
+# DONE 2026-11-02 — Widerrufener Knoten blockiert seine Node-ID dauerhaft (`cluster.node.already_joined`)
+
+Resolved. A join token can be minted for a **revoked** node id; redeeming it replaces
+the old row (new fingerprint, `revoked` cleared). An **active** id still returns
+`cluster.node.already_joined`. The old certificate stops working because the stored
+fingerprint changed (`revoked_node_id_can_be_rejoined_and_old_certs_stop_working` in
+`crates/dnscraft-cluster/src/store.rs`). `DELETE /api/v1/cluster/nodes/{id}?remove=true`
+can also delete an already revoked node. The UI text for `cluster.node.already_joined`
+says to revoke first (`error_cluster_node_already_joined`, de/en).
+
+---
+
 # Widerrufener Knoten blockiert seine Node-ID dauerhaft (`cluster.node.already_joined`)
 
 ## Problem

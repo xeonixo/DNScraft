@@ -207,6 +207,79 @@ async fn records_round_trip_empty_override_as_no_answer() {
 }
 
 #[tokio::test]
+async fn records_accept_a_list_and_keep_a_single_string() {
+    let h = harness().await;
+    seed_policy(&h.state).await;
+
+    let (status, response) = put(
+        &h.state,
+        "/api/v1/policy/records",
+        json!({
+            "name": "nas.lan.example.com",
+            "type": "A",
+            "rdata": ["192.0.2.10", "192.0.2.11"],
+            "overrides": { "guests": ["192.0.2.50", "192.0.2.51"] },
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(
+        response["data"]["record"]["rdata"],
+        json!(["192.0.2.10", "192.0.2.11"])
+    );
+    assert_eq!(
+        response["data"]["record"]["overrides"]["guests"],
+        json!(["192.0.2.50", "192.0.2.51"])
+    );
+
+    let (status, response) = get(&h.state, "/api/v1/policy/records").await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(
+        response["data"]["records"][0]["rdata"],
+        json!(["192.0.2.10", "192.0.2.11"])
+    );
+
+    let (status, response) = put(
+        &h.state,
+        "/api/v1/policy/records",
+        json!({
+            "name": "alias.lan.example.com",
+            "type": "CNAME",
+            "rdata": ["a.example.com.", "b.example.com."],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(
+        response["data"]["record"]["rdata"],
+        json!(["a.example.com.", "b.example.com."])
+    );
+
+    // A one-element list is the same record as a string.
+    let (status, response) = put(
+        &h.state,
+        "/api/v1/policy/records",
+        json!({
+            "name": "nas.lan.example.com",
+            "type": "A",
+            "rdata": ["192.0.2.12"],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["data"]["record"]["rdata"], "192.0.2.12");
+
+    let (status, response) = put(
+        &h.state,
+        "/api/v1/policy/records",
+        json!({ "name": "nas.lan.example.com", "type": "A", "rdata": [] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{response}");
+    assert_eq!(code(&response), "policy.config.invalid");
+}
+
+#[tokio::test]
 async fn records_reject_bad_types_and_values() {
     let h = harness().await;
     seed_policy(&h.state).await;

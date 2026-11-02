@@ -99,6 +99,9 @@ beforeEach(() => {
 				return ok([]);
 			}
 			if (url.pathname === '/api/v1/auth/tokens') return ok({ tokens: [] });
+			if (url.pathname === '/api/v1/auth/sessions') {
+				return ok({ items: [], has_more: false, next_offset: null });
+			}
 			if (url.pathname === '/api/v1/audit') return ok({ audit: [] });
 			if (url.pathname === '/api/v1/clients/sync') {
 				return ok({ generation: 1, rebuilt: true, client_count: 12, ip_conflicts: 0 });
@@ -150,6 +153,22 @@ describe('Einstellungen tab bar', () => {
 });
 
 describe('Einstellungen general tab', () => {
+	it.each(['admin', 'viewer'] as const)('shows active sessions for %s', async (role) => {
+		setPrincipal({ role, actorId: role, actorType: 'user', csrfToken: 'tok' });
+		render(GeneralPage);
+		expect(
+			await screen.findByRole('heading', { name: m.settings_sessions_header() }),
+		).toBeInTheDocument();
+		const calls = vi.mocked(fetch).mock.calls.map(([input]) => String(input));
+		const wanted = role === 'admin' ? 'scope=all' : 'scope=own';
+		expect(
+			calls.some((url) => url.includes('/api/v1/auth/sessions?') && url.includes(wanted)),
+		).toBe(true);
+		const scope = screen.queryByRole('radiogroup', { name: m.settings_sessions_scope_label() });
+		if (role === 'admin') expect(scope).toBeInTheDocument();
+		else expect(scope).toBeNull();
+	});
+
 	it('keeps the theme and language controls', () => {
 		render(GeneralPage);
 		expect(screen.getByRole('radiogroup', { name: m.theme_group_label() })).toBeInTheDocument();
@@ -274,9 +293,7 @@ describe('Einstellungen general tab', () => {
 		storedQueryLog = { retention_days: 30, ip_truncate: 'none', stdout_queries: true };
 		render(GeneralPage);
 		await screen.findByLabelText(m.settings_ip_truncation_label());
-		expect(
-			screen.queryByRole('switch', { name: m.settings_stdout_queries_label() }),
-		).toBeNull();
+		expect(screen.queryByRole('switch', { name: m.settings_stdout_queries_label() })).toBeNull();
 	});
 
 	it('asks before enabling UniFi skip-verify', async () => {

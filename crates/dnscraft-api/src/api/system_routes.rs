@@ -23,7 +23,7 @@ use crate::server::AppState;
 use crate::system::{
     BACKUP_RETENTION_MAX, BackupSettings, SETTINGS_SECTION, backup_files, backup_settings,
     cached_latest_release, is_newer, last_backup, next_run_at, unix_now, update_check_enabled,
-    web_access_public,
+    web_access_cidr_strings, web_access_public,
 };
 
 /// Version of the running binary, as reported by the update check.
@@ -108,6 +108,9 @@ pub(crate) async fn get_backups(
 #[serde(deny_unknown_fields)]
 pub(crate) struct WebAccessBody {
     public_enabled: bool,
+    /// Public-source allowlist. Omitted or empty means no extra restriction.
+    #[serde(default)]
+    allowed_cidrs: Vec<String>,
 }
 
 /// `GET /api/v1/web-access` — whether public sources may reach the web UI (admin).
@@ -115,9 +118,10 @@ pub(crate) async fn get_web_access(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, ControlApiError> {
     let snapshot = stored_snapshot(service(&state)?).await?;
-    Ok(success(
-        json!({ "public_enabled": web_access_public(&snapshot) }),
-    ))
+    Ok(success(json!({
+        "public_enabled": web_access_public(&snapshot),
+        "allowed_cidrs": web_access_cidr_strings(&snapshot),
+    })))
 }
 
 /// `PUT /api/v1/web-access` — opt in or out of public web access (admin). Applied live.
@@ -128,6 +132,11 @@ pub(crate) async fn put_web_access(
     body: Result<Json<WebAccessBody>, JsonRejection>,
 ) -> Result<impl IntoResponse, ControlApiError> {
     let body = json_body(body, "control_api.web_access.invalid")?;
+    let allowed_cidrs: Vec<String> = body
+        .allowed_cidrs
+        .iter()
+        .map(|cidr| cidr.trim().to_owned())
+        .collect();
     if body.public_enabled {
         refuse_public_with_bootstrap_auth(&state).await?;
     }
@@ -146,7 +155,10 @@ pub(crate) async fn put_web_access(
         })?
         .insert(
             "web_access".to_owned(),
-            json!({ "public_enabled": body.public_enabled }),
+            json!({
+                "public_enabled": body.public_enabled,
+                "allowed_cidrs": allowed_cidrs,
+            }),
         );
     let version = service
         .replace(snapshot, &actor(auth), if_match(&headers))
@@ -154,6 +166,7 @@ pub(crate) async fn put_web_access(
     Ok(success(json!({
         "version": version,
         "public_enabled": body.public_enabled,
+        "allowed_cidrs": allowed_cidrs,
     })))
 }
 

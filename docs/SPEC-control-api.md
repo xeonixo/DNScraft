@@ -39,7 +39,7 @@ values.
 - Internal-only binding; this module is never reached from a public DNS listener.
   Exception (opt-in, default off): with public web access enabled, a public-exposure shared DoH
   listener also hands non-`/dns-query` paths from public sources to this router (no own public
-  socket is ever opened). See `tasks/todo-public-web.md`.
+  socket is ever opened). See `tasks/archive/todo-public-web.md`.
 
 ### Non-goals
 
@@ -63,8 +63,10 @@ values.
    are only for initial seed data; after first startup SQLite owns the current
    editable config.
 3. The API listener is private/internal only (SPEC.md). It may be bound to
-   loopback or a ULA/RFC 1918 address. Public DoH/DoT listeners are owned by
-   `listeners` and never route API paths.
+   loopback or a ULA/RFC 1918 address. It never opens its own public socket.
+   Opt-in exception: with public web access enabled, a public-exposure shared DoH
+   listener also hands non-`/dns-query` paths from public sources to this router
+   (see Scope). Private sources on a shared listener can reach it without that opt-in.
 4. Human browser sessions use HttpOnly cookies with SameSite and CSRF
    protection. `mcp` uses revocable static bearer tokens, not cookies.
 5. The `mcp` module later reuses the same token, roles and audit endpoints
@@ -354,7 +356,7 @@ existing capability.
 ### Web-UI extra endpoints (WX2–WX8, proposed 2026-10-27, not approved)
 
 Proposed by the web-UI feature list (`SPEC-web-ui.md` § Required control-api additions,
-tracked in `tasks/todo-webui-extra-features.md`). Same envelopes, auth middleware, audit
+tracked in `tasks/archive/todo-webui-extra-features.md`). Same envelopes, auth middleware, audit
 and rate-limit buckets as the rest of `/api/v1`. Routes stay out of the v1 core table
 until the owner signs off each WX item.
 
@@ -863,14 +865,14 @@ the payload.
 [control_api]
 bind = "127.0.0.1"
 port = 8080
-# public flag is denied; API is always internal-only
+# The API bind stays internal (no own public socket). `0.0.0.0`/`::` only with allow_wildcard_bind.
 # Default: TLS with the certificate of the `tls` module (ACME, hot reload). The API is served under the
 # node hostname (e.g. node1.dns.example.com), which the wildcard cert *.dns.<public_domain> already covers.
 tls = true
 # Optional: serve the web UI/API on a DoH listener (same address and port, e.g. :443). Non-`/dns-query`
 # paths of *private source addresses* are handed to the API (on every DoH listener of the node, also a
-# `public`-exposure one: deviation from SPEC.md "never on a public listener", opt-in per node); public
-# sources still get only `/dns-query/<id>`.
+# `public`-exposure one). Public sources reach it only when `control_api_settings.web_access.public_enabled`
+# is true, and then only if `allowed_cidrs` is empty or the source matches one of those CIDRs.
 # `bind`/`port` then open no socket; TLS is the listener's (the `tls` module certificate). HTTP/3 is not served.
 # shared_doh_listener = "local-doh"
 # Optional reverse-proxy mode: tls = false plus the proxy addresses allowed to set X-Forwarded-Proto/-For.
@@ -897,7 +899,7 @@ auth_per_second = 10
 burst_factor = 2
 
 [control_api.mcp]
-enabled = false                  # off by default; /mcp/v1 returns 404 control_api.not_found while false
+enabled = false                  # bootstrap default; /mcp/v1 returns 404 control_api.not_found while false
 write_tools_enabled = false      # independent gate for the 5 MCP write tools
 legacy_session_mode = false      # stateless 2026-07-28 only; client compatibility is unverified
 max_concurrent_requests_per_token = 5
@@ -909,6 +911,14 @@ max_custom_rules_per_set = 100
 max_block_rule_lifetime = "30d"
 protected_domains = []           # additional domains beyond the auto-derived protected list
 ```
+
+`enabled`, `write_tools_enabled` and `legacy_session_mode` exist in two places.
+The bootstrap values live on `ControlApiConfig.mcp` (`[control_api.mcp]` in TOML).
+The same three booleans may also be stored in the versioned snapshot as
+`control_api_settings.mcp` and edited on `/settings/mcp` through `GET/PUT /api/v1/config`.
+At process start the binary copies those stored booleans over the TOML
+(`crates/dnscraft/src/control_api.rs`); a restart is required. There is no live
+apply. Limits, timeouts and `protected_domains` stay bootstrap-only.
 
 The MCP limits and the derivation of `protected_domains` are specified in
 SPEC-mcp.md § Limits and defaults and § Protected domains.
@@ -1108,8 +1118,12 @@ No internet and no real Authentik/Cloudflare in CI.
    and `/mcp/v1`.
 8. Audit log contains coherent before/after digests for config changes and at
    least one entry for every local/OIDC login failure.
-9. Internal-only binding is enforced: API does not bind to `0.0.0.0`/`::` and
-   does not answer on public listener ports.
+9. Internal-only binding is enforced: the API does not bind to `0.0.0.0`/`::`
+   (unless `allow_wildcard_bind` is set for a container) and never opens its own
+   public socket. Opt-in exception, matching the Objective: with public web access
+   enabled, a public-exposure shared DoH listener hands non-`/dns-query` paths from
+   public sources to this router. An optional `allowed_cidrs` list can narrow those
+   public sources; an empty list does not. Private sources stay allowed.
 10. No real Authentik/Cloudflare/OIDC provider is contacted in tests. `cargo
     fmt`, `clippy -D warnings`, `cargo test --workspace` and `cargo deny check`
     are green.

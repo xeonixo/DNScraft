@@ -87,7 +87,7 @@ fn local_record() -> ViewRecordConfig {
     ViewRecordConfig {
         name: Name::from_ascii("local.example.com.").unwrap(),
         ttl: 60,
-        rdata: RData::A(Ipv4Addr::new(192, 0, 2, 1)),
+        rdata: vec![RData::A(Ipv4Addr::new(192, 0, 2, 1))],
         overrides: Default::default(),
     }
 }

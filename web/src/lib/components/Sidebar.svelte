@@ -116,7 +116,7 @@
 {#snippet link(entry: NavItem)}
 	<a
 		class="nav-item"
-		href={resolve(entry.path)}
+		href={resolve(entry.path as '/')}
 		aria-current={isActivePath(entry.path, currentPath) ? 'page' : undefined}
 		onclick={() => onnavigate?.()}
 	>
@@ -163,7 +163,7 @@
 		{#if softwareVersion}
 			<p class="version">{m.sidebar_version({ version: softwareVersion })}</p>
 		{/if}
-		<a class="foot-link" href={resolve(navFeedback.path)} onclick={() => onnavigate?.()}>
+		<a class="foot-link" href={resolve(navFeedback.path as '/')} onclick={() => onnavigate?.()}>
 			{navFeedback.label()}
 		</a>
 	</div>

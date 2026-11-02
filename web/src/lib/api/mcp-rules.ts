@@ -61,6 +61,15 @@ export const removeMcpRule = (domain: string, filterSetId = 'default'): Promise<
 export const resumeFilterSet = (filterSetId = 'default'): Promise<{ filter_set_id: string }> =>
 	post('/filtering/resume', { body: { filter_set_id: filterSetId } });
 
+/** Admin. Ends one temporary allow early. Unknown domains answer 404. */
+export const removeTemporaryAllow = (
+	domain: string,
+	filterSetId = 'default',
+): Promise<{ removed: boolean; domain: string; filter_set_id: string }> =>
+	del('/filtering/temporary-allows', {
+		body: { domain, filter_set_id: filterSetId },
+	});
+
 /** An exception an assistant proposed over MCP; it only counts once the owner confirms it. */
 export interface McpProposal {
 	id: string;

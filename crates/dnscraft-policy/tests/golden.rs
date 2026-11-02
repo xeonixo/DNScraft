@@ -222,7 +222,7 @@ async fn golden_view_and_directory_never_hit_resolver() {
             vec![ViewRecordConfig {
                 name: Name::from_ascii("nas.lan.").unwrap(),
                 ttl: 60,
-                rdata: RData::A(Ipv4Addr::new(10, 0, 0, 1)),
+                rdata: vec![RData::A(Ipv4Addr::new(10, 0, 0, 1))],
                 overrides: Default::default(),
             }],
         ),

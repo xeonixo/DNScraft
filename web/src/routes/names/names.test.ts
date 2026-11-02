@@ -167,6 +167,35 @@ describe('names sheet Antwort then Abweichungen', () => {
 		expect(cta).toHaveAttribute('href', expect.stringMatching(/\/tls$/));
 	});
 
+	it('saves several local values for one name and type', async () => {
+		handlers['PUT /api/v1/policy/records'] = () =>
+			ok({
+				version: 8,
+				record: {
+					name: 'nas.lan.',
+					type: 'A',
+					ttl: 60,
+					rdata: ['192.0.2.50', '192.0.2.11'],
+					overrides: { guest: '192.0.2.51' },
+				},
+			});
+		const user = userEvent.setup();
+		render(NamesPage);
+		await user.click(await screen.findByRole('button', { name: /192\.0\.2\.50/ }));
+		const dialog = await screen.findByRole('dialog');
+		const add = within(dialog).getAllByRole('button', { name: m.names_value_add() })[0];
+		await user.click(add);
+		await user.type(within(dialog).getByLabelText(m.names_value_extra({ n: '2' })), '192.0.2.11');
+		await user.click(within(dialog).getByRole('button', { name: m.action_save() }));
+		await waitFor(() => expect(putBodies()).toHaveLength(1));
+		expect(putBodies()[0]).toMatchObject({
+			name: 'nas.lan.',
+			type: 'A',
+			rdata: ['192.0.2.50', '192.0.2.11'],
+			overrides: { guest: '192.0.2.51' },
+		});
+	});
+
 	it('allows purely internal names without a public row', async () => {
 		const user = userEvent.setup();
 		render(NamesPage);

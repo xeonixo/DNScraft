@@ -2,9 +2,10 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use dnscraft_filtering::SetId;
-use dnscraft_proto::{Class, Name, Record, RecordType};
+use dnscraft_proto::{Class, Name, RData, Record, RecordType};
 use dnscraft_resolver::ForwardZoneId;
 use ipnet::IpNet;
 
@@ -23,10 +24,50 @@ pub type ViewIdx = u16;
 pub type ProfileIdx = u16;
 
 /// Local records for one owner name inside a view.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct ViewRrSets {
     /// Records at this name (never mixes a CNAME with other types).
     pub(crate) records: Arc<[Record]>,
+    /// Next CNAME target when this name has more than one.
+    cname_rr: Arc<AtomicUsize>,
+}
+
+impl PartialEq for ViewRrSets {
+    fn eq(&self, other: &Self) -> bool {
+        self.records == other.records
+    }
+}
+
+impl Eq for ViewRrSets {}
+
+impl ViewRrSets {
+    pub(crate) fn from_records(records: Vec<Record>) -> Self {
+        Self {
+            records: Arc::from(records),
+            cname_rr: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    /// The CNAME to put in an answer. One target stays put; several rotate.
+    pub(crate) fn pick_cname<'a>(&self, records: &'a [Record]) -> Option<&'a Record> {
+        let count = records
+            .iter()
+            .filter(|record| record.rtype() == RecordType::CNAME)
+            .count();
+        match count {
+            0 => None,
+            1 => records
+                .iter()
+                .find(|record| record.rtype() == RecordType::CNAME),
+            n => {
+                let index = self.cname_rr.fetch_add(1, Ordering::Relaxed) % n;
+                records
+                    .iter()
+                    .filter(|record| record.rtype() == RecordType::CNAME)
+                    .nth(index)
+            }
+        }
+    }
 }
 
 /// One validated view ready for selection and local answers.
@@ -487,12 +528,19 @@ fn validate_safesearch(mut cfg: SafeSearchConfig) -> Result<SafeSearchConfig, Po
 /// view. When every type for a name is omitted, the name is still registered
 /// with an empty RRset so queries yield NODATA instead of falling through to
 /// recursion.
+/// One value after the view's override (or the default list) is expanded.
+struct ExpandedRecord {
+    name: Name,
+    ttl: u32,
+    rdata: RData,
+}
+
 fn build_view_records(
     records: &[ViewRecordConfig],
     view: &ViewId,
 ) -> Result<(HashMap<Name, ViewRrSets>, HashSet<Name>), PolicyError> {
     let mut public: HashSet<Name> = HashSet::new();
-    let mut by_name: HashMap<Name, Vec<ViewRecordConfig>> = HashMap::new();
+    let mut by_name: HashMap<Name, Vec<ExpandedRecord>> = HashMap::new();
     let mut ensure_known: HashSet<Name> = HashSet::new();
     for record in records {
         if name_has_invalid_wildcard(&record.name) {
@@ -510,12 +558,19 @@ fn build_view_records(
             continue;
         }
         match record.rdata_for(view) {
-            Some(rdata) => {
-                let mut rec = record.clone();
-                rec.rdata = rdata.clone();
-                by_name.entry(rec.name.clone()).or_default().push(rec);
+            Some(values) if !values.is_empty() => {
+                for rdata in values {
+                    by_name
+                        .entry(record.name.clone())
+                        .or_default()
+                        .push(ExpandedRecord {
+                            name: record.name.clone(),
+                            ttl: record.ttl,
+                            rdata: rdata.clone(),
+                        });
+                }
             }
-            None => {
+            Some(_) | None => {
                 ensure_known.insert(record.name.clone());
             }
         }
@@ -526,15 +581,21 @@ fn build_view_records(
 
     let mut out = HashMap::with_capacity(by_name.len());
     for (name, recs) in by_name {
-        let has_cname = recs.iter().any(|r| r.rtype() == RecordType::CNAME);
-        if has_cname && recs.len() > 1 {
+        let has_cname = recs
+            .iter()
+            .any(|r| r.rdata.record_type() == RecordType::CNAME);
+        let has_other = recs
+            .iter()
+            .any(|r| r.rdata.record_type() != RecordType::CNAME);
+        // Several CNAME targets are allowed. Any other type at the name is not.
+        if has_cname && has_other {
             return Err(PolicyError::CnameConflict { name });
         }
-        let mut deduped: Vec<ViewRecordConfig> = Vec::with_capacity(recs.len());
+        let mut deduped: Vec<ExpandedRecord> = Vec::with_capacity(recs.len());
         for r in recs {
             if deduped
                 .iter()
-                .any(|d| d.rtype() == r.rtype() && d.ttl != r.ttl)
+                .any(|d| d.rdata.record_type() == r.rdata.record_type() && d.ttl != r.ttl)
             {
                 return Err(PolicyError::InvalidConfig {
                     reason: ConfigReason::RrsetTtlMismatch { name },
@@ -544,12 +605,11 @@ fn build_view_records(
                 deduped.push(r);
             }
         }
-        let records: Arc<[Record]> = deduped
+        let records = deduped
             .into_iter()
             .map(|r| Record::new(r.name, Class::IN, r.ttl, r.rdata))
-            .collect::<Vec<_>>()
-            .into();
-        out.insert(name, ViewRrSets { records });
+            .collect::<Vec<_>>();
+        out.insert(name, ViewRrSets::from_records(records));
     }
     Ok((out, public))
 }
@@ -640,7 +700,7 @@ mod tests {
             records: vec![ViewRecordConfig {
                 name: Name::from_ascii("nas.lan.example.com").unwrap(),
                 ttl: 60,
-                rdata: RData::A(Ipv4Addr::new(192, 0, 2, 10)),
+                rdata: vec![RData::A(Ipv4Addr::new(192, 0, 2, 10))],
                 overrides: Default::default(),
             }],
         }
@@ -745,13 +805,15 @@ mod tests {
         cfg.records.push(ViewRecordConfig {
             name: name.clone(),
             ttl: 60,
-            rdata: RData::CNAME(Name::from_ascii("nas.lan.example.com").unwrap()),
+            rdata: vec![RData::CNAME(
+                Name::from_ascii("nas.lan.example.com").unwrap(),
+            )],
             overrides: Default::default(),
         });
         cfg.records.push(ViewRecordConfig {
             name,
             ttl: 60,
-            rdata: RData::A(Ipv4Addr::new(192, 0, 2, 11)),
+            rdata: vec![RData::A(Ipv4Addr::new(192, 0, 2, 11))],
             overrides: Default::default(),
         });
         let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
@@ -764,7 +826,7 @@ mod tests {
         cfg.records.push(ViewRecordConfig {
             name: Name::from_ascii("ns.example.com").unwrap(),
             ttl: 60,
-            rdata: RData::NS(Name::from_ascii("a.example.com").unwrap()),
+            rdata: vec![RData::NS(Name::from_ascii("a.example.com").unwrap())],
             overrides: Default::default(),
         });
         let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
@@ -783,7 +845,7 @@ mod tests {
         cfg.records.push(ViewRecordConfig {
             name: Name::from_ascii("*.example.com").unwrap(),
             ttl: 60,
-            rdata: RData::CNAME(Name::from_ascii("proxy.example.com").unwrap()),
+            rdata: vec![RData::CNAME(Name::from_ascii("proxy.example.com").unwrap())],
             overrides: Default::default(),
         });
         PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap();
@@ -795,7 +857,7 @@ mod tests {
         cfg.records.push(ViewRecordConfig {
             name: Name::from_ascii("a.*.example.com").unwrap(),
             ttl: 60,
-            rdata: RData::A(Ipv4Addr::new(192, 0, 2, 99)),
+            rdata: vec![RData::A(Ipv4Addr::new(192, 0, 2, 99))],
             overrides: Default::default(),
         });
         let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
@@ -1057,7 +1119,7 @@ mod tests {
         let mut cfg = spec_excerpt_config();
         cfg.records[0].overrides.insert(
             ViewId::new("nowhere").unwrap(),
-            ViewOverride::Data(RData::A(Ipv4Addr::new(192, 0, 2, 99))),
+            ViewOverride::Data(vec![RData::A(Ipv4Addr::new(192, 0, 2, 99))]),
         );
         let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
         assert!(matches!(
@@ -1073,7 +1135,7 @@ mod tests {
         let mut cfg = spec_excerpt_config();
         cfg.records[0].overrides.insert(
             ViewId::new("lan").unwrap(),
-            ViewOverride::Data(RData::A(Ipv4Addr::new(192, 0, 2, 50))),
+            ViewOverride::Data(vec![RData::A(Ipv4Addr::new(192, 0, 2, 50))]),
         );
         let snap = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap();
         let name = Name::from_ascii("nas.lan.example.com").unwrap();
@@ -1093,7 +1155,9 @@ mod tests {
         cfg.records.push(ViewRecordConfig {
             name: Name::from_ascii("nas.lan.example.com").unwrap(),
             ttl: 60,
-            rdata: RData::AAAA(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x10)),
+            rdata: vec![RData::AAAA(Ipv6Addr::new(
+                0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x10,
+            ))],
             overrides: BTreeMap::from([(ViewId::new("lan").unwrap(), ViewOverride::NoAnswer)]),
         });
         let snap = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap();
@@ -1124,12 +1188,58 @@ mod tests {
         cfg.records.push(ViewRecordConfig {
             name: name.clone(),
             ttl: 60,
-            rdata: RData::CNAME(Name::from_ascii("nas.lan.example.com").unwrap()),
+            rdata: vec![RData::CNAME(
+                Name::from_ascii("nas.lan.example.com").unwrap(),
+            )],
             overrides: Default::default(),
         });
         let snap = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap();
         let sets = snap.views[0].records.get(&name).unwrap();
         assert_eq!(sets.records.len(), 1);
+    }
+
+    #[test]
+    fn config_expands_multi_value_records_and_keeps_cname_targets() {
+        let mut cfg = spec_excerpt_config();
+        let nas = Name::from_ascii("nas.lan.example.com").unwrap();
+        cfg.records[0]
+            .rdata
+            .push(RData::A(Ipv4Addr::new(192, 0, 2, 11)));
+        cfg.records[0].overrides.insert(
+            ViewId::new("lan").unwrap(),
+            ViewOverride::Data(vec![
+                RData::A(Ipv4Addr::new(192, 0, 2, 50)),
+                RData::A(Ipv4Addr::new(192, 0, 2, 51)),
+            ]),
+        );
+        let alias = Name::from_ascii("alias.example.com").unwrap();
+        cfg.records.push(ViewRecordConfig {
+            name: alias.clone(),
+            ttl: 60,
+            rdata: vec![
+                RData::CNAME(Name::from_ascii("a.example.com").unwrap()),
+                RData::CNAME(Name::from_ascii("b.example.com").unwrap()),
+            ],
+            overrides: Default::default(),
+        });
+        let snap = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap();
+        let lan = snap.views[0].records.get(&nas).unwrap();
+        assert_eq!(lan.records.len(), 2);
+        assert!(
+            lan.records
+                .iter()
+                .all(|record| record.rtype() == RecordType::A)
+        );
+        let default = snap.views[1].records.get(&nas).unwrap();
+        assert_eq!(default.records.len(), 2);
+        let targets = snap.views[0].records.get(&alias).unwrap();
+        assert_eq!(targets.records.len(), 2);
+        assert!(
+            targets
+                .records
+                .iter()
+                .all(|record| record.rtype() == RecordType::CNAME)
+        );
     }
 
     #[test]
@@ -1139,7 +1249,7 @@ mod tests {
             cfg.records.push(ViewRecordConfig {
                 name: Name::from_ascii(owner).unwrap(),
                 ttl: 60,
-                rdata: RData::A(Ipv4Addr::new(192, 0, 2, 50)),
+                rdata: vec![RData::A(Ipv4Addr::new(192, 0, 2, 50))],
                 overrides: Default::default(),
             });
         }
@@ -1158,7 +1268,7 @@ mod tests {
             cfg.records.push(ViewRecordConfig {
                 name: Name::from_ascii("x.example").unwrap(),
                 ttl,
-                rdata: RData::A(Ipv4Addr::new(192, 0, 2, last)),
+                rdata: vec![RData::A(Ipv4Addr::new(192, 0, 2, last))],
                 overrides: Default::default(),
             });
         }
@@ -1179,7 +1289,7 @@ mod tests {
             cfg.records.push(ViewRecordConfig {
                 name: Name::from_ascii("x.example").unwrap(),
                 ttl,
-                rdata: RData::A(Ipv4Addr::new(192, 0, 2, 50)),
+                rdata: vec![RData::A(Ipv4Addr::new(192, 0, 2, 50))],
                 overrides: Default::default(),
             });
         }

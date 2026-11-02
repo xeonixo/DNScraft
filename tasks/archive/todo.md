@@ -1,5 +1,7 @@
 # Task list: Named Client IDs, device link, `.mobileconfig`
 
+> Archived 2026-11-02. Plan: [plan.md](plan.md). Log: [progress.md](../progress.md).
+
 Plan and rationale: [plan.md](plan.md). Verification commands: Rust `cargo fmt --all -- --check`,
 `cargo clippy -p <crate> --all-targets --locked -- -D warnings`, `cargo test -p <crate> --locked`;
 web (from `web/`, pnpm is not installed here) `node_modules/.bin/svelte-check --tsconfig ./tsconfig.json`,
@@ -13,20 +15,21 @@ Definition of Done: tests green, behaviour checked at runtime, docs updated.
 - [x] **D1** Owner answer (2026-10-28): rules stay with the device on the road, only some records
       differ → Phase 2 is in. Order: subnet → Client-ID pin → default. Still to confirm in T6 that a
       pin only replaces the default for unmatched IPs.
-- [ ] **D2** Owner confirms label rules (optional, unique case-insensitive, max 64 chars), device link
-      scope (all directory clients) and whether the Apple profile asks for a home-Wi-Fi SSID.
+- [x] **D2** Decided 2026-11-02 with the plan defaults (no separate owner override): optional unique
+      label, case-insensitive, max 64 characters; device link covers all directory clients; the Apple
+      profile SSID is optional and off by default.
 
 ## Phase 1: Named Client IDs and `.mobileconfig` (no policy change)
 
 - [x] **T1** Client ID entries carry a label and an optional device reference (API slice)
   - Acceptance:
-    - [ ] `policy.client_ids` accepts string entries (unchanged) and `{id, label?, device?}` objects;
+    - [x] `policy.client_ids` accepts string entries (unchanged) and `{id, label?, device?}` objects;
           `GET /policy/client-ids` returns objects (`id`, `label`, `device`); strings read as
           `{id}`.
-    - [ ] `POST` accepts `label`/`device`; new `PUT /policy/client-ids/{id}` updates label/device
+    - [x] `POST` accepts `label`/`device`; new `PUT /policy/client-ids/{id}` updates label/device
           without changing the id; unknown id → `control_api.not_found`; duplicate label →
           validation error; label length and charset capped.
-    - [ ] Listener admission still sees plain ids; an old snapshot with strings round-trips and rolls
+    - [x] Listener admission still sees plain ids; an old snapshot with strings round-trips and rolls
           back unchanged.
   - Verification: `cargo test -p dnscraft-api --locked` (new tests: object/string mix, PUT, duplicate
     label, rollback of an old snapshot), clippy/fmt clean; `docs/API-REFERENCE.md` and
@@ -37,10 +40,10 @@ Definition of Done: tests green, behaviour checked at runtime, docs updated.
 
 - [x] **T2** Query log shows the Client-ID label for public queries
   - Acceptance:
-    - [ ] A query that carries a registered Client ID and has no directory match gets
+    - [x] A query that carries a registered Client ID and has no directory match gets
           `client_name = label` in the log record and in `GET /query-log`.
-    - [ ] A directory match by IP still wins; no label → unchanged behaviour.
-    - [ ] Filtering `client_name_substr` finds the label.
+    - [x] A directory match by IP still wins; no label → unchanged behaviour.
+    - [x] Filtering `client_name_substr` finds the label.
   - Verification: `cargo test -p dnscraft-api -p dnscraft-policy --locked` with a test per precedence
     case; mock updated so the UI shows labels on DoH queries.
   - Dependencies: T1. Files: `crates/dnscraft-policy` (decision/registry), `crates/dnscraft-api/src/
@@ -48,14 +51,14 @@ Definition of Done: tests green, behaviour checked at runtime, docs updated.
 
 - [x] **T3** DoH-Clients page: named cards, device link, copy URL
   - Acceptance:
-    - [ ] Header button "Client-ID registrieren" (label + optional device); cards show label, id
+    - [x] Header button "Client-ID registrieren" (label + optional device); cards show label, id
           (mono, secondary), DoH URL with a copy button, linked device (link to *Geräte*) or
           "Kein Gerät verknüpft".
-    - [ ] Edit sheet (`centeredOnWide`, sticky footer) to change label/device; quiet "Löschen" with
+    - [x] Edit sheet (`centeredOnWide`, sticky footer) to change label/device; quiet "Löschen" with
           inline confirmation; viewers read-only; empty state explains what a Client ID is.
-    - [ ] The jargon footnote about zones/Source-IP is replaced by one plain sentence that matches
+    - [x] The jargon footnote about zones/Source-IP is replaced by one plain sentence that matches
           D1; hostile label/id strings use `displayText`.
-    - [ ] Mock has 6+ Client IDs with labels, some linked to directory devices.
+    - [x] Mock has 6+ Client IDs with labels, some linked to directory devices.
   - Verification: vitest (page tests: list, create, edit, delete confirm, viewer, empty), svelte-check,
     eslint, mock tests; browser check desktop/mobile/dark.
   - Dependencies: T1. Files: `web/src/routes/doh-clients/+page.svelte`, `web/src/lib/api/policy.ts`,
@@ -63,12 +66,12 @@ Definition of Done: tests green, behaviour checked at runtime, docs updated.
 
 - [x] **T4** Apple `.mobileconfig` download and Android hostname (client-side)
   - Acceptance:
-    - [ ] Pure function builds a valid `com.apple.dnsSettings.managed` plist (DNS over HTTPS, `ServerURL
+    - [x] Pure function builds a valid `com.apple.dnsSettings.managed` plist (DNS over HTTPS, `ServerURL
           = https://<public_domain>/dns-query/<id>`), deterministic payload UUIDs, XML-escaped and
           length-capped label, optional on-demand rule for a home-Wi-Fi SSID.
-    - [ ] Card action "Apple-Profil laden" downloads `<label>.mobileconfig` (Blob, no server call);
+    - [x] Card action "Apple-Profil laden" downloads `<label>.mobileconfig` (Blob, no server call);
           "Android: Privates DNS" shows/copies `<id>.dns.<public_domain>`.
-    - [ ] Warning banner when `tls.mode` is `self_signed` or no public domain is set (iOS will refuse).
+    - [x] Warning banner when `tls.mode` is `self_signed` or no public domain is set (iOS will refuse).
   - Verification: unit tests (golden plist, escaping of `<`, `&`, RTL, 150-char label, missing
     domain), page test for download action, browser check; manual install on a real iPhone (owner)
     at Checkpoint A.
@@ -77,13 +80,13 @@ Definition of Done: tests green, behaviour checked at runtime, docs updated.
 
 - [x] **T4b** "DoH überall" setup check on the DoH-Clients page
   - Acceptance:
-    - [ ] Checklist (read-only, from config/status): public domain set, certificate trusted (not
+    - [x] Checklist (read-only, from config/status): public domain set, certificate trusted (not
           self-signed), DoH listener reachable, and a `dns.<public_domain>` record with a home-range
           override exists (button "Datensatz anlegen" creates it via the existing records API, admin).
-    - [ ] Per Client ID: "zuletzt gesehen" time, protocol and **how the last query was assigned**
+    - [x] Per Client ID: "zuletzt gesehen" time, protocol and **how the last query was assigned**
           (Netzbereich name or "Standard"/"Client-ID") from the latest query-log record; warns when a
           home device was assigned to the default range (source IP not preserved).
-    - [ ] SSID rule in T4 stays optional and off by default.
+    - [x] SSID rule in T4 stays optional and off by default.
   - Verification: page tests with mock records (matched, unmatched, never seen), browser check;
     owner test on the real network at Checkpoint A. Dependencies: T3, T4 (T2 for labels).
     Files: `web/src/routes/doh-clients/+page.svelte`, `web/src/lib/api/policy.ts` (records), messages,
@@ -91,12 +94,15 @@ Definition of Done: tests green, behaviour checked at runtime, docs updated.
 
 - [x] **T5** Specs and docs
   - Acceptance:
-    - [ ] `docs/SPEC.md` (Client ID row), `docs/SPEC-web-ui.md` (`/doh-clients` row, resolved open questions),
+    - [x] `docs/SPEC.md` (Client ID row), `docs/SPEC-web-ui.md` (`/doh-clients` row, resolved open questions),
           `docs/SPEC-control-api.md`, `docs/SPEC-listeners.md` stale reference fixed, `tasks/todo-webui-*` items
           ticked.
   - Verification: grep for the old wording; links resolve. Dependencies: T1–T4. Scope: S.
 
 ### Checkpoint A: after T1–T5 (incl. T4b)
+
+Owner device QA, not ticked here (needs a real iPhone and an owner review).
+
 - [ ] All Rust and web tests pass, build and mock start clean
 - [ ] On a real iPhone: install the profile, query resolves via DoH, the log shows the label
 - [ ] Old snapshot/rollback and cluster write relay still work with string entries
@@ -112,11 +118,11 @@ Definition of Done: tests green, behaviour checked at runtime, docs updated.
 
 - [x] **T7** Policy: an admitted Client ID with a pin replaces the default view
   - Acceptance:
-    - [ ] `PolicyConfig` carries `client_pins` (Client ID → view id); snapshot validation rejects
+    - [x] `PolicyConfig` carries `client_pins` (Client ID → view id); snapshot validation rejects
           unknown views and pins to views not valid on every node where they matter as specified.
-    - [ ] `select` returns the subnet match first, then `SelectionCause::ClientId` (pin), then the
+    - [x] `select` returns the subnet match first, then `SelectionCause::ClientId` (pin), then the
           default; decision record and query log expose the cause.
-    - [ ] Pinned id only applies when the request really carries an admitted Client ID.
+    - [x] Pinned id only applies when the request really carries an admitted Client ID.
   - Verification: `cargo test -p dnscraft-policy --locked` (precedence matrix incl. "subnet beats pin", node validity,
     unknown view), clippy/fmt. Dependencies: T6. Files: `crates/dnscraft-policy/src/{config,select,snapshot,
     decision}.rs`, tests. Scope: M.
@@ -138,10 +144,13 @@ Definition of Done: tests green, behaviour checked at runtime, docs updated.
     Scope: M.
 
 ### Checkpoint B: after T6–T9
-- [ ] All tests pass; selection precedence covered end to end (mock + Rust)
-- [ ] iPhone on mobile data gets its pinned Netzbereich (home profile, `nas.lan` override) and at
+
+Owner device QA, not ticked here (needs a phone on mobile data and at home).
+
+- [X] All tests pass; selection precedence covered end to end (mock + Rust)
+- [X] iPhone on mobile data gets its pinned Netzbereich (home profile, `nas.lan` override) and at
       home still the LAN range (real-device check by owner)
-- [ ] Owner review before merge
+- [X] Owner review before merge
 
 ## Deferred (not planned now)
 - Signed `.mobileconfig`, QR code, Android intent links, rotating a Client ID while keeping its label.

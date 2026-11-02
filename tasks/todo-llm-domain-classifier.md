@@ -1,4 +1,7 @@
-# Todo: LLM-Klassifikator für unbekannte Domains (nicht implementiert)
+# Todo: LLM-Klassifikator für unbekannte Domains (deferred research, not in this pass)
+
+E1–E4 stay open. This is research, not a scheduled implementation. The tracker
+enrichment below is already built and is not this classifier.
 
 Idee: Domains, die in keiner Blockliste stehen, per LLM (OpenRouter) als
 Tracking/Werbung/Malware/unkritisch einstufen lassen. Nur Vorschlag an den Owner,

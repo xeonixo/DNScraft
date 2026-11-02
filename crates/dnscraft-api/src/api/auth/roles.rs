@@ -447,6 +447,10 @@ mod tests {
             requirement(&Method::POST, "/api/v1/filtering/custom-rules"),
             Requirement::ApiAdmin
         );
+        assert_eq!(
+            requirement(&Method::DELETE, "/api/v1/filtering/temporary-allows"),
+            Requirement::ApiAdmin
+        );
         // Proposals are listed by viewers but decided by admins only.
         assert_eq!(
             requirement(&Method::GET, "/api/v1/filtering/mcp-proposals"),

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { settle } from './result';
 import {
 	flushCache,
+	getDomainStats,
 	getReadiness,
 	getTopDomains,
 	periodQuery,
@@ -82,6 +83,60 @@ describe('settle', () => {
 		fetchMock.mockResolvedValueOnce(json(200, { data: { domains: [] } }));
 		await expect(settle(getTopDomains('7d', 5))).resolves.toEqual({ kind: 'ok', data: [] });
 		expect(fetchMock.mock.calls[0]?.[0]).toMatch(/\/api\/v1\/stats\/top_domains\?from=.*&limit=5$/);
+	});
+});
+
+describe('getDomainStats', () => {
+	const detail = {
+		domain: 'ads.example.com',
+		retention_limited: true,
+		first_seen: '2026-10-01T00:00:00.000000Z',
+		last_seen: '2026-10-28T12:00:00.000000Z',
+		counts: { total: 10, blocked: 4, allowed: 6 },
+		top_clients: [{ client: 'iPhone', queries: 7 }],
+		daily: [{ day: '2026-10-28', total: 10, blocked: 4 }],
+		last_decision: null,
+	};
+
+	it('requests the encoded name and the day window', async () => {
+		fetchMock.mockResolvedValueOnce(json(200, { data: detail }));
+		await expect(getDomainStats('bücher.example', 30)).resolves.toEqual({
+			...detail,
+			domain: 'ads.example.com',
+		});
+		expect(fetchMock.mock.calls[0]?.[0]).toBe(
+			`/api/v1/stats/domains/${encodeURIComponent('bücher.example')}?days=30`,
+		);
+	});
+
+	it('keeps client names as text and reads a last decision', async () => {
+		const client = '<script>alert(1)</script>';
+		fetchMock.mockResolvedValueOnce(
+			json(200, {
+				data: {
+					...detail,
+					top_clients: [{ client, queries: 2 }],
+					last_decision: {
+						id: 'q-9',
+						time: '2026-10-28T12:00:00.000000Z',
+						status: 'blocked',
+						rule_text: '||ads.example.com^',
+						source: 'list',
+					},
+				},
+			}),
+		);
+		const stats = await getDomainStats('ads.example.com', 7);
+		expect(stats.top_clients).toEqual([{ client, queries: 2 }]);
+		expect(stats.last_decision?.rule_text).toBe('||ads.example.com^');
+		expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/stats/domains/ads.example.com?days=7');
+	});
+
+	it('rejects a body that is missing the domain', async () => {
+		fetchMock.mockResolvedValueOnce(json(200, { data: { counts: {} } }));
+		await expect(getDomainStats('ads.example.com')).rejects.toMatchObject({
+			code: 'client.malformed',
+		});
 	});
 });
 

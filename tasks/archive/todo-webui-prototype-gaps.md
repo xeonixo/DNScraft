@@ -1,24 +1,24 @@
 # Todo: web-ui prototype placeholders awaiting backend (WP1–WP5)
 
-> Spec: `docs/SPEC-web-ui.md` § "Required control-api additions" and § "Feature coverage
-> beyond the core screens". Prototype: `docs/design/web-ui-prototype.html` (shows these
-> as placeholders). Control-api gaps: `tasks/todo-webui-api-gaps.md`.
-> Each task needs owner sign-off on the proposed route shape before implementation.
-> One commit per task, `Co-Authored-By` line, Log entry in `tasks/progress.md`.
+> Spec: [`SPEC-web-ui.md`](../../docs/SPEC-web-ui.md). Prototype:
+> [`web-ui-prototype.html`](../../docs/design/web-ui-prototype.html).
+> Control-api gaps: [`todo-webui-api-gaps.md`](todo-webui-api-gaps.md).
+> Archived 2026-11-02 — WP1–WP5 shipped. Log: [`progress.md`](../progress.md).
 
 ## Phase 0 — spec sign-off
 
-- [ ] **WP1** Alerts (`/alerts`): owner decides between `GET /api/v1/alerts` (proposed
-      in SPEC-web-ui) and client-side assembly from `/status`, TLS status and
-      filter-list status. Record the decision in SPEC-web-ui § Open questions.
-- [ ] **WP2** Update notice (`/settings` → Allgemein): confirm `GET /api/v1/update/check`,
-      the opt-out config key name, and the cache interval (proposed ~24 h).
-- [ ] **WP3** Automatic backups (`/settings` → Konfiguration): confirm `GET /api/v1/backups`
-      and `PUT /api/v1/backups/settings`, or accept the documented-note fallback.
-- [ ] **WP4** Blocked services catalog: confirm the runtime download of `services.json` +
+Shipped 2026-11-02 with the proposed shapes (no separate owner rewrite): `GET /api/v1/alerts`,
+`GET /api/v1/update/check` (opt-in, ~24 h cache), `GET /api/v1/backups` +
+`PUT /api/v1/backups/settings`, runtime `services.json` with `available: false`, and
+per-filter-set toggles on `GET`/`PUT /api/v1/filtering/services`.
+
+- [x] **WP1** Alerts (`/alerts`): shipped as `GET /api/v1/alerts` (the proposed route).
+- [x] **WP2** Update notice (`/settings` → Allgemein): `GET /api/v1/update/check`, opt-in, ~24 h cache.
+- [x] **WP3** Automatic backups (`/settings` → Konfiguration): `GET /api/v1/backups` and
+      `PUT /api/v1/backups/settings`.
+- [x] **WP4** Blocked services catalog: runtime download of `services.json` +
       `services_i18n.json` (GPL-3.0, never bundled) and the `available: false` state.
-- [ ] **WP5** Blocked services toggle: resolve per-profile (SPEC.md) versus per-filter-set
-      (SPEC-filtering.md) before fixing the route in `GET`/`PUT /api/v1/filtering/services`.
+- [x] **WP5** Blocked services toggle: per-filter-set on `GET`/`PUT /api/v1/filtering/services`.
 
 ## Phase 1 — backend
 
@@ -45,20 +45,20 @@
 
 ## Phase 2 — web UI wiring
 
-- [ ] **WP1** Replace the `/alerts` placeholder with the grouped list, the Übersicht badge
-      and the dashboard banner row; empty state when `active_count` is 0.
-- [ ] **WP2** Replace the Allgemein update row with the "update available" row, the
-      release-notes link and the opt-out switch; hide the row when disabled.
-- [ ] **WP3** Replace the Konfiguration backup placeholder with status and retention
-      controls (admin only); show the documented note when the endpoint is absent.
-- [ ] **WP4** Show the `/blocked-services` catalog as unavailable when `available` is false.
-- [ ] **WP5** Replace the `/blocked-services` placeholder with the grouped catalog, names
-      in the viewer locale and per-set toggles (admin only).
+- [x] **WP1** `/alerts` grouped list, Übersicht badge and dashboard banner; empty state when
+      `active_count` is 0.
+- [x] **WP2** Allgemein update row with the "update available" row, release-notes link and
+      opt-out switch; hidden when disabled.
+- [x] **WP3** Konfiguration backup status and retention controls (admin only).
+- [x] **WP4** `/blocked-services` shows unavailable when `available` is false.
+- [x] **WP5** `/blocked-services` grouped catalog, names in the viewer locale, per-set toggles
+      (admin only).
 
 ## Checkpoints
 
-- [ ] After WP1–WP3 (Phase 1): alerts, update check and backups endpoints served; RBAC matrix updated.
-- [ ] After WP4–WP5: `/blocked-services` lists the real catalog, or shows "unavailable"
-      without one; no third-party icon reaches the DOM unsanitized.
-- [ ] After Phase 2: no placeholder text remains for the four features in
-      `docs/design/web-ui-prototype.html` (the prototype itself is updated by its own owner).
+- [x] After WP1–WP3 (Phase 1): alerts, update check and backups endpoints served; RBAC matrix updated.
+- [x] After WP4–WP5: `/blocked-services` lists the real catalog, or shows "unavailable"
+      without one; icons are not returned by the API (no sanitizer path in the payload).
+- [x] After Phase 2: product screens no longer use placeholders for WP1–WP5. The static
+      prototype [`web-ui-prototype.html`](../../docs/design/web-ui-prototype.html) stays the
+      design reference and is not rewritten here.

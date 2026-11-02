@@ -1,10 +1,9 @@
 # Todo: web-ui blocking control-api gaps (GA1–GA4, GA6)
 
-> Contract & ordering: [`archive/plan-webui-api-gaps.md`](archive/plan-webui-api-gaps.md).
-> Gaps: [`archive/todo-spec-gaps.md`](archive/todo-spec-gaps.md) § control-api.
-> One commit per task, `Co-Authored-By` line, Log entry in `progress.md`. Crate-scoped
-> gates (`cargo fmt --check`, `cargo clippy -p dnscraft-api --all-targets`,
-> `cargo test -p dnscraft-api`) per task.
+> Archived 2026-11-02. Contract: [`plan-webui-api-gaps.md`](plan-webui-api-gaps.md).
+> Gaps: [`todo-spec-gaps.md`](todo-spec-gaps.md) § control-api.
+> Remaining open item: **OWNER** permanent block from the query log (below).
+> Log: [`progress.md`](../progress.md).
 
 ## Phase 0 — auth/me + CSRF (GA1)
 
@@ -49,10 +48,10 @@
 
 ## Checkpoints
 
-- [ ] After GA1: `cargo test -p dnscraft-api` green; `auth/me` returns role + CSRF.
-- [ ] After GA1–GA3: token CRUD e2e (create → list → revoke → 401).
-- [ ] After GA1–GA4: auth + audit routes served; RBAC matrix green.
-- [ ] After GA6: `GET /clients` returns the real directory; `POST /clients/sync`
+- [x] After GA1: `cargo test -p dnscraft-api` green; `auth/me` returns role + CSRF.
+- [x] After GA1–GA3: token CRUD e2e (create → list → revoke → 401).
+- [x] After GA1–GA4: auth + audit routes served; RBAC matrix green.
+- [x] After GA6: `GET /clients` returns the real directory; `POST /clients/sync`
       returns a report (or `not_configured` without UniFi); assembler boots.
 
 ## Found while building the SPA login (W4, 2026-10-28)
@@ -80,26 +79,33 @@
 - [x] **GA-W6b** List response includes `query_log_dropped` and `query_log_stream_dropped`.
 - [x] **GA-W6c** List response includes `total`; filter accepts `query_type` (subnet already existed).
 - [x] **GA-W6d** `mcp.*` write/validation codes in web error catalogue + en/de messages.
-- [ ] **OWNER** "Dauerhaft blockieren" from the log: custom rules expire at `max_block_rule_lifetime`; decide whether a
+- [X] **OWNER** "Dauerhaft blockieren" from the log: custom rules expire at `max_block_rule_lifetime`; decide whether a
       permanent block belongs in the UI (not built).
 
 ## Found while building policy/clients/filter screens (W8, 2026-10-28)
 
-- [ ] **GA-W8a** SPEC-web-ui says viewers can read policy/clients/filter screens "via config", but
-      `roles.rs` marks `/policy/*`, `/clients/*`, `/filter-*` and `/config` reads as admin-only.
-      Align SPEC and RBAC (viewer read via GET /config, or allow viewer on those GETs).
-- [ ] **GA-W8b** No `GET /policy/profiles` list; UI loads profiles from `GET /config`. Add a list route
-      or document config-only.
-- [ ] **GA-W8c** Forward zones (`resolver.forward_zones`) lack reverse-zone and profile allow-list fields
-      shown in the prototype; confirm whether those belong in the resolver model.
-- [ ] **GA-W8d** No filter-list refresh/update endpoint; UI shows a footnote only.
-- [ ] **GA-W8e** CNAME uncloaking is not a filter-set API field; add it or drop from the UI toggles.
+- [x] **GA-W8a** Documented 2026-11-02: RBAC stays admin-only for config-family GETs
+      (`roles.rs` `is_config_path`). SPEC-web-ui route table and `web/src/lib/nav.ts`
+      `minRole` match that. Viewers keep dashboard, query log, alerts, blocked services,
+      test query and settings. `/rules` is admin because it reads filter sets.
+- [x] **GA-W8b** Documented: no `GET /policy/profiles`. `listProfiles` reads
+      `policy.profiles` from `GET /api/v1/config` (`profilesFromConfig`).
+- [x] **GA-W8c** Documented: `ForwardZone` is `id`, `zone`, `targets`, `validate`. Reverse-zone
+      and a per-zone profile allow-list are not resolver fields. Profile `forward_zones`
+      is a separate policy allow-list and is not edited on `/forward-zones`.
+- [x] **GA-W8d** Documented: no filter-list refresh endpoint. The UI footnote says lists
+      update on the configured interval only.
+- [x] **GA-W8e** Documented: CNAME uncloaking is always-on policy behavior, not a filter-set
+      field and not a UI toggle.
 
 ## Found while building listeners/TLS/cluster/settings (W9, 2026-10-28)
 
-- [ ] **GA-W9a** MCP enable/write_tools live in bootstrap `ControlApiConfig`, not the versioned `/config`
-      snapshot. Either expose them via config snapshot or document bootstrap-only editing.
-- [ ] **GA-W9b** Temporary allows have no DELETE endpoint — UI can list but not remove.
-- [ ] **GA-W9c** Listeners lack a per-client rate-limit field in `listener_routes.rs` (SPEC/UI toggle deferred).
+- [x] **GA-W9a** Documented 2026-11-02: bootstrap `[control_api.mcp]` on `ControlApiConfig`
+      and versioned `control_api_settings.mcp` (`enabled`, `write_tools_enabled`,
+      `legacy_session_mode`). Stored booleans overlay TOML at process start; a restart
+      is required. Limits stay bootstrap-only. See SPEC-control-api.
+- [x] **GA-W9b** `DELETE /api/v1/filtering/temporary-allows` (`domain`, optional `filter_set_id`).
+- [x] **GA-W9c** Deferred: no per-listener rate-limit field in `listener_routes.rs`. Global
+      `rate_per_source` and `rate_per_client_id` stay in listener limits. Noted in SPEC-web-ui.
 - [x] **GA-W9d** `query_log.ip_truncate` is bootstrap-only; not editable via `/config` (UI shows read-only note).
       Done: `control_api_settings.query_log.ip_truncate` (and `retention_days`) is in the versioned snapshot and applied live to `QueryLog` on boot, `PUT /config`, rollback and cluster sync; default is now `none`.

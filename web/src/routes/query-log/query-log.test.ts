@@ -454,8 +454,13 @@ describe('wide and compact layouts', () => {
 		const user = userEvent.setup();
 		const { container } = render(Page);
 
-		await screen.findByRole('table', { name: m.querylog_table_label() });
+		const table = await screen.findByRole('table', { name: m.querylog_table_label() });
 		expect(screen.queryByRole('columnheader', { name: m.querylog_col_answer() })).toBeNull();
+		expect(
+			within(table).getByRole('link', {
+				name: m.domain_detail_open({ domain: 'ads.example.com' }),
+			}),
+		).toHaveAttribute('href', '/dashboard/domains/ads.example.com');
 		expect(container.querySelector('tr.day th')?.getAttribute('colspan')).toBe('4');
 
 		// The native input is visually hidden (pointer-events: none); the wrapping label is the target.
@@ -475,7 +480,9 @@ describe('wide and compact layouts', () => {
 		const user = userEvent.setup();
 		render(Page);
 
-		const link = await screen.findByRole('link', { name: /a/ });
+		const link = await screen.findByRole('link', {
+			name: m.querylog_open_row({ domain: 'ads.example.com' }),
+		});
 		expect(screen.queryByRole('tooltip')).toBeNull();
 		await user.hover(link);
 		const tip = await screen.findByRole('tooltip');

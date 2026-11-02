@@ -219,9 +219,17 @@ describe('dashboard tiles and panels', () => {
 
 		expect((await screen.findAllByText('60%')).length).toBeGreaterThan(0);
 		expect(screen.getByText('www.example.com')).toBeInTheDocument();
+		expect(screen.getByText('www.example.com').closest('a')).toHaveAttribute(
+			'href',
+			'/dashboard/domains/www.example.com',
+		);
 		expect(screen.getByText('iPhone')).toBeInTheDocument();
 		// Listed in both the top domains and the top blocked domains lists.
-		expect(screen.getAllByText('ads.example.com')).toHaveLength(2);
+		const blocked = screen.getAllByText('ads.example.com');
+		expect(blocked).toHaveLength(2);
+		for (const node of blocked) {
+			expect(node.closest('a')).toHaveAttribute('href', '/dashboard/domains/ads.example.com');
+		}
 	});
 
 	it('renders a domain with markup as inert text', async () => {

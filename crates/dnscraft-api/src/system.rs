@@ -74,6 +74,20 @@ pub(crate) fn web_access_public(snapshot: &Value) -> bool {
         .unwrap_or(false)
 }
 
+/// CIDR strings stored on `control_api_settings.web_access.allowed_cidrs` (absent = none).
+pub(crate) fn web_access_cidr_strings(snapshot: &Value) -> Vec<String> {
+    snapshot
+        .pointer("/control_api_settings/web_access/allowed_cidrs")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Backup settings as stored in the config snapshot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct BackupSettings {

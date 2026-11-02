@@ -4,7 +4,7 @@
 > Task list: [todo-domain-zones.md](todo-domain-zones.md).
 > Date: 2026-10-29. Status: **implemented (pending owner smoke against a real CF zone)**.
 >
-> Does **not** replace [plan.md](plan.md) (Named Client IDs). That plan stays the active
+> Does **not** replace [plan.md](plan.md) (Named Client IDs, also archived). That plan was the active
 > Client-ID workstream; this file is a parallel feature plan.
 >
 > MCP Domain-Zonen tools remain deferred (see [SPEC-mcp.md](../../docs/SPEC-mcp.md) Non-goals).

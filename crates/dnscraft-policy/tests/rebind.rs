@@ -431,7 +431,7 @@ async fn synthetic_private_passes_and_aaaa_suppression_is_qtype_only() {
         records: vec![ViewRecordConfig {
             name: Name::from_ascii("nas.lan.").unwrap(),
             ttl: 60,
-            rdata: RData::A(Ipv4Addr::new(192, 168, 1, 10)),
+            rdata: vec![RData::A(Ipv4Addr::new(192, 168, 1, 10))],
             overrides: Default::default(),
         }],
         default_rebind: true,

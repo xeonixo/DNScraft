@@ -13,6 +13,7 @@
 use std::time::{Duration, SystemTime};
 
 use axum::Json;
+use axum::body::Bytes;
 use axum::extract::Extension;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
@@ -461,6 +462,128 @@ pub(crate) async fn allow_temporarily(
         "expires_at": rfc3339(until),
         "filter_set_id": set.as_str(),
     })))
+}
+
+/// Query of `DELETE /api/v1/filtering/temporary-allows`.
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct RemoveTempAllowQuery {
+    domain: Option<String>,
+    filter_set_id: Option<String>,
+}
+
+/// Body of `DELETE /api/v1/filtering/temporary-allows`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RemoveTempAllowBody {
+    #[serde(default)]
+    domain: Option<String>,
+    #[serde(default)]
+    filter_set_id: Option<String>,
+}
+
+/// `DELETE /api/v1/filtering/temporary-allows`.
+///
+/// `domain` and optional `filter_set_id` come from the JSON body or the query
+/// string. The body wins when both name the same field. Nothing removed is
+/// `control_api.not_found`.
+pub(crate) async fn remove_temporary_allow(
+    State(state): State<AppState>,
+    auth: Option<Extension<Authenticated>>,
+    Query(query): Query<RemoveTempAllowQuery>,
+    body: Bytes,
+) -> Result<impl IntoResponse, ControlApiError> {
+    let from_body = if body.iter().all(u8::is_ascii_whitespace) {
+        RemoveTempAllowBody::default()
+    } else {
+        serde_json::from_slice(&body).map_err(|_| {
+            mcp_backend::mcp_error(
+                "mcp.invalid_input",
+                json!({ "reason": "request body must be a JSON object" }),
+            )
+        })?
+    };
+    let domain_raw = nonempty(from_body.domain).or(nonempty(query.domain));
+    let Some(domain_raw) = domain_raw else {
+        return Err(mcp_backend::mcp_error(
+            "mcp.invalid_input",
+            json!({ "reason": "`domain` is required" }),
+        ));
+    };
+    let filter_set_id = nonempty(from_body.filter_set_id).or(nonempty(query.filter_set_id));
+    let actor = actor(auth);
+    let domain = canonical_allow_domain(&domain_raw)?;
+    let set = parse_set(filter_set_id.as_deref())?;
+    let filter = state
+        .filter_engine()
+        .ok_or_else(|| ControlApiError::Internal {
+            message: "filter engine is not configured".to_owned(),
+        })?;
+    let service = service(&state)?;
+    let after = json!({
+        "domain": domain.as_str(),
+        "filter_set_id": set.as_str(),
+        "removed": true,
+    });
+    let removed = match filter.remove_temporary_allow(&set, &domain) {
+        Ok(removed) => removed,
+        Err(err) => {
+            let mapped = engine_error(err, set.as_str());
+            service
+                .record_action(
+                    &actor,
+                    "mcp.remove_temporary_allow",
+                    None,
+                    Some(&after),
+                    Some(mapped.code()),
+                )
+                .await;
+            return Err(mapped);
+        }
+    };
+    if !removed {
+        let missing = ControlApiError::NotFound {
+            what: format!("temporary allow {}", domain.as_str()),
+        };
+        service
+            .record_action(
+                &actor,
+                "mcp.remove_temporary_allow",
+                None,
+                Some(&json!({
+                    "domain": domain.as_str(),
+                    "filter_set_id": set.as_str(),
+                    "removed": false,
+                })),
+                Some(missing.code()),
+            )
+            .await;
+        return Err(missing);
+    }
+    service
+        .record_action(
+            &actor,
+            "mcp.remove_temporary_allow",
+            None,
+            Some(&after),
+            None,
+        )
+        .await;
+    state.broadcast_runtime_command(
+        "remove_temporary_allow",
+        &json!({
+            "filter_set_id": set.as_str(),
+            "domain": domain.as_str(),
+        }),
+    );
+    Ok(success(json!({
+        "removed": true,
+        "domain": domain.as_str(),
+        "filter_set_id": set.as_str(),
+    })))
+}
+
+fn nonempty(value: Option<String>) -> Option<String> {
+    value.filter(|text| !text.is_empty())
 }
 
 /// Query of `GET /api/v1/filtering/pause`.

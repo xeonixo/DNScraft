@@ -2,14 +2,47 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-11-02 — archive Client-ID todos, webui-api-gaps, cursor-next
+
+- Moved to `tasks/archive/`: `todo.md` + `plan.md` (Client-ID; Checkpoints A/B = owner QA),
+  `todo-webui-api-gaps.md` (OWNER permanent-block remains in that file), `cursor-next.md`.
+- Still in `tasks/`: `todo-llm-domain-classifier.md` (deferred research), this log.
+
+## 2026-11-02 — archive completed todo files
+
+- Moved to `tasks/archive/`: `todo-webui-extra-features`, `todo-webui-prototype-gaps`,
+  `todo-public-web`, `todo-multi-target-names` (links in SPECs updated).
+
+## 2026-11-02 — close open tasks: UI/API gaps, multi-target, public CIDRs, docs
+
+- **Web UI:** blocked-services catalog (WP4/WP5); Cmd/Ctrl+K command palette (WX1);
+  domain detail `/dashboard/domains/[name]` (WX5); sessions panel on Settings (WX8);
+  temporary-allow "End allow" via `DELETE /filtering/temporary-allows` (GA-W9b).
+- **Policy:** multi-target records — `rdata` list with string backward compat; CNAME
+  round-robin (one target per answer); A/AAAA/TXT/MX/SRV as RRset; names editor + SPECs.
+- **Public web:** optional `allowed_cidrs` on `web_access` (empty = unrestricted public
+  sources when enabled); live via `WebSlot::set_public_cidrs`.
+- **Docs/RBAC:** config-family screens admin in SPEC-web-ui + `nav.ts`; profiles
+  config-only list; forward-zone fields narrowed; no filter-list refresh endpoint;
+  CNAME uncloaking always-on; MCP enable/write_tools bootstrap + versioned settings;
+  API-REFERENCE / CAPABILITY-MAP updated. Revoked node-id reuse marked DONE.
+- **Task hygiene:** Client-ID T1–T9 + D2 defaults ticked; WP/WX/GA/public-web/
+  multi-target closed. Checkpoints A/B remain owner device QA.
+- **Still deferred:** `OWNER` permanent block from the query log; LLM classifier
+  E1–E4 (research); ban-threshold UI (`ban_*` stays in listeners public config);
+  public-web Playwright.
+- **Gates (touched):** `cargo test -p dnscraft-policy/api/listeners` green;
+  web vitest 887; svelte-check 0; fmt/clippy on touched crates green.
+
 ## 2026-11-02 — docs cleanup: archive done tasks, SPECs → `docs/`
 
 - **Archived** (implemented): assembler, spec-gaps, audit-cleanup, policy-model,
   tls-api-gaps, webui plan (+ api-gaps plan), domain-zones, MCP/N14 briefings,
   rust-embed notes, common-brief scratchpad → `tasks/archive/`.
-- **Still open in `tasks/`:** Client-ID plan/todo, webui-api/extra/prototype gaps,
-  public-web, multi-target-names, llm-domain-classifier, revoked-node-id issue,
-  `cursor-next.md`, this log.
+- **Still open in `tasks/` after later 2026-11-02 pass:** Client-ID checkpoints A/B
+  (owner QA), `OWNER` permanent-block decision, LLM classifier research,
+  public-web Playwright / ban-threshold UI; see newest Log entry.
+  this log.
 - **SPECs** moved from repo root to `docs/SPEC*.md`; CAPABILITY-MAP / README /
   ADRs / crate READMEs / task links updated.
 
@@ -444,7 +477,7 @@ Resume point for interrupted sessions. Newest entry first.
 - Open questions: legacy session mode default (recommend false) and block rule expiry (recommend 30d).
 - Recounted: 12 tools (7 read, 5 write), 16 success criteria (testable).
 Active plans: [plan-listeners.md](plan-listeners.md) / [todo-listeners.md](todo-listeners.md).
-Briefs and reusable templates for Cursor agents: [cursor-next.md](cursor-next.md).
+Briefs and reusable templates for Cursor agents: [archive/cursor-next.md](archive/cursor-next.md).
 
 **Archive:** [archive/](archive/) holds the plans and tasks of every finished module, the old briefs, and the
 full log of 2026-10-24 … 25 ([archive/progress-2026-10.md](archive/progress-2026-10.md)) — including the
@@ -464,7 +497,7 @@ success-criteria tables, measurements and review findings of resolver, filtering
 | `tls` | COMPLETE (Checkpoint C, 2026-10-25, LE staging accepted) | [plan](archive/tls-plan.md) · [tasks](archive/tls-todo.md) | archived log, coverage 80.3 % |
 | `policy` | COMPLETE (Checkpoint C, 2026-10-25; P13 SafeSearch, P14 schedules) | [plan](archive/policy-plan.md) · [tasks](archive/policy-todo.md) | archived log, coverage 92.9 % |
 | `listeners` | COMPLETE (Checkpoint D, 2026-10-26) | [plan](archive/listeners-plan.md) · [tasks](archive/listeners-todo.md) | [SPEC-listeners.md](../docs/SPEC-listeners.md); crates `dnscraft-listeners` + `dnscraft` |
-| `control-api` | COMPLETE and wired into `dnscraft` (assembler + GA-W4/W5/W6 API gaps 2026-11-01) | [plan](archive/plan-control-api.md) · [tasks](archive/todo-control-api.md) · [webui gaps](todo-webui-api-gaps.md) | [SPEC-control-api.md](../docs/SPEC-control-api.md); crate `dnscraft-api` |
+| `control-api` | COMPLETE and wired into `dnscraft` (assembler + GA-W4/W5/W6 API gaps 2026-11-01) | [plan](archive/plan-control-api.md) · [tasks](archive/todo-control-api.md) · [webui gaps](archive/todo-webui-api-gaps.md) (OWNER item) | [SPEC-control-api.md](../docs/SPEC-control-api.md); crate `dnscraft-api` |
 | `mcp` | COMPLETE (Checkpoint F, 2026-10-27; owner approved) | [plan](archive/mcp-plan.md) · [tasks](archive/mcp-todo.md) | [SPEC-mcp.md](../docs/SPEC-mcp.md); crates `dnscraft-mcp` + `dnscraft-api`; coverage 94.84 % |
 | `web-ui` | in progress (SPA + mock + rust-embed; release still copies `web/build` → `embed-web-ui/`) | [SPEC-web-ui.md](../docs/SPEC-web-ui.md) · [web/](../web/) | matches CAPABILITY-MAP / README |
 | `cluster` | COMPLETE (Checkpoint F, 2026-10-27; owner approved) and wired into `dnscraft` | [plan](archive/plan-cluster.md) · [tasks](archive/todo-cluster.md) | [SPEC-cluster.md](../docs/SPEC-cluster.md); crates `dnscraft-cluster` + `dnscraft-api`; loopback + fuzz + security suites |

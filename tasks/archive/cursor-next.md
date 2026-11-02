@@ -1,10 +1,12 @@
 # Briefs for Cursor agents
 
 > Reusable rules and templates. Task-specific briefs are given in chat and archived when the round is done.
-> Finished briefs: [archive/cursor-filtering.md](archive/cursor-filtering.md),
-> [archive/cursor-specs.md](archive/cursor-specs.md),
-> [archive/cursor-clients-tls-policy.md](archive/cursor-clients-tls-policy.md).
-> Background: [SPEC.md](../docs/SPEC.md) · [CAPABILITY-MAP.md](../CAPABILITY-MAP.md) · [progress.md](progress.md).
+> Archived 2026-11-02 (reusable templates; prefer current project rules + chat briefs).
+> Finished briefs: [cursor-filtering.md](cursor-filtering.md),
+> [cursor-specs.md](cursor-specs.md),
+> [cursor-clients-tls-policy.md](cursor-clients-tls-policy.md).
+> Background: [SPEC.md](../../docs/SPEC.md) · [CAPABILITY-MAP.md](../../CAPABILITY-MAP.md) ·
+> [progress.md](../progress.md).
 
 ## Status (updated 2026-10-26)
 

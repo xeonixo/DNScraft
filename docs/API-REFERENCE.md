@@ -72,9 +72,12 @@ are viewer-readable (public Split-DNS side; no config secrets).
 
 The snapshot section `control_api_settings` holds runtime keys written through
 `PUT /api/v1/config` (validated; unknown keys → `control_api.config.invalid`):
-`update_check` (bool), `backups` (`enabled`, `retention_count`),
-`query_log` (`retention_days` 1..=3650, `ip_truncate`, `stdout_queries` bool)
-and `oidc` (`admin_group`, `groups_claim`, `token_skew_seconds` 5..=300).
+`update_check` (bool), `web_access` (`public_enabled`, optional `allowed_cidrs`),
+`backups` (`enabled`, `retention_count`),
+`query_log` (`retention_days` 1..=3650, `ip_truncate`, `stdout_queries` bool),
+`mcp` (boolean `enabled`, `write_tools_enabled`, `legacy_session_mode`; applied
+over the TOML at startup, restart required) and `oidc` (`admin_group`,
+`groups_claim`, `token_skew_seconds` 5..=300).
 Secrets, accounts and bind settings are never in the snapshot.
 `notifications` is the webhook section described below.
 
@@ -92,8 +95,8 @@ Secrets, accounts and bind settings are never in the snapshot.
 |---|---|---|
 | GET | `/api/v1/policy/views` | List views. |
 | GET / PUT / POST / DELETE | `/api/v1/policy/views/{id}` | Read / create-or-replace / delete one view. A view carries `subnets`, `nodes` (empty = every node; the default view must be empty) and `profile`. Deleting a view that a Client ID is pinned to: `policy.config.invalid` with `params` `{ "reason": "view_in_use", "view": "<id>", "client_ids": ["…"] }`; clear the pins first. |
-| GET | `/api/v1/policy/records` | Local records: one global name space. Each entry has `name`, `type` (A, AAAA, CNAME, TXT, SRV, MX, PTR), `ttl`, `rdata` and per-view `overrides` (presentation text, e.g. `192.0.2.10`, `10 mx.example.com.`). An empty override string means no answer for that type in the view (NODATA); a missing key inherits `rdata`. |
-| PUT / POST | `/api/v1/policy/records` | Create or replace the record `{ "name", "type", "ttl"?, "rdata", "overrides"? }`. One entry per name and type through this API; `policy.config.invalid` on bad type or value. Empty `overrides` values are stored and mean no answer for that view. |
+| GET | `/api/v1/policy/records` | Local records: one global name space. Each entry has `name`, `type` (A, AAAA, CNAME, TXT, SRV, MX, PTR), `ttl`, `rdata` and per-view `overrides`. `rdata` and each override are one presentation string or a list of them (e.g. `192.0.2.10` or `["192.0.2.10", "192.0.2.11"]`). An empty override string means no answer for that type in the view (NODATA); a missing key inherits `rdata`. Several local values are one RRset for address, TXT, MX and SRV. Several CNAME targets rotate, one per answer, and stay local — a public provider stores one CNAME. |
+| PUT / POST | `/api/v1/policy/records` | Create or replace the record `{ "name", "type", "ttl"?, "rdata", "overrides"? }`. `rdata` and override values accept a string or a list of presentation strings. One entry per name and type through this API; `policy.config.invalid` on bad type or value. Empty `overrides` values are stored and mean no answer for that view. |
 | DELETE | `/api/v1/policy/records` | Remove the record with body `{ "name", "type" }`. `control_api.not_found` if absent. |
 | GET | `/api/v1/policy/client-ids` | DoH/DoT Client-ID registry. Returns `{ "client_ids": [ { "id", "label", "device", "view" } ] }` in stored order; bare-string entries show `label`, `device` and `view` as `null`. Admission only; a `view` pin is the only way a Client ID selects a view (see below). |
 | POST | `/api/v1/policy/client-ids` | Register `{ "id", "label"?, "device"?, "view"? }` (`id` matches `[a-z0-9-]{1,63}`; `view` is an existing view id). Returns `{ "version", "client_id": "<id>" }`. Duplicate id: `policy.config.invalid`. Duplicate or malformed label/device: `policy.config.invalid` with `params.field` set to `label` or `device`. Unknown view: `policy.config.invalid` with `params.field = "view"`. |
@@ -210,7 +213,8 @@ the label in `decision.client` (the dry run has no directory lookup).
 | GET | `/api/v1/stats/cache` | Cache hit ratio. |
 | GET | `/api/v1/stats/domains/{name}?days=7\|30` | One domain over the raw query log: `counts`, `first_seen`/`last_seen` (retention bounded), `daily`, `top_clients` (max 10), `last_decision`. `control_api.not_found` when unseen, `control_api.stats.invalid_domain` for a bad name or `days`. |
 | GET | `/api/v1/filtering/pause` | Runtime pause state for a filter set (`filter_set_id`); `{ filter_set_id, paused_until }`. |
-| PUT | `/api/v1/web-access` | Opt in/out of public web UI. Enabling refuses while bootstrap auth remains (`control_api.web_access.bootstrap_auth`). |
+| GET | `/api/v1/web-access` | Admin. `{ "public_enabled", "allowed_cidrs" }`. `allowed_cidrs` is a string array; empty or absent means public sources are not further restricted. |
+| PUT | `/api/v1/web-access` | Admin. `{ "public_enabled", "allowed_cidrs"? }`. Enabling refuses while bootstrap auth remains (`control_api.web_access.bootstrap_auth`). A non-empty `allowed_cidrs` admits a public source only when its address is inside one CIDR; private sources stay allowed. Invalid CIDR → `control_api.config.invalid`. Applied live. |
 
 Stats query parameters: `from`, `to`, `node_id`, `profile_id` (exact filters), `limit`, `by`, `bucket` (timeseries only).
 
@@ -233,6 +237,8 @@ Stats query parameters: `from`, `to`, `node_id`, `profile_id` (exact filters), `
 |---|---|---|
 | GET | `/api/v1/filtering/services?locale=en` | Blocked-services catalog with `enabled` per filter set. `available: false` when no catalog is loaded. Icons are not returned (no sanitizer yet). |
 | PUT | `/api/v1/filtering/services/{service_id}` | Body `{ "filter_set_id", "enabled" }`; edits the set's `services` list as a versioned config write. Errors: `filtering.catalog.unavailable`, `filtering.service.unknown`, `filtering.service.invalid`, 404 for an unknown set. |
+| POST | `/api/v1/filtering/temporary-allows` | Admin. Body `{ "domain", "include_subdomains", "duration": "PT5M"\|"PT15M"\|"PT1H", "filter_set_id", "reason"? }`. |
+| DELETE | `/api/v1/filtering/temporary-allows` | Admin. `domain` and optional `filter_set_id` from the JSON body or the query string (body wins). `{ "removed": true, "domain", "filter_set_id" }`. Nothing removed → `control_api.not_found`. Missing `domain` → `mcp.invalid_input`. |
 
 ### Notifications (viewer/admin read, admin write)
 
@@ -314,12 +320,10 @@ These are in the spec but not in `router.rs` yet; do not call them.
 |---|---|---|
 No planned REST endpoints remain outside the MCP phase below.
 
-The MCP-phase REST endpoints (`/api/v1/filtering/explain-block`,
-`/api/v1/policy/test-query`, `/api/v1/filtering/temporary-allows`,
-`/api/v1/filtering/custom-rules`, `/api/v1/filtering/mcp-rules`,
-`/api/v1/filtering/pause`, `/api/v1/filtering/resume`) are also planned for
-Phase M; their shapes are in `SPEC-control-api.md` § MCP-phase endpoints. They
-are **not** part of the implemented surface.
+The MCP-phase REST endpoints are mounted. Shapes for explain-block, test-query,
+custom rules, mcp-rules, pause and resume are in `SPEC-control-api.md` § MCP-phase
+endpoints. `DELETE /api/v1/filtering/temporary-allows` is in the filtering table
+above. Sessions are under Auth; domain stats under Stats.
 
 ## MCP tools
 

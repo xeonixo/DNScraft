@@ -2,8 +2,9 @@
 
 > Replaces the 2026-10-26 orchestration plan (all of its streams are archived or complete; a copy
 > is kept at `tasks/archive/plan-orchestration-2026-10-26.md`, and git has the history).
-> Authority for status of other modules: [progress.md](progress.md).
-> Task list: [todo.md](todo.md). Date: 2026-10-28. Status: **draft, needs owner review**.
+> Archived 2026-11-02 with [todo.md](todo.md). Authority for status:
+> [progress.md](../progress.md). Date: 2026-10-28. Status: implementation shipped;
+> Checkpoints A/B remain owner device QA.
 
 ## Overview
 

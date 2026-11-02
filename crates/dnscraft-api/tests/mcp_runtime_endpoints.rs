@@ -684,6 +684,27 @@ async fn cluster_runtime_commands_reach_the_filter_engine() {
         1
     );
 
+    h.state
+        .apply_runtime_command(
+            "remove_temporary_allow",
+            &json!({
+                "filter_set_id": "default",
+                "domain": "ads.example.com",
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(
+        h.filter
+            .list_temporary_allows(&set, at(NOW))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(matches!(
+        verify(&h.filter, "ads.example.com", NOW),
+        Verdict::Blocked(_)
+    ));
+
     // Invalid payloads come back with the module's own code, not a new one.
     let err = h
         .state
@@ -815,4 +836,93 @@ async fn disabled_mcp_endpoint_is_not_found_before_authentication() {
         .unwrap();
     let body: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(body["error"]["code"], "control_api.not_found", "{body}");
+}
+
+#[tokio::test]
+async fn admin_deletes_a_temporary_allow_and_unknown_is_not_found() {
+    let h = harness().await;
+    let (status, response) = send(
+        &h.state,
+        &h.admin,
+        "POST",
+        "/api/v1/filtering/temporary-allows",
+        Some(json!({
+            "domain": "ADS.Example.COM.",
+            "include_subdomains": false,
+            "duration": "PT15M",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert!(matches!(
+        verify(&h.filter, "ads.example.com", NOW),
+        Verdict::Allowed(_)
+    ));
+
+    let (status, response) = send(
+        &h.state,
+        &h.admin,
+        "DELETE",
+        "/api/v1/filtering/temporary-allows",
+        Some(json!({ "domain": "ads.example.com" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["data"]["removed"], true);
+    assert_eq!(response["data"]["domain"], "ads.example.com");
+    assert_eq!(response["data"]["filter_set_id"], "default");
+    assert!(matches!(
+        verify(&h.filter, "ads.example.com", NOW),
+        Verdict::Blocked(_)
+    ));
+    assert!(
+        h.filter
+            .list_temporary_allows(&default_set(), at(NOW))
+            .unwrap()
+            .is_empty()
+    );
+    let audits = h.db.audit_list(20, 0).await.unwrap();
+    let removed = audits
+        .iter()
+        .find(|record| record.action == "mcp.remove_temporary_allow")
+        .expect("remove audit entry");
+    assert_eq!(removed.result, "ok");
+
+    let (status, response) = send(
+        &h.state,
+        &h.admin,
+        "DELETE",
+        "/api/v1/filtering/temporary-allows?domain=missing.example.com",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{response}");
+    assert_eq!(response["error"]["code"], "control_api.not_found");
+}
+
+#[tokio::test]
+async fn viewer_cannot_delete_a_temporary_allow() {
+    let h = harness().await;
+    let viewer = TokenStore::new(h.db.clone(), MAX_TTL)
+        .create(
+            "viewer-a".to_owned(),
+            "viewer".to_owned(),
+            Scope::Viewer,
+            None,
+        )
+        .await
+        .unwrap();
+    let (status, response) = send(
+        &h.state,
+        viewer.plaintext().expose(),
+        "DELETE",
+        "/api/v1/filtering/temporary-allows",
+        Some(json!({ "domain": "ads.example.com" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{response}");
+    assert_eq!(
+        response["error"]["code"],
+        "control_api.auth.insufficient_scope"
+    );
 }

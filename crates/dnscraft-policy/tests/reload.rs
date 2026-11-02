@@ -158,7 +158,7 @@ async fn apply_config_valid_takes_effect_next_query() {
     next.records.push(ViewRecordConfig {
         name: Name::from_ascii("local.test.").unwrap(),
         ttl: 60,
-        rdata: RData::A(Ipv4Addr::new(192, 0, 2, 50)),
+        rdata: vec![RData::A(Ipv4Addr::new(192, 0, 2, 50))],
         overrides: Default::default(),
     });
     eng.apply_config(next).await.unwrap();
@@ -198,7 +198,7 @@ async fn counters_increment_and_survive_reload() {
     with_local.records.push(ViewRecordConfig {
         name: Name::from_ascii("lan.test.").unwrap(),
         ttl: 60,
-        rdata: RData::A(Ipv4Addr::new(192, 0, 2, 7)),
+        rdata: vec![RData::A(Ipv4Addr::new(192, 0, 2, 7))],
         overrides: Default::default(),
     });
     eng.apply_config(with_local).await.unwrap();

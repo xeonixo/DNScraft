@@ -536,7 +536,8 @@ where
 const WEB_LOGIN_PATH: &str = "/api/v1/auth/local/login";
 
 /// Whether `peer` may reach the web handler: private sources always; public sources only on a
-/// public listener while public web access is on and the source is not banned.
+/// public listener while public web access is on, the source matches the CIDR allowlist (an
+/// empty list does not restrict), and the source is not banned.
 fn web_allowed<H: ?Sized>(shared: &DohShared<H>, peer: IpAddr) -> bool {
     if private_source(shared, peer) {
         return true;
@@ -544,6 +545,7 @@ fn web_allowed<H: ?Sized>(shared: &DohShared<H>, peer: IpAddr) -> bool {
     let now = shared.clock.now();
     shared.web.public()
         && shared.listener.exposure == Exposure::Public
+        && shared.web.allows_public_cidr(peer)
         && !shared
             .admission
             .lock()

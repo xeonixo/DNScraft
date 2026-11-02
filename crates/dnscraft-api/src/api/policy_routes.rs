@@ -16,10 +16,10 @@ use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use dnscraft_policy::{
-    ClientId, DEFAULT_RECORD_TTL, PUBLIC_OVERRIDE, ViewId, ViewOverride, ViewRecordConfig,
-    check_client_device, check_client_label, format_rdata, parse_record_type, record_type_text,
+    ClientId, DEFAULT_RECORD_TTL, ViewRecordConfig, check_client_device, check_client_label,
+    parse_record_type,
 };
-use dnscraft_proto::{Name, RData, RecordType};
+use dnscraft_proto::{Name, RecordType};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -33,6 +33,10 @@ use crate::error::ControlApiError;
 use crate::server::AppState;
 
 /// Body of `POST|PUT /api/v1/policy/records`: one record (name + type).
+///
+/// `rdata` and each override value are one presentation string or a list of
+/// them. An empty string override is still "no answer"; `"@public"` is still
+/// public resolution.
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RecordBody {
@@ -41,11 +45,10 @@ pub(crate) struct RecordBody {
     rtype: String,
     #[serde(default)]
     ttl: Option<u32>,
-    rdata: String,
-    /// Per-view replacement values, keyed by view id. An empty string means
-    /// no answer for this type in that view (NODATA).
+    rdata: Value,
+    /// Per-view replacement values, keyed by view id.
     #[serde(default)]
-    overrides: BTreeMap<String, String>,
+    overrides: BTreeMap<String, Value>,
 }
 
 /// Body of `DELETE /api/v1/policy/records`: the record key.
@@ -546,30 +549,22 @@ pub(crate) fn revoke_client_id(snapshot: &mut Value, id: &str) -> Result<(), Con
 /// Validates a record body and converts it to the policy model.
 fn build_record(body: RecordBody) -> Result<ViewRecordConfig, ControlApiError> {
     let name = owner_name(&body.name)?;
-    let rtype = parse_rtype(&body.rtype)?;
-    let rdata = parse_rdata(rtype, &body.rdata)?;
-    let mut overrides = BTreeMap::new();
-    for (view, text) in &body.overrides {
+    // Reject unsupported types before the policy wire parser, so the code stays
+    // `policy.config.invalid` with the route's own wording.
+    let _ = parse_rtype(&body.rtype)?;
+    for view in body.overrides.keys() {
         if !valid_id(view) {
             return Err(invalid(&format!("invalid override view id `{view}`")));
         }
-        let view_id = ViewId::new(view).map_err(|_| invalid("invalid override view id"))?;
-        // Empty string = suppress this type in the view (not inherit).
-        let value = if text.is_empty() {
-            ViewOverride::NoAnswer
-        } else if text == PUBLIC_OVERRIDE {
-            ViewOverride::Public
-        } else {
-            ViewOverride::Data(parse_rdata(rtype, text)?)
-        };
-        overrides.insert(view_id, value);
     }
-    Ok(ViewRecordConfig {
-        name,
-        ttl: body.ttl.unwrap_or(DEFAULT_RECORD_TTL),
-        rdata,
-        overrides,
-    })
+    let value = json!({
+        "name": name.to_string(),
+        "type": body.rtype,
+        "ttl": body.ttl.unwrap_or(DEFAULT_RECORD_TTL),
+        "rdata": body.rdata,
+        "overrides": body.overrides,
+    });
+    serde_json::from_value(value).map_err(|err| invalid(&err.to_string()))
 }
 
 /// Parses an owner name (letters, digits, `-`, `_` and `.` only). Wildcards
@@ -589,21 +584,6 @@ fn parse_rtype(text: &str) -> Result<RecordType, ControlApiError> {
     parse_record_type(text).ok_or_else(|| invalid("unsupported record type"))
 }
 
-/// Presentation text of the record type.
-fn rtype_text(rtype: RecordType) -> &'static str {
-    record_type_text(rtype)
-}
-
-/// Parses presentation text into record data of type `rtype`.
-fn parse_rdata(rtype: RecordType, text: &str) -> Result<RData, ControlApiError> {
-    dnscraft_policy::parse_rdata(rtype, text).map_err(|reason| invalid(&reason))
-}
-
-/// Presentation text of record data (inverse of [`parse_rdata`]).
-fn rdata_text(rdata: &RData) -> String {
-    format_rdata(rdata)
-}
-
 /// Stored records that decode as policy records (malformed entries are skipped).
 fn stored_records(snapshot: &Value) -> Vec<ViewRecordConfig> {
     array(snapshot, "policy", "records")
@@ -618,18 +598,7 @@ fn same_key(item: &Value, record: &ViewRecordConfig) -> bool {
         .is_ok_and(|stored| stored.name == record.name && stored.rtype() == record.rtype())
 }
 
-/// API view of one record: presentation text for the default and overrides.
+/// API view of one record. One value is a string; several values are a list.
 fn record_json(record: &ViewRecordConfig) -> Value {
-    let overrides: BTreeMap<String, String> = record
-        .overrides
-        .iter()
-        .map(|(view, ov)| (view.to_string(), ov.to_text()))
-        .collect();
-    json!({
-        "name": record.name.to_string(),
-        "type": rtype_text(record.rtype()),
-        "ttl": record.ttl,
-        "rdata": rdata_text(&record.rdata),
-        "overrides": overrides,
-    })
+    serde_json::to_value(record).unwrap_or_else(|_| json!({}))
 }

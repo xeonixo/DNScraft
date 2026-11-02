@@ -395,7 +395,7 @@ async fn policy_engine_query_handler_answers_local_record() {
             records: vec![ViewRecordConfig {
                 name: Name::from_ascii("app.example.").unwrap(),
                 ttl: 60,
-                rdata: RData::A(Ipv4Addr::new(192, 0, 2, 55)),
+                rdata: vec![RData::A(Ipv4Addr::new(192, 0, 2, 55))],
                 overrides: Default::default(),
             }],
             default_rebind: true,

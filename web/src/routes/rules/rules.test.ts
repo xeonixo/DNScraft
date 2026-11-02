@@ -113,6 +113,8 @@ function defaultHandlers(): Record<string, Handler> {
 			}),
 		'DELETE /api/v1/filtering/custom-rules': () => ok({ removed: true }),
 		'POST /api/v1/filtering/resume': () => ok({ filter_set_id: 'kids', resumed: true }),
+		'DELETE /api/v1/filtering/temporary-allows': () =>
+			ok({ removed: true, domain: 'allowed.example.test', filter_set_id: 'default' }),
 		'GET /api/v1/filtering/mcp-proposals': () => ok({ proposals: [] }),
 	};
 }
@@ -219,6 +221,18 @@ describe('Regeln page: list', () => {
 		render(RulesPage);
 		await user.click(await screen.findByRole('button', { name: m.rules_resume() }));
 		await waitFor(() => expect(bodyOf('POST')).toEqual({ filter_set_id: 'kids' }));
+	});
+
+	it('ends a temporary allow from the active section', async () => {
+		const user = userEvent.setup();
+		render(RulesPage);
+		await user.click(await screen.findByRole('button', { name: m.rules_end_allow() }));
+		await waitFor(() =>
+			expect(bodyOf('DELETE')).toEqual({
+				domain: 'allowed.example.test',
+				filter_set_id: 'default',
+			}),
+		);
 	});
 
 	it('filters by search text, by action and by filter set', async () => {

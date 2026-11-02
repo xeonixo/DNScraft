@@ -204,6 +204,16 @@ pub struct FilterHit {
 - A record's `rdata` is the **default** for all zones. Optional `overrides`
   keyed by view id (`{ view_id: rdata }`) replace the value in that zone; a
   zone without an override uses the default.
+- `rdata` and each override value are one presentation string or a list of
+  presentation strings. A JSON string stays valid. One value is written back
+  as a string; several values are a JSON array. `""` is still no answer and
+  `"@public"` is still public resolution, and those two forms are only valid
+  as the sole override value.
+- A, AAAA, TXT, SRV, MX and PTR with several values are answered as one RRset.
+- CNAME may list several targets. Each answer contains exactly one CNAME;
+  targets rotate (round-robin) per query for that name. A CNAME still cannot
+  share its owner name with any other type. Several CNAME targets are a local
+  answer only — a public DNS provider such as Cloudflare stores one CNAME.
 - TTL configurable per record (default 60 s).
 - CNAME at a name means no other types at that name (RFC 1034); validate on apply.
 - Wildcards: **exact names only in v1** (no `*.example` records). Revisit if the UI needs them.

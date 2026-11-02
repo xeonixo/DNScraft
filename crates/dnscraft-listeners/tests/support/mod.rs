@@ -288,7 +288,7 @@ pub async fn local_policy_engine() -> Arc<PolicyEngine> {
         records: vec![ViewRecordConfig {
             name: Name::from_ascii("local.test.").unwrap(),
             ttl: 60,
-            rdata: RData::A(Ipv4Addr::new(192, 0, 2, 77)),
+            rdata: vec![RData::A(Ipv4Addr::new(192, 0, 2, 77))],
             overrides: Default::default(),
         }],
         views: vec![view],

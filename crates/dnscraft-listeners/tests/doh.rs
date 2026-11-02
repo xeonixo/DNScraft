@@ -1216,6 +1216,35 @@ async fn public_source_gets_web_handler_only_while_public_access_is_enabled() {
     h.stop().await;
 }
 
+#[tokio::test]
+async fn public_web_cidr_allowlist_filters_public_sources_only() {
+    let web = web_slot();
+    web.set_public(true);
+    let h = web_harness_for(Exposure::Public, web.clone(), true).await;
+    // Empty allowlist: a public source is unrestricted.
+    let (status, _, body) = doh_exchange_h1(h.addr, get_req("/")).await;
+    assert_eq!((status, &body[..]), (StatusCode::OK, &b"web"[..]));
+
+    web.set_public_cidrs(vec!["203.0.113.0/24".parse().unwrap()]);
+    let (status, _, body) = doh_exchange_h1(h.addr, get_req("/")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_ne!(&body[..], b"web");
+
+    web.set_public_cidrs(vec!["127.0.0.0/8".parse().unwrap()]);
+    let (status, _, body) = doh_exchange_h1(h.addr, get_req("/")).await;
+    assert_eq!((status, &body[..]), (StatusCode::OK, &b"web"[..]));
+    h.stop().await;
+
+    // A private source is allowed even when it is outside the allowlist.
+    let web = web_slot();
+    web.set_public(true);
+    web.set_public_cidrs(vec!["203.0.113.0/24".parse().unwrap()]);
+    let h = web_harness_for(Exposure::Public, web, false).await;
+    let (status, _, body) = doh_exchange_h1(h.addr, get_req("/")).await;
+    assert_eq!((status, &body[..]), (StatusCode::OK, &b"web"[..]));
+    h.stop().await;
+}
+
 /// Web handler that answers `status` for every request.
 fn web_slot_status(status: StatusCode) -> Arc<WebSlot> {
     let slot = Arc::new(WebSlot::default());

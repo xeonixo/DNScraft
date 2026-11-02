@@ -10,12 +10,34 @@ export interface PolicyView {
 	profile: string;
 }
 
+/** One presentation string, or several. A single value stays a string on the wire. */
+export type RdataValue = string | string[];
+
 export interface PolicyRecord {
 	name: string;
 	type: string;
 	ttl: number;
-	rdata: string;
-	overrides: Record<string, string>;
+	rdata: RdataValue;
+	overrides: Record<string, RdataValue>;
+}
+
+/** Presentation strings of a record value. An empty string is not a target. */
+export function rdataTexts(value: RdataValue | null | undefined): string[] {
+	if (typeof value === 'string') return value === '' ? [] : [value];
+	if (!Array.isArray(value)) return [];
+	return value.filter((item) => item !== '');
+}
+
+/** Wire form: one value is a string, several are a list. */
+export function rdataWire(values: string[]): RdataValue {
+	const cleaned = values.map((value) => value.trim()).filter((value) => value !== '');
+	if (cleaned.length <= 1) return cleaned[0] ?? '';
+	return cleaned;
+}
+
+/** List display of one or more targets. */
+export function rdataLabel(value: RdataValue): string {
+	return rdataTexts(value).join(', ');
 }
 
 export interface PolicyProfile {
@@ -177,17 +199,25 @@ function parseRecords(data: { records?: unknown }): PolicyRecord[] {
 	return data.records.filter(isRecord);
 }
 
+function isRdataValue(value: unknown): value is RdataValue {
+	if (typeof value === 'string') return true;
+	return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
 function isRecord(value: unknown): value is PolicyRecord {
 	if (typeof value !== 'object' || value === null) return false;
 	const row = value as PolicyRecord;
-	return (
-		typeof row.name === 'string' &&
-		typeof row.type === 'string' &&
-		typeof row.ttl === 'number' &&
-		typeof row.rdata === 'string' &&
-		typeof row.overrides === 'object' &&
-		row.overrides !== null
-	);
+	if (
+		typeof row.name !== 'string' ||
+		typeof row.type !== 'string' ||
+		typeof row.ttl !== 'number' ||
+		!isRdataValue(row.rdata) ||
+		typeof row.overrides !== 'object' ||
+		row.overrides === null
+	) {
+		return false;
+	}
+	return Object.values(row.overrides).every(isRdataValue);
 }
 
 function parseProfile(value: unknown): PolicyProfile | null {
@@ -262,7 +292,7 @@ export const listRecords = (): Promise<PolicyRecord[]> =>
 	get<{ records: unknown }>('/policy/records').then((data) => parseRecords(data));
 
 export const saveRecord = (
-	body: Omit<PolicyRecord, 'overrides'> & { overrides?: Record<string, string> },
+	body: Omit<PolicyRecord, 'overrides'> & { overrides?: Record<string, RdataValue> },
 	options?: RequestOptions,
 ): Promise<{ version: number; record: PolicyRecord }> =>
 	put('/policy/records', { body, ...options });

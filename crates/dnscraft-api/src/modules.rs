@@ -113,7 +113,8 @@ pub struct ModuleAppliers {
     /// OIDC runtime rebuilt from `control_api_settings.oidc` after every
     /// successful apply (and when the client secret changes).
     pub oidc: Option<Arc<OidcRuntime>>,
-    /// Web hand-off of the DoH listeners; `control_api_settings.web_access.public_enabled`
-    /// is pushed after every applied config version (boot, replace and cluster sync).
+    /// Web hand-off of the DoH listeners; `control_api_settings.web_access`
+    /// (`public_enabled` and `allowed_cidrs`) is pushed after every applied config
+    /// version (boot, replace and cluster sync).
     pub web: Option<Arc<dnscraft_listeners::WebSlot>>,
 }

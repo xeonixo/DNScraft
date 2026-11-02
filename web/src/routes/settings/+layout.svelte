@@ -13,7 +13,7 @@
 
 <nav class="tabs" aria-label={m.settings_tabs_label()}>
 	{#each settingsTabs as tab (tab.path)}
-		<a class="tab" href={resolve(tab.path)} aria-current={tab.path === path ? 'page' : undefined}
+		<a class="tab" href={resolve(tab.path as '/')} aria-current={tab.path === path ? 'page' : undefined}
 			>{tab.label()}</a
 		>
 	{/each}

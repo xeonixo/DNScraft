@@ -12,6 +12,8 @@
 		trailing?: Snippet;
 		/** Makes the whole row a link (SvelteKit route path). */
 		href?: StaticRouteId;
+		/** Already-resolved URL, for a dynamic route such as a domain detail page. */
+		link?: string;
 		/** Makes the whole row a button (used when the row opens an editor instead of a route). */
 		onclick?: () => void;
 		/** Primary label is a domain, IP or identifier: SF Mono. */
@@ -31,6 +33,7 @@
 		leading,
 		trailing,
 		href,
+		link,
 		onclick,
 		mono = false,
 		detailMono = false,
@@ -61,7 +64,11 @@
 {/snippet}
 
 {#if href}
-	<a class="row" href={resolve(href)}>{@render content()}</a>
+	<a class="row" href={resolve(href as '/')}>{@render content()}</a>
+{:else if link}
+	<!-- `link` is already resolve()'d by the caller (dynamic routes with params). -->
+	<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -->
+	<a class="row" href={link}>{@render content()}</a>
 {:else if onclick}
 	<button type="button" class="row interactive" {onclick}>{@render content()}</button>
 {:else}

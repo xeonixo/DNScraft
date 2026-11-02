@@ -844,14 +844,14 @@ impl QueryLog {
             .iter()
             .enumerate()
             .map(|(offset, value)| {
-                let mut row: RemoteRow = serde_json::from_value(value.clone()).map_err(|error| {
-                    ControlApiError::QueryLogInvalid {
-                        reason: format!("invalid remote query-log record: {error}"),
-                    }
-                })?;
+                let mut row: RemoteRow =
+                    serde_json::from_value(value.clone()).map_err(|error| {
+                        ControlApiError::QueryLogInvalid {
+                            reason: format!("invalid remote query-log record: {error}"),
+                        }
+                    })?;
                 row.validate()?;
-                let device_id =
-                    prepare_remote_row(&mut row, &node_id, enricher.as_deref());
+                let device_id = prepare_remote_row(&mut row, &node_id, enricher.as_deref());
                 let seq = first_seq.checked_add(offset as u64).ok_or_else(|| {
                     ControlApiError::QueryLogInvalid {
                         reason: "log sequence number overflow".to_owned(),

@@ -1,4 +1,5 @@
-import { del, get, post, put, type RequestOptions } from './client';
+import { ApiError, del, get, isRecord, post, put, type RequestOptions } from './client';
+import { CLIENT_MALFORMED } from './error-codes';
 
 export type BlockMode = 'refused' | 'nxdomain' | 'null_ip' | { custom_ip: string };
 
@@ -142,3 +143,73 @@ export const addCustomRule = (
 	body: CustomRuleBody,
 ): Promise<{ rule_text: string; domain: string; include_subdomains: boolean }> =>
 	post('/filtering/custom-rules', { body });
+
+/** One catalog row from `GET /api/v1/filtering/services`. Icons are not part of the payload. */
+export interface BlockedService {
+	id: string;
+	name: string;
+	group: string;
+	group_id: string;
+	/** Whether the service is blocked in each filter set. */
+	enabled: Record<string, boolean>;
+}
+
+/** `GET /api/v1/filtering/services`. `available` is false when no catalog is loaded. */
+export interface BlockedServicesCatalog {
+	available: boolean;
+	catalog_updated_at: string | null;
+	locale: string;
+	items: BlockedService[];
+}
+
+export interface ServiceToggle {
+	filter_set_id: string;
+	enabled: boolean;
+}
+
+function parseEnabled(value: unknown): Record<string, boolean> {
+	if (!isRecord(value)) return {};
+	const enabled: Record<string, boolean> = {};
+	for (const [id, flag] of Object.entries(value)) {
+		if (typeof flag === 'boolean') enabled[id] = flag;
+	}
+	return enabled;
+}
+
+function parseService(value: unknown): BlockedService | null {
+	if (!isRecord(value) || typeof value.id !== 'string' || value.id === '') return null;
+	return {
+		id: value.id,
+		name: typeof value.name === 'string' ? value.name : '',
+		group: typeof value.group === 'string' ? value.group : '',
+		group_id: typeof value.group_id === 'string' ? value.group_id : '',
+		enabled: parseEnabled(value.enabled),
+	};
+}
+
+function parseServicesCatalog(data: unknown): BlockedServicesCatalog {
+	if (!isRecord(data)) throw new ApiError(0, CLIENT_MALFORMED);
+	return {
+		available: data.available === true,
+		catalog_updated_at:
+			typeof data.catalog_updated_at === 'string' ? data.catalog_updated_at : null,
+		locale: typeof data.locale === 'string' ? data.locale : '',
+		items: Array.isArray(data.items)
+			? data.items.map(parseService).filter((item): item is BlockedService => item !== null)
+			: [],
+	};
+}
+
+/** Catalog for the viewer's locale. Names and groups are already translated by the API. */
+export const getServices = (locale: string): Promise<BlockedServicesCatalog> =>
+	get<unknown>(`/filtering/services?locale=${encodeURIComponent(locale)}`).then(
+		parseServicesCatalog,
+	);
+
+/** Blocks or allows one service in one filter set (admin). */
+export const putService = (
+	serviceId: string,
+	body: ServiceToggle,
+	options?: RequestOptions,
+): Promise<ServiceToggle & { version: number; service_id: string }> =>
+	put(`/filtering/services/${encodeURIComponent(serviceId)}`, { body, ...options });

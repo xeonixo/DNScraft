@@ -133,7 +133,7 @@ The control API warns at startup when it shares a DoH listener and `trusted_prox
 ## Production checklist
 
 - [ ] **TLS and auth before publishing 443.** Configure `DNSCRAFT_TLS_*` or `[tls]` ACME, and do not expose the control API as plain HTTP.
-- [ ] **Public web access stays off.** It is off by default. Enable it only on purpose, through the web-access setting (`/api/v1/web-access`, stored as `control_api_settings.web_access.public_enabled`).
+- [ ] **Public web access stays off.** It is off by default. Enable it only on purpose, through the web-access setting (`/api/v1/web-access`, stored as `control_api_settings.web_access.public_enabled`). Optional `allowed_cidrs` limits which public addresses may reach it; private addresses stay allowed either way. The API still does not open its own public socket.
 - [ ] **Break-glass admin.** Set `DNSCRAFT_ADMIN_PASSWORD_FILE` for the first boot to seed the `break-glass` admin. Create your normal accounts, then remove the variable and file. Existing accounts are never overwritten.
 - [ ] **Reverse proxy.** Set `control_api.trusted_proxies` to the proxy's address (as seen by the node). The proxy must send `X-Forwarded-For` and `X-Forwarded-Proto`. Both the control API and DoH honour those headers only from trusted proxies, so query-log names and DoH admission follow the real client.
 - [ ] **Public DoH.** Public DoH listeners need Client IDs (`<id>.dns.<domain>` or `/dns-query/<id>`). Do not run an open DoH listener on a public address.

@@ -7,6 +7,7 @@
 	import ErrorNotice from '$lib/components/ErrorNotice.svelte';
 	import LocaleSwitcher from '$lib/i18n/LocaleSwitcher.svelte';
 	import AuditPanel from '$lib/settings/AuditPanel.svelte';
+	import SessionsPanel from '$lib/settings/SessionsPanel.svelte';
 	import TokensPanel from '$lib/settings/TokensPanel.svelte';
 	import OidcPanel from '$lib/settings/OidcPanel.svelte';
 	import UnifiPanel from '$lib/settings/UnifiPanel.svelte';
@@ -163,6 +164,8 @@
 	<GroupedRow label={m.settings_account_actor()} detail={auth.actorId} detailMono />
 	<GroupedRow label={m.settings_account_role()} detail={auth.role} />
 </GroupedList>
+
+<SessionsPanel {isAdmin} />
 
 <GroupedList>
 	<GroupedRow label={m.theme_group_label()}>

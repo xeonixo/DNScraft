@@ -64,7 +64,7 @@ fn rec(name: &str, rdata: RData) -> ViewRecordConfig {
     ViewRecordConfig {
         name: Name::from_ascii(name).unwrap(),
         ttl: 60,
-        rdata,
+        rdata: vec![rdata],
         overrides: Default::default(),
     }
 }
@@ -299,7 +299,7 @@ async fn local_records_split_horizon_per_view() {
     let mut app = rec(name, RData::A(Ipv4Addr::new(192, 0, 2, 10)));
     app.overrides.insert(
         ViewId::new("guest").unwrap(),
-        ViewOverride::Data(RData::A(Ipv4Addr::new(198, 51, 100, 10))),
+        ViewOverride::Data(vec![RData::A(Ipv4Addr::new(198, 51, 100, 10))]),
     );
     let records = vec![app];
     let views = vec![

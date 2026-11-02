@@ -2312,10 +2312,11 @@ impl McpBackend for ControlMcpBackend {
 impl AppState {
     /// Applies a volatile cluster runtime command to the local filter engine.
     ///
-    /// `kind` is `"pause"`, `"resume"` or `"temporary_allow"`. `payload` carries
-    /// `filter_set_id` and, for `pause`/`temporary_allow`, a `duration`
-    /// (`PT5M`/`PT15M`/`PT1H`) and/or an absolute `expires_at`;
-    /// `temporary_allow` also carries `domain` and `include_subdomains`.
+    /// `kind` is `"pause"`, `"resume"`, `"temporary_allow"` or
+    /// `"remove_temporary_allow"`. `payload` carries `filter_set_id` and, for
+    /// `pause`/`temporary_allow`, a `duration` (`PT5M`/`PT15M`/`PT1H`) and/or
+    /// an absolute `expires_at`; `temporary_allow` also carries `domain` and
+    /// `include_subdomains`. `remove_temporary_allow` carries `domain`.
     ///
     /// Runtime commands change no config version and write no audit entry: they
     /// are volatile, last-command-wins state applied straight to the
@@ -2330,6 +2331,7 @@ impl AppState {
             "pause" => self.apply_runtime_pause(payload).await,
             "resume" => self.apply_runtime_resume(payload),
             "temporary_allow" => self.apply_runtime_temporary_allow(payload).await,
+            "remove_temporary_allow" => self.apply_runtime_remove_temporary_allow(payload),
             other => Err(mcp_error(
                 "mcp.invalid_input",
                 json!({ "reason": format!("unknown runtime command kind: {other}") }),
@@ -2406,6 +2408,17 @@ impl AppState {
         self.runtime_filter()?
             .allow_temporarily(&set, rule)
             .map_err(|err| engine_error(err, set.as_str()))
+    }
+
+    /// Drops a temporary allow on this node. Missing is success: a peer may
+    /// already have expired it, and the command is last-command-wins.
+    fn apply_runtime_remove_temporary_allow(&self, payload: &Value) -> Result<(), ControlApiError> {
+        let domain = canonical_allow_domain(runtime_str(payload, "domain")?)?;
+        let set = parse_set(payload.get("filter_set_id").and_then(Value::as_str))?;
+        self.runtime_filter()?
+            .remove_temporary_allow(&set, &domain)
+            .map_err(|err| engine_error(err, set.as_str()))?;
+        Ok(())
     }
 }
 

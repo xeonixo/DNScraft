@@ -112,6 +112,13 @@
 							<Value value={unicode} mono />
 							<span class="qtype mono">{record.query.type}</span>
 						</a>
+						<a
+							class="stats"
+							href={resolve('/dashboard/domains/[name]', { name: record.query.name })}
+							aria-label={m.domain_detail_open({ domain: neutralize(unicode) })}
+						>
+							{m.domain_detail_link()}
+						</a>
 						{#if tracker}
 							<span class="sub"><TrackerBadge {tracker} /></span>
 						{/if}
@@ -148,12 +155,7 @@
 						>
 					</td>
 					<td>
-						<StatusMark
-							icon={style.icon}
-							tone={style.tone}
-							label={style.label}
-							compact={compact}
-						/>
+						<StatusMark icon={style.icon} tone={style.tone} label={style.label} {compact} />
 						{#if !compact && record.filter}
 							<span class="sub">{provenanceLabel(record.filter.reason)}</span>
 						{/if}
@@ -325,6 +327,19 @@
 	}
 
 	.name:hover {
+		text-decoration: underline;
+	}
+
+	.stats {
+		display: inline-block;
+		margin-top: 0.125rem;
+		padding-block: 0.125rem;
+		font-size: 0.75rem;
+		color: var(--accent);
+		text-decoration: none;
+	}
+
+	.stats:hover {
 		text-decoration: underline;
 	}
 

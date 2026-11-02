@@ -99,4 +99,4 @@ pub use tls::{
     quic_server_config, tcp_server_config, tls_acceptor, tls_handshake_timeout,
 };
 pub use udp::{CLASSIC_UDP_LIMIT, UdpServeParams, UdpStats, serve_udp, udp_size_limit};
-pub use web::{WebBody, WebFuture, WebHandler, WebSlot};
+pub use web::{WebBody, WebFuture, WebHandler, WebSlot, parse_public_cidrs};

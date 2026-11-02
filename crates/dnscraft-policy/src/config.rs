@@ -95,7 +95,8 @@ pub struct RequestContext {
 /// One local resource record in the global name space.
 ///
 /// Serialized as presentation text (`name`, `type`, `ttl`, `rdata`,
-/// `overrides`), e.g. `rdata = "192.0.2.10"` with `type = "A"`.
+/// `overrides`). `rdata` is one string (`"192.0.2.10"`) or a list of strings.
+/// A single value is written back as a string so older configs keep parsing.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "RecordWire", into = "RecordWire")]
 pub struct ViewRecordConfig {
@@ -104,9 +105,10 @@ pub struct ViewRecordConfig {
     pub name: Name,
     /// TTL in seconds. [`DEFAULT_RECORD_TTL`] when omitted.
     pub ttl: u32,
-    /// Default record data for every view. Only A, AAAA, CNAME, TXT, SRV, MX
-    /// and PTR are accepted.
-    pub rdata: RData,
+    /// Default record data for every view. One or more values, all of the
+    /// record's type. Only A, AAAA, CNAME, TXT, SRV, MX and PTR are accepted.
+    /// A CNAME list is rotated at answer time; other types are one RRset.
+    pub rdata: Vec<RData>,
     /// Per-view replacement, keyed by view id. A view without an entry uses
     /// [`Self::rdata`].
     pub overrides: BTreeMap<ViewId, ViewOverride>,
@@ -118,14 +120,25 @@ pub const PUBLIC_OVERRIDE: &str = "@public";
 /// What one view answers instead of the record's default data.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ViewOverride {
-    /// Replacement data for this view.
-    Data(RData),
+    /// Replacement data for this view (one or more values of the record type).
+    Data(Vec<RData>),
     /// No answer for this type in the view (NODATA when the name is
     /// otherwise known).
     NoAnswer,
     /// Not answered locally: the name (wildcards included) is resolved
     /// like any public name.
     Public,
+}
+
+/// One presentation string, or a list of them.
+///
+/// A JSON string stays valid. Several targets are a JSON array. A list of
+/// one value is stored and later written back as a string.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+enum TextOrList {
+    One(String),
+    Many(Vec<String>),
 }
 
 /// Presentation-text wire form of [`ViewRecordConfig`].
@@ -137,13 +150,91 @@ struct RecordWire {
     rtype: String,
     #[serde(default = "default_record_ttl")]
     ttl: u32,
-    rdata: String,
+    rdata: TextOrList,
     #[serde(default)]
-    overrides: BTreeMap<String, String>,
+    overrides: BTreeMap<String, TextOrList>,
 }
 
 fn default_record_ttl() -> u32 {
     DEFAULT_RECORD_TTL
+}
+
+fn text_list(wire: TextOrList) -> Vec<String> {
+    match wire {
+        TextOrList::One(text) => vec![text],
+        TextOrList::Many(texts) => texts,
+    }
+}
+
+fn wire_of(texts: Vec<String>) -> TextOrList {
+    if let [text] = texts.as_slice() {
+        TextOrList::One(text.clone())
+    } else {
+        TextOrList::Many(texts)
+    }
+}
+
+fn parse_values(
+    owner: &str,
+    where_: &str,
+    rtype: RecordType,
+    texts: Vec<String>,
+) -> Result<Vec<RData>, String> {
+    if texts.is_empty() {
+        return Err(format!(
+            "record `{owner}`{where_}: at least one value is required"
+        ));
+    }
+    let mut out = Vec::with_capacity(texts.len());
+    for text in texts {
+        let data = parse_rdata(rtype, &text).map_err(|err| {
+            format!(
+                "record `{owner}`{where_} ({}): {err}",
+                record_type_text(rtype)
+            )
+        })?;
+        if !out.contains(&data) {
+            out.push(data);
+        }
+    }
+    Ok(out)
+}
+
+fn override_from_wire(
+    owner: &str,
+    view: &str,
+    rtype: RecordType,
+    wire: TextOrList,
+) -> Result<ViewOverride, String> {
+    if let TextOrList::One(text) = &wire {
+        if text.is_empty() {
+            return Ok(ViewOverride::NoAnswer);
+        }
+        if text == PUBLIC_OVERRIDE {
+            return Ok(ViewOverride::Public);
+        }
+    }
+    let texts = text_list(wire);
+    if texts
+        .iter()
+        .any(|text| text.is_empty() || text == PUBLIC_OVERRIDE)
+    {
+        return Err(format!(
+            "record `{owner}` override `{view}`: empty and @public only apply as the sole value"
+        ));
+    }
+    let where_ = format!(" override `{view}`");
+    Ok(ViewOverride::Data(parse_values(
+        owner, &where_, rtype, texts,
+    )?))
+}
+
+fn override_wire(value: &ViewOverride) -> TextOrList {
+    match value {
+        ViewOverride::Data(data) => wire_of(data.iter().map(format_rdata).collect()),
+        ViewOverride::NoAnswer => TextOrList::One(String::new()),
+        ViewOverride::Public => TextOrList::One(PUBLIC_OVERRIDE.to_owned()),
+    }
 }
 
 impl TryFrom<RecordWire> for ViewRecordConfig {
@@ -154,24 +245,12 @@ impl TryFrom<RecordWire> for ViewRecordConfig {
             .map_err(|err| format!("record `{}`: invalid owner name: {err}", wire.name))?;
         let rtype = crate::rdata_text::parse_record_type(&wire.rtype)
             .ok_or_else(|| format!("record `{}`: unsupported type `{}`", wire.name, wire.rtype))?;
-        let rdata = parse_rdata(rtype, &wire.rdata)
-            .map_err(|err| format!("record `{}` ({}): {err}", wire.name, wire.rtype))?;
+        let rdata = parse_values(&wire.name, "", rtype, text_list(wire.rdata))?;
         let mut overrides = BTreeMap::new();
         for (view, text) in wire.overrides {
             let id = ViewId::new(&view)
                 .map_err(|err| format!("record `{}`: override view `{view}`: {err}", wire.name))?;
-            // Empty string = no answer for this type in the view (not "inherit").
-            let value =
-                if text.is_empty() {
-                    ViewOverride::NoAnswer
-                } else if text == PUBLIC_OVERRIDE {
-                    ViewOverride::Public
-                } else {
-                    ViewOverride::Data(parse_rdata(rtype, &text).map_err(|err| {
-                        format!("record `{}` override `{view}`: {err}", wire.name)
-                    })?)
-                };
-            overrides.insert(id, value);
+            overrides.insert(id, override_from_wire(&wire.name, &view, rtype, text)?);
         }
         Ok(Self {
             name,
@@ -188,21 +267,24 @@ impl From<ViewRecordConfig> for RecordWire {
             name: record.name.to_string(),
             rtype: record_type_text(record.rtype()).to_owned(),
             ttl: record.ttl,
-            rdata: format_rdata(&record.rdata),
+            rdata: wire_of(record.rdata.iter().map(format_rdata).collect()),
             overrides: record
                 .overrides
                 .iter()
-                .map(|(view, ov)| (view.to_string(), ov.to_text()))
+                .map(|(view, ov)| (view.to_string(), override_wire(ov)))
                 .collect(),
         }
     }
 }
 
 impl ViewOverride {
-    /// Presentation text (inverse of the wire parse).
+    /// Presentation text of a single-value override.
+    ///
+    /// A multi-value override returns its first value. Wire encoding of the
+    /// full list goes through the record serde, not this helper.
     pub fn to_text(&self) -> String {
         match self {
-            Self::Data(rdata) => format_rdata(rdata),
+            Self::Data(rdata) => rdata.first().map(format_rdata).unwrap_or_default(),
             Self::NoAnswer => String::new(),
             Self::Public => PUBLIC_OVERRIDE.to_owned(),
         }
@@ -215,11 +297,11 @@ impl ViewRecordConfig {
     /// - missing override → [`Some`] of the default [`Self::rdata`]
     /// - override with data → [`Some`] of that data
     /// - no answer / public → [`None`] (see [`Self::is_public_in`])
-    pub fn rdata_for(&self, view: &ViewId) -> Option<&RData> {
+    pub fn rdata_for(&self, view: &ViewId) -> Option<&[RData]> {
         match self.overrides.get(view) {
             Some(ViewOverride::NoAnswer | ViewOverride::Public) => None,
-            Some(ViewOverride::Data(rdata)) => Some(rdata),
-            None => Some(&self.rdata),
+            Some(ViewOverride::Data(rdata)) => Some(rdata.as_slice()),
+            None => Some(self.rdata.as_slice()),
         }
     }
 
@@ -232,7 +314,10 @@ impl ViewRecordConfig {
 impl ViewRecordConfig {
     /// Wire type of this record.
     pub fn rtype(&self) -> RecordType {
-        self.rdata.record_type()
+        self.rdata
+            .first()
+            .map(RData::record_type)
+            .unwrap_or(RecordType::A)
     }
 }
 
@@ -642,7 +727,7 @@ mod tests {
         let rec = ViewRecordConfig {
             name: Name::from_ascii("nas.lan.example.com").unwrap(),
             ttl: 60,
-            rdata: RData::A(Ipv4Addr::new(192, 0, 2, 10)),
+            rdata: vec![RData::A(Ipv4Addr::new(192, 0, 2, 10))],
             overrides: BTreeMap::new(),
         };
         assert_eq!(rec.rtype(), RecordType::A);
@@ -670,22 +755,24 @@ mod tests {
                 ViewRecordConfig {
                     name: Name::from_ascii("nas.lan.example.com").unwrap(),
                     ttl: DEFAULT_RECORD_TTL,
-                    rdata: RData::A(Ipv4Addr::new(192, 0, 2, 10)),
+                    rdata: vec![RData::A(Ipv4Addr::new(192, 0, 2, 10))],
                     overrides: BTreeMap::from([(
                         ViewId::new("lan").unwrap(),
-                        ViewOverride::Data(RData::A(Ipv4Addr::new(192, 0, 2, 50))),
+                        ViewOverride::Data(vec![RData::A(Ipv4Addr::new(192, 0, 2, 50))]),
                     )]),
                 },
                 ViewRecordConfig {
                     name: Name::from_ascii("alias.lan.example.com").unwrap(),
                     ttl: 300,
-                    rdata: RData::CNAME(Name::from_ascii("nas.lan.example.com").unwrap()),
+                    rdata: vec![RData::CNAME(
+                        Name::from_ascii("nas.lan.example.com").unwrap(),
+                    )],
                     overrides: BTreeMap::new(),
                 },
                 ViewRecordConfig {
                     name: Name::from_ascii("txt.lan.example.com").unwrap(),
                     ttl: 60,
-                    rdata: RData::TXT(vec![b"hello world".to_vec().into_boxed_slice()]),
+                    rdata: vec![RData::TXT(vec![b"hello world".to_vec().into_boxed_slice()])],
                     overrides: BTreeMap::new(),
                 },
             ],
@@ -729,11 +816,11 @@ mod tests {
         });
         let rec: ViewRecordConfig = serde_json::from_value(value).unwrap();
         assert_eq!(rec.ttl, DEFAULT_RECORD_TTL);
-        assert_eq!(rec.rdata, RData::A(Ipv4Addr::new(192, 0, 2, 10)));
+        assert_eq!(rec.rdata, vec![RData::A(Ipv4Addr::new(192, 0, 2, 10))]);
         let guests = ViewId::new("guests").unwrap();
         assert_eq!(
             rec.overrides[&guests],
-            ViewOverride::Data(RData::A(Ipv4Addr::new(192, 0, 2, 50)))
+            ViewOverride::Data(vec![RData::A(Ipv4Addr::new(192, 0, 2, 50))])
         );
 
         let nodata = serde_json::json!({
@@ -794,5 +881,57 @@ mod tests {
             serde_json::to_value(&rec).unwrap()["overrides"],
             value["overrides"]
         );
+    }
+
+    #[test]
+    fn record_config_accepts_a_value_list_and_writes_one_value_as_a_string() {
+        let value = serde_json::json!({
+            "name": "nas.lan.example.com",
+            "type": "A",
+            "rdata": ["192.0.2.10", "192.0.2.11", "192.0.2.10"],
+            "overrides": { "guests": ["192.0.2.50", "192.0.2.51"] },
+        });
+        let rec: ViewRecordConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            rec.rdata,
+            vec![
+                RData::A(Ipv4Addr::new(192, 0, 2, 10)),
+                RData::A(Ipv4Addr::new(192, 0, 2, 11)),
+            ]
+        );
+        let guests = ViewId::new("guests").unwrap();
+        assert_eq!(
+            rec.rdata_for(&guests).unwrap(),
+            &[
+                RData::A(Ipv4Addr::new(192, 0, 2, 50)),
+                RData::A(Ipv4Addr::new(192, 0, 2, 51)),
+            ]
+        );
+        let wire = serde_json::to_value(&rec).unwrap();
+        assert_eq!(
+            wire["rdata"],
+            serde_json::json!(["192.0.2.10", "192.0.2.11"])
+        );
+        assert_eq!(
+            wire["overrides"]["guests"],
+            serde_json::json!(["192.0.2.50", "192.0.2.51"])
+        );
+
+        let single = serde_json::json!({
+            "name": "alias.example.com",
+            "type": "CNAME",
+            "rdata": ["target.example.com."],
+        });
+        let rec: ViewRecordConfig = serde_json::from_value(single).unwrap();
+        assert_eq!(rec.rdata.len(), 1);
+        assert_eq!(rec.rtype(), RecordType::CNAME);
+        assert!(serde_json::to_value(&rec).unwrap()["rdata"].is_string());
+
+        let empty = serde_json::json!({
+            "name": "nas.lan.example.com",
+            "type": "A",
+            "rdata": [],
+        });
+        assert!(serde_json::from_value::<ViewRecordConfig>(empty).is_err());
     }
 }

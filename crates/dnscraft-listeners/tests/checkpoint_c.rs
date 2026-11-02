@@ -119,7 +119,7 @@ async fn policy_engine(client_ids: &[&str]) -> (Hierarchy, Arc<PolicyEngine>) {
         records: vec![ViewRecordConfig {
             name: Name::from_ascii("lan.example.test.").unwrap(),
             ttl: 60,
-            rdata: RData::A(LOCAL_A),
+            rdata: vec![RData::A(LOCAL_A)],
             overrides: Default::default(),
         }],
         views: vec![view],

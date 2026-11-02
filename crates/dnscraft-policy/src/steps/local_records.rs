@@ -89,13 +89,12 @@ enum Outcome {
 fn answer_from_view(view: &SnapshotView, query: &Query) -> Option<Outcome> {
     let (rrsets, owner) = lookup_rrsets(view, &query.name)?;
     let records = materialize(rrsets, &owner);
-    let cname = records.iter().find(|r| r.rtype() == RecordType::CNAME);
-
-    if let Some(cname_rec) = cname {
+    if let Some(cname_rec) = rrsets.pick_cname(&records) {
+        let cname_rec = cname_rec.clone();
         if query.qtype == RecordType::CNAME {
-            return Some(Outcome::Records(vec![cname_rec.clone()]));
+            return Some(Outcome::Records(vec![cname_rec]));
         }
-        return Some(follow_cname(view, query, cname_rec));
+        return Some(follow_cname(view, query, &cname_rec));
     }
 
     let matching: Vec<Record> = records
@@ -172,11 +171,7 @@ fn follow_cname(view: &SnapshotView, query: &Query, first: &Record) -> Outcome {
             return Outcome::Records(answers);
         };
 
-        if let Some(next_cname) = rrsets
-            .records
-            .iter()
-            .find(|r| r.rtype() == RecordType::CNAME)
-        {
+        if let Some(next_cname) = rrsets.pick_cname(&rrsets.records) {
             answers.push(next_cname.clone());
             match cname_target(next_cname) {
                 Some(n) => current = n,
@@ -223,12 +218,7 @@ mod unit {
     fn view_with(records: Vec<(Name, Vec<Record>)>) -> SnapshotView {
         let mut map = HashMap::new();
         for (name, recs) in records {
-            map.insert(
-                name,
-                ViewRrSets {
-                    records: Arc::from(recs),
-                },
-            );
+            map.insert(name, ViewRrSets::from_records(recs));
         }
         SnapshotView {
             id: ViewId::new("v").unwrap(),
@@ -413,5 +403,88 @@ mod unit {
         assert!(answer_from_view(&view, &query(&host)).is_some());
         view.public.insert(host.clone());
         assert!(answer_from_view(&view, &query(&host)).is_none());
+    }
+
+    fn query_a(name: &str) -> Query {
+        Query {
+            name: Name::from_ascii(name).unwrap(),
+            qtype: RecordType::A,
+            qclass: Class::IN,
+        }
+    }
+
+    #[test]
+    fn local_records_address_list_is_a_full_rrset() {
+        let name = "nas.example.com";
+        let view = view_with(vec![(
+            Name::from_ascii(name).unwrap(),
+            vec![
+                rec(name, RData::A(Ipv4Addr::new(192, 0, 2, 1))),
+                rec(name, RData::A(Ipv4Addr::new(192, 0, 2, 2))),
+                rec(name, RData::TXT(vec![b"one".to_vec().into()])),
+                rec(name, RData::TXT(vec![b"two".to_vec().into()])),
+            ],
+        )]);
+        let Outcome::Records(addresses) = answer_from_view(&view, &query_a(name)).unwrap() else {
+            panic!("expected records");
+        };
+        assert_eq!(addresses.len(), 2);
+        assert!(
+            addresses
+                .iter()
+                .all(|record| record.rtype() == RecordType::A)
+        );
+        let txt = Query {
+            name: Name::from_ascii(name).unwrap(),
+            qtype: RecordType::TXT,
+            qclass: Class::IN,
+        };
+        let Outcome::Records(texts) = answer_from_view(&view, &txt).unwrap() else {
+            panic!("expected records");
+        };
+        assert_eq!(texts.len(), 2);
+    }
+
+    #[test]
+    fn local_records_cname_targets_rotate_one_per_answer() {
+        let name = "alias.example.com";
+        let a = Name::from_ascii("a.example.com").unwrap();
+        let b = Name::from_ascii("b.example.com").unwrap();
+        let view = view_with(vec![(
+            Name::from_ascii(name).unwrap(),
+            vec![
+                rec(name, RData::CNAME(a.clone())),
+                rec(name, RData::CNAME(b.clone())),
+            ],
+        )]);
+        let mut targets = Vec::new();
+        for _ in 0..4 {
+            let Outcome::Records(answers) = answer_from_view(&view, &query_a(name)).unwrap() else {
+                panic!("expected records");
+            };
+            assert_eq!(
+                answers
+                    .iter()
+                    .filter(|record| record.rtype() == RecordType::CNAME)
+                    .count(),
+                1,
+                "an answer carries one CNAME"
+            );
+            let RData::CNAME(target) = &answers[0].rdata else {
+                panic!("expected a CNAME");
+            };
+            targets.push(target.clone());
+        }
+        assert_eq!(targets, vec![a.clone(), b.clone(), a, b]);
+
+        let cname_query = Query {
+            name: Name::from_ascii(name).unwrap(),
+            qtype: RecordType::CNAME,
+            qclass: Class::IN,
+        };
+        let Outcome::Records(answers) = answer_from_view(&view, &cname_query).unwrap() else {
+            panic!("expected records");
+        };
+        assert_eq!(answers.len(), 1);
     }
 }

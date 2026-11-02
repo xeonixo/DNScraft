@@ -119,4 +119,4 @@ jobs:
             fi
           } > /tmp/release-notes.md
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-            --notes-file /tmp/release-notes.md $pre
+            --title "$GITHUB_REF_NAME" --notes-file /tmp/release-notes.md $pre

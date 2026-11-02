@@ -3,7 +3,7 @@
 View/profile selection and the twelve pipeline steps between DNScraft listeners
 and the resolver / filter engine.
 
-Formal requirements: [`SPEC-policy.md`](../../SPEC-policy.md).
+Formal requirements: [`SPEC-policy.md`](../../docs/SPEC-policy.md).
 
 ## Status
 

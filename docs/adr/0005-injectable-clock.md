@@ -61,6 +61,6 @@ sleeps to wait for background work").
 ## Links
 
 - [tasks/archive/resolver-plan.md](../../tasks/archive/resolver-plan.md) — Injectable time
-- [SPEC-listeners.md](../../SPEC-listeners.md) — ManualClock in testing strategy
+- [SPEC-listeners.md](../SPEC-listeners.md) — ManualClock in testing strategy
 - [tasks/todo-listeners.md](../../tasks/todo-listeners.md) — ManualClock rule
 - Clients C11b / progress archive (2026-10-25) — flaky sleep lesson

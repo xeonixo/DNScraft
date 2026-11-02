@@ -4,7 +4,7 @@
 > Finished briefs: [archive/cursor-filtering.md](archive/cursor-filtering.md),
 > [archive/cursor-specs.md](archive/cursor-specs.md),
 > [archive/cursor-clients-tls-policy.md](archive/cursor-clients-tls-policy.md).
-> Background: [SPEC.md](../SPEC.md) · [CAPABILITY-MAP.md](../CAPABILITY-MAP.md) · [progress.md](progress.md).
+> Background: [SPEC.md](../docs/SPEC.md) · [CAPABILITY-MAP.md](../CAPABILITY-MAP.md) · [progress.md](progress.md).
 
 ## Status (updated 2026-10-26)
 
@@ -102,5 +102,5 @@ Do:
 ## Archiving a finished module
 
 When the owner approves the last checkpoint: `git mv tasks/plan-<m>.md tasks/archive/<m>-plan.md` and
-`git mv tasks/todo-<m>.md tasks/archive/<m>-todo.md`, fix the relative links inside (`../SPEC…` →
-`../../SPEC…`, `progress.md` → `../progress.md`), update "Current state" in progress.md.
+`git mv tasks/todo-<m>.md tasks/archive/<m>-todo.md`, fix the relative links inside (`../docs/SPEC…` →
+`../../docs/SPEC…`, `progress.md` → `../progress.md`), update "Current state" in progress.md.

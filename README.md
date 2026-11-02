@@ -16,6 +16,9 @@ cluster and an embedded web UI are part of the same binary.
   blocked-services catalog, “why was this blocked?”
 - **Policy** — views by source IP/subnet, local records, forward zones,
   SafeSearch, schedules, rebind protection, pause
+- **Names / Domain-Zonen** — split-DNS editor (`/names`): Cloudflare public
+  records first, then per-Netzbereich local overrides; attach zones via the
+  shared Cloudflare token
 - **Clients** — UniFi inventory + manual names for the query log and local PTR
 - **Encrypted DNS** — DoT, DoH (HTTP/2 + HTTP/1.1 + HTTP/3), DoQ; public access
   via per-device Client IDs (`<id>.dns.<domain>` / `/dns-query/<id>`)
@@ -32,7 +35,7 @@ cluster and an embedded web UI are part of the same binary.
 |------|--------|
 | `resolver`, `filtering`, `clients`, `tls`, `policy`, `listeners` | Complete |
 | `control-api`, `mcp`, `cluster` | Complete and wired into the `dnscraft` binary |
-| `web-ui` | App + mock server usable; `rust-embed` landed behind `--features web-ui` (copy `web/build` → `embed-web-ui/` for a real release build) |
+| `web-ui` | App + mock usable; `rust-embed` behind `--features web-ui`. Docker image embeds it automatically; local release builds still need `web/build` → `crates/dnscraft-api/embed-web-ui/` |
 
 Details and resume point: [`tasks/progress.md`](tasks/progress.md). Module index:
 [`CAPABILITY-MAP.md`](CAPABILITY-MAP.md).
@@ -148,8 +151,8 @@ Full endpoint list: [`docs/API-REFERENCE.md`](docs/API-REFERENCE.md).
 
 | Doc | Contents |
 |-----|----------|
-| [`SPEC.md`](SPEC.md) | Project-wide goals and non-goals |
-| [`SPEC-*.md`](SPEC.md) | Per-module requirements |
+| [`docs/SPEC.md`](docs/SPEC.md) | Project-wide goals and non-goals |
+| [`docs/SPEC-*.md`](docs/SPEC.md) | Per-module requirements |
 | [`docs/API-REFERENCE.md`](docs/API-REFERENCE.md) | REST + MCP explorer |
 | [`docs/adr/`](docs/adr/) | Architecture decisions |
 | [`deploy/README.md`](deploy/README.md) | Docker images, ports, secrets |

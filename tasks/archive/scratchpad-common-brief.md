@@ -5,14 +5,14 @@ use documentation ranges (192.0.2.0/24, 2001:db8::/32) and example.com/.net.
 
 ## Read first
 `tasks/cursor-next.md` (rules + definition of done), `SPEC.md`, your crate's `SPEC-*.md`,
-`tasks/todo-spec-gaps.md` (your section — NOTE it is partly stale: many items are already fixed in code; verify each
+`todo-spec-gaps.md` (your section — NOTE it is partly stale: many items are already fixed in code; verify each
 item against the actual code and git log before working on it, tick what is already done),
 `tasks/progress.md` (top of the log), and the other `tasks/todo-*.md` / `tasks/plan-*.md` that mention your crate.
 
 ## Your job
 1. Audit: for each still-open item in your scope, check the code. Also diff your SPEC against the crate for
    features that were added to the SPEC later and never planned/built. Add those as new items in
-   `tasks/todo-spec-gaps.md` under your section if found.
+   `todo-spec-gaps.md` under your section if found.
 2. Fix everything that is `[code]` severity-ordered (🔴 → 🟠 → 🟡) and implement newly found missing features.
    `[spec]` items: update the SPEC to match the deliberate code decision (small, factual edits).
    `[owner]` items that need a real product decision: do NOT guess — leave open and list them in your report

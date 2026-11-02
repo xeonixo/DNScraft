@@ -273,7 +273,7 @@ against the rmcp 3.7.0 source in the cargo registry
 
 ## Links
 
-- [SPEC-mcp.md](../../SPEC-mcp.md) — § Candidate dependencies, § Protocol version and transport
+- [SPEC-mcp.md](../SPEC-mcp.md) — § Candidate dependencies, § Protocol version and transport
 - [tasks/plan-mcp.md](../../tasks/plan-mcp.md) — "Dependencies for owner approval"
 - [tasks/todo-mcp.md](../../tasks/todo-mcp.md) — Task M0
 - [ADR-0002](0002-ring-only-crypto.md) — ring-only rule; [`deny.toml`](../../deny.toml)

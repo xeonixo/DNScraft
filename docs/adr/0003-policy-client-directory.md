@@ -21,7 +21,7 @@ lookup surface to `dyn ClientDirectory`. DoH/DoT **Client IDs** remain separate 
 client records.
 
 Recorded in [CAPABILITY-MAP.md](../../CAPABILITY-MAP.md) ("Decisions recorded at map level") and
-[SPEC-policy.md](../../SPEC-policy.md) (objective / ClientDirectory integration). First
+[SPEC-policy.md](../SPEC-policy.md) (objective / ClientDirectory integration). First
 implementation: commit `58d5f52` (policy: P5 ClientDirectory names/PTR, 2026-10-25).
 
 ## Consequences
@@ -41,5 +41,5 @@ implementation: commit `58d5f52` (policy: P5 ClientDirectory names/PTR, 2026-10-
 ## Links
 
 - [CAPABILITY-MAP.md](../../CAPABILITY-MAP.md)
-- [SPEC-policy.md](../../SPEC-policy.md) — ClientDirectory integration
+- [SPEC-policy.md](../SPEC-policy.md) — ClientDirectory integration
 - Commit `58d5f52` (policy: P5)

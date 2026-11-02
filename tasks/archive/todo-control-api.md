@@ -1,6 +1,6 @@
 # Tasks: `control-api` module
 
-> Plan: [plan-control-api.md](plan-control-api.md) · Spec: [SPEC-control-api.md](../../SPEC-control-api.md) ·
+> Plan: [plan-control-api.md](plan-control-api.md) · Spec: [SPEC-control-api.md](../../docs/SPEC-control-api.md) ·
 > Resume log: [progress.md](../progress.md)
 >
 > Definition of done per task: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`,

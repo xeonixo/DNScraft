@@ -8,16 +8,16 @@ Status matches [tasks/progress.md](tasks/progress.md) "Current state".
 
 | Module id | Responsibility | Depends on | Spec | Status |
 |---|---|---|---|---|
-| `resolver` | Recursive resolution from the root servers, DNSSEC validation, cache | – | [SPEC-resolver.md](SPEC-resolver.md) | complete |
-| `filtering` | AdGuard-compatible filter lists (adblock syntax, hosts), allow/block, rewrites | – | [SPEC-filtering.md](SPEC-filtering.md) | complete |
-| `clients` | Client enrichment: IPv4/IPv6 → device, VLAN via the UniFi API (UniFi OS gateway); manual names for IPs/ranges | – | [SPEC-clients.md](SPEC-clients.md) | complete |
-| `tls` | ACME DNS-01 via Cloudflare (wildcard for Client IDs), certificate store, hot reload, DynDNS of the public hostname | – | [SPEC-tls.md](SPEC-tls.md) | complete |
-| `policy` | Query → profile by source subnet/IP: filter set, split-horizon answers | resolver, filtering | [SPEC-policy.md](SPEC-policy.md) | complete |
-| `listeners` | Do53 UDP/TCP, DoT, DoH (h2/h3), DoQ; multiple NICs/addresses; public listeners for registered Client IDs | policy, tls | [SPEC-listeners.md](SPEC-listeners.md) | complete |
-| `control-api` | REST API, configuration, query log (filterable by device), statistics, OIDC (Authentik) + local break-glass login, locale-neutral error codes | policy, clients | [SPEC-control-api.md](SPEC-control-api.md) | complete |
-| `web-ui` | TypeScript frontend, fully internationalized, embedded into the binary as static assets (`web-ui` Cargo feature) | control-api | [SPEC-web-ui.md](SPEC-web-ui.md) | in progress (SPA + mock + rust-embed; release still copies `web/build` → `embed-web-ui/`) |
-| `mcp` | MCP server for AI assistants: query log, "why blocked?", test query, stats (viewer); temporary allow, rules, pause (admin); internal listener only, same tokens/roles/audit as the API | control-api | [SPEC-mcp.md](SPEC-mcp.md) | complete |
-| `cluster` | Master/sub-nodes: config sync, writes from any node (forwarded to master, offline fallback), keep serving without the master, log/stats aggregation on the master | control-api | [SPEC-cluster.md](SPEC-cluster.md) | complete (wired into the `dnscraft` binary) |
+| `resolver` | Recursive resolution from the root servers, DNSSEC validation, cache | – | [SPEC-resolver.md](docs/SPEC-resolver.md) | complete |
+| `filtering` | AdGuard-compatible filter lists (adblock syntax, hosts), allow/block, rewrites | – | [SPEC-filtering.md](docs/SPEC-filtering.md) | complete |
+| `clients` | Client enrichment: IPv4/IPv6 → device, VLAN via the UniFi API (UniFi OS gateway); manual names for IPs/ranges | – | [SPEC-clients.md](docs/SPEC-clients.md) | complete |
+| `tls` | ACME DNS-01 via Cloudflare (wildcard for Client IDs), certificate store, hot reload, DynDNS of the public hostname | – | [SPEC-tls.md](docs/SPEC-tls.md) | complete |
+| `policy` | Query → profile by source subnet/IP: filter set, split-horizon answers | resolver, filtering | [SPEC-policy.md](docs/SPEC-policy.md) | complete |
+| `listeners` | Do53 UDP/TCP, DoT, DoH (h2/h3), DoQ; multiple NICs/addresses; public listeners for registered Client IDs | policy, tls | [SPEC-listeners.md](docs/SPEC-listeners.md) | complete |
+| `control-api` | REST API, configuration, query log (filterable by device), statistics, OIDC (Authentik) + local break-glass login, locale-neutral error codes | policy, clients | [SPEC-control-api.md](docs/SPEC-control-api.md) | complete |
+| `web-ui` | TypeScript frontend, fully internationalized, embedded into the binary as static assets (`web-ui` Cargo feature) | control-api | [SPEC-web-ui.md](docs/SPEC-web-ui.md) | in progress (SPA + mock + rust-embed; release still copies `web/build` → `embed-web-ui/`) |
+| `mcp` | MCP server for AI assistants: query log, "why blocked?", test query, stats (viewer); temporary allow, rules, pause (admin); internal listener only, same tokens/roles/audit as the API | control-api | [SPEC-mcp.md](docs/SPEC-mcp.md) | complete |
+| `cluster` | Master/sub-nodes: config sync, writes from any node (forwarded to master, offline fallback), keep serving without the master, log/stats aggregation on the master | control-api | [SPEC-cluster.md](docs/SPEC-cluster.md) | complete (wired into the `dnscraft` binary) |
 
 ## Build order
 

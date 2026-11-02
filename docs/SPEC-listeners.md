@@ -1,9 +1,9 @@
 # Spec: `listeners` module
 
 > Status: **APPROVED by the owner 2026-10-25** (written by Claude; decisions below).
-> Module index: [CAPABILITY-MAP.md](CAPABILITY-MAP.md) · Project spec: [SPEC.md](SPEC.md) ·
+> Module index: [CAPABILITY-MAP.md](../CAPABILITY-MAP.md) · Project spec: [SPEC.md](SPEC.md) ·
 > Neighbours: [SPEC-policy.md](SPEC-policy.md) (query pipeline), [SPEC-tls.md](SPEC-tls.md) (certificates, SNI helpers).
-> Plan / tasks (after approval): [tasks/plan-listeners.md](tasks/plan-listeners.md), [tasks/todo-listeners.md](tasks/todo-listeners.md).
+> Plan / tasks (after approval): [tasks/plan-listeners.md](../tasks/plan-listeners.md), [tasks/todo-listeners.md](../tasks/todo-listeners.md).
 
 ## Objective
 
@@ -342,7 +342,7 @@ target = "dns"                     # dns.<public_domain>; or a node hostname lab
 
 ## Decisions (owner, 2026-10-25)
 
-1. **Dependencies approved** as listed in [tasks/plan-listeners.md](tasks/plan-listeners.md): `quinn` 0.11
+1. **Dependencies approved** as listed in [tasks/plan-listeners.md](../tasks/plan-listeners.md): `quinn` 0.11
    (`default-features = false`, `runtime-tokio`, `rustls-ring`), `quinn-udp` 0.6, `hyper` 1 + `hyper-util` 0.1,
    `h3` 0.0.8 + `h3-quinn` 0.0.10, `base64` (only if not already in the tree), `toml` (N14 only). The spike N0
    may correct versions/features; any change beyond that needs a new approval.

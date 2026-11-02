@@ -1,6 +1,6 @@
 # Briefing: `mcp` module (for deepseek-v4-pro), stages 1-5
 
-> Paste this file as the first message of a session. Authority: [SPEC-mcp.md](../SPEC-mcp.md). Plan:
+> Paste this file as the first message of a session. Authority: [SPEC-mcp.md](../../docs/SPEC-mcp.md). Plan:
 > [mcp-plan.md](archive/mcp-plan.md). Tasks: [mcp-todo.md](archive/mcp-todo.md). Phase 3 (M20-M27) is briefed separately.
 
 ```text

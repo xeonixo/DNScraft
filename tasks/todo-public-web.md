@@ -22,7 +22,7 @@
       `WebSlot`/shared state and is hot-swappable (no restart).
 - [ ] Tests: `public_source_gets_web_handler_when_enabled`, `public_source_gets_404_when_disabled`,
       `public_toggle_applies_without_restart`; keep `public_listener_routes_the_web_handler_for_private_sources_only` for the default.
-- [ ] Spec: update `SPEC-control-api.md` "Internal-only binding" + README security row 9 — the
+- [ ] Spec: update `docs/SPEC-control-api.md` "Internal-only binding" + README security row 9 — the
       invariant becomes "no own public socket; public only via shared listener when opted in".
 
 ## PW2 — Fail2ban-Sperre für Web-Zugriffe

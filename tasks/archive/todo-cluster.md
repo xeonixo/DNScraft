@@ -1,7 +1,7 @@
 # Todo: cluster
 
 > Contract & ordering: [plan-cluster.md](plan-cluster.md). Spec:
-> [SPEC-cluster.md](../SPEC-cluster.md) · [SPEC-control-api.md](../SPEC-control-api.md).
+> [SPEC-cluster.md](../../docs/SPEC-cluster.md) · [SPEC-control-api.md](../../docs/SPEC-control-api.md).
 > Tick items only when the owning crate's focused check passes. One commit per task, `Co-Authored-By`
 > line, add a Log entry in `tasks/progress.md`.
 

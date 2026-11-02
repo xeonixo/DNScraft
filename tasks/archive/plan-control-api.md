@@ -1,6 +1,6 @@
 # Implementation Plan: `control-api` module
 
-> Spec: [SPEC-control-api.md](../../SPEC-control-api.md) · Project spec: [SPEC.md](../../SPEC.md) ·
+> Spec: [SPEC-control-api.md](../../docs/SPEC-control-api.md) · Project spec: [SPEC.md](../../docs/SPEC.md) ·
 > Tasks: [todo-control-api.md](todo-control-api.md) · Resume log: [progress.md](../progress.md) ·
 > Capability map: [CAPABILITY-MAP.md](../../CAPABILITY-MAP.md)
 

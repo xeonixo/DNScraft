@@ -1,7 +1,7 @@
 # Spec: DNScraft (project-wide)
 
 > Project-wide decisions. Module-specific requirements live in `SPEC-<module-id>.md`;
-> the index is [CAPABILITY-MAP.md](CAPABILITY-MAP.md).
+> the index is [CAPABILITY-MAP.md](../CAPABILITY-MAP.md).
 
 ## Objective
 
@@ -299,10 +299,9 @@ dnscraft/
 ├── web/                       → module web-ui (SvelteKit)
 │   └── messages/              → i18n catalogs (en.json, de.json, …)
 ├── deploy/                    → Dockerfile variants, compose examples (macvlan, host), sample config
-├── docs/                      → operations docs, ADRs (docs/adr/)
+├── docs/                      → SPECs, API reference, ADRs (adr/), design/
 ├── CAPABILITY-MAP.md
-├── SPEC.md
-└── SPEC-<module-id>.md
+└── tasks/                     → progress log and open work
 ```
 
 Unit tests live in `#[cfg(test)]` modules next to the code; integration tests in

@@ -17,7 +17,7 @@ the master.
 **Status:** crate complete (Checkpoint F) and wired into the `dnscraft`
 assembler / control-api (`ClusterRuntime`, config sync, write relay, log
 outbox, TLS CSR signing via `TlsEngineCsrSigner`). See
-[`SPEC-cluster.md`](../../SPEC-cluster.md) for the authoritative contract and
+[`SPEC-cluster.md`](../../docs/SPEC-cluster.md) for the authoritative contract and
 [`crates/dnscraft/README.md`](../dnscraft/README.md) for how the binary starts
 master vs sub-node.
 

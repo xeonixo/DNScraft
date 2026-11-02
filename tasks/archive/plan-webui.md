@@ -1,6 +1,6 @@
 # Plan: web-ui build (W1–W10)
 
-> Spec: [SPEC-web-ui.md](../SPEC-web-ui.md) · Design reference: `docs/design/web-ui-prototype.html`
+> Spec: [SPEC-web-ui.md](../../docs/SPEC-web-ui.md) · Design reference: `docs/design/web-ui-prototype.html`
 > Rules: Apple design language (no emoji, no pills, no purple/gradients, semantic tokens only, rem units,
 > 44pt targets), every string via Paraglide, no `{@html}` with API data. One commit per task.
 > Implementation by Haiku agents, reviewed by Claude. Dependencies limited to those marked "Decided" in

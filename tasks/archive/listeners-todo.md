@@ -1,6 +1,6 @@
 # Tasks: `listeners` module
 
-> Plan: [listeners-plan.md](listeners-plan.md) · Spec: [SPEC-listeners.md](../../SPEC-listeners.md) · Resume log: [progress.md](../progress.md)
+> Plan: [listeners-plan.md](listeners-plan.md) · Spec: [SPEC-listeners.md](../../docs/SPEC-listeners.md) · Resume log: [progress.md](../progress.md)
 > Definition of done per task: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`,
 > `cargo test --workspace --locked`, `cargo deny check` green; `cargo tree -i aws-lc-rs` / `-i openssl-sys` empty;
 > Claude review at checkpoints; one commit per task.

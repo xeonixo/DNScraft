@@ -7,7 +7,7 @@ The crate owns the protocol and tool layer only. The control API owns the HTTP
 listener, the bearer tokens, the rate limits and the audit log, and mounts the
 service returned by [`service`](src/lib.rs) at `/mcp/v1`.
 
-See [SPEC-mcp.md](../../SPEC-mcp.md) for the authoritative protocol, tool and
+See [SPEC-mcp.md](../../docs/SPEC-mcp.md) for the authoritative protocol, tool and
 security rules.
 
 ## Architecture

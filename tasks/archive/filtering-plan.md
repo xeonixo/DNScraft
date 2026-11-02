@@ -1,6 +1,6 @@
 # Implementation Plan: `filtering` module
 
-> Spec: [SPEC-filtering.md](../../SPEC-filtering.md) · Project spec: [SPEC.md](../../SPEC.md) ·
+> Spec: [SPEC-filtering.md](../../docs/SPEC-filtering.md) · Project spec: [SPEC.md](../../docs/SPEC.md) ·
 > Tasks: [filtering-todo.md](filtering-todo.md) · Resume log: [progress.md](../progress.md) ·
 > Previous module: [archive/resolver-plan.md](resolver-plan.md)
 

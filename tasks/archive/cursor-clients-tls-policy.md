@@ -2,7 +2,7 @@
 
 > Ready-to-paste briefs, one per task. Each brief is self-contained.
 > Previous briefs (filtering, all done): [archive/cursor-filtering.md](cursor-filtering.md).
-> Background: [SPEC.md](../../SPEC.md) · [CAPABILITY-MAP.md](../../CAPABILITY-MAP.md) · [progress.md](../progress.md).
+> Background: [SPEC.md](../../docs/SPEC.md) · [CAPABILITY-MAP.md](../../CAPABILITY-MAP.md) · [progress.md](../progress.md).
 
 ## Status (updated 2026-10-25)
 

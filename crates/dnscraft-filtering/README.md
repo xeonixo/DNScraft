@@ -7,7 +7,7 @@ answers match requests with a verdict (pass, allow, block, rewrite) and the
 exact rule that caused it. It speaks no DNS on the wire and knows nothing about
 clients, views, or listeners — `policy` turns verdicts into responses.
 
-Formal requirements: [`SPEC-filtering.md`](../../SPEC-filtering.md).
+Formal requirements: [`SPEC-filtering.md`](../../docs/SPEC-filtering.md).
 
 ## Status
 

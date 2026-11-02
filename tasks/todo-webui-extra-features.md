@@ -1,8 +1,8 @@
 # Todo: web-ui extra features beyond the current specs (WX1–WX8)
 
-> Specs: `SPEC-web-ui.md` § Feature coverage (Extra features) and § Required control-api
-> additions (end of file); `SPEC-control-api.md` § Web-UI extra endpoints and § Error codes
-> (proposed); `SPEC-resolver.md` § Upstream health (WX3) and § Cache (WX4).
+> Specs: `docs/SPEC-web-ui.md` § Feature coverage (Extra features) and § Required control-api
+> additions (end of file); `docs/SPEC-control-api.md` § Web-UI extra endpoints and § Error codes
+> (proposed); `docs/SPEC-resolver.md` § Upstream health (WX3) and § Cache (WX4).
 > Related gap lists: `tasks/todo-webui-api-gaps.md`, `tasks/todo-webui-prototype-gaps.md`.
 > Nothing here is implemented. Each task needs owner sign-off on its open decisions
 > (phase 0) before code. Phase order per feature: 0 spec sign-off → 1 backend crate →
@@ -16,7 +16,7 @@
 - [ ] **WX1** Command palette, web-ui only, no backend.
   - [ ] Phase 0: sign off the shortcut rule (ignored in text fields, never overrides
         browser shortcuts) and the router-state choice for the domain filter; record in
-        `SPEC-web-ui.md` § Open questions.
+        `docs/SPEC-web-ui.md` § Open questions.
   - [ ] Phase 1: no backend crate.
   - [ ] Phase 2: no control-api route; uses existing endpoints only.
   - [ ] Phase 3: `CommandPalette` component. Vitest: `palette_filters_by_role`,
@@ -115,7 +115,7 @@
 - [x] **WX7** (routes and egress guard built, f9c2f59; automatic event dispatch not wired, only the test send) `GET/PUT /api/v1/notifications` and `POST /api/v1/notifications/test`,
       owner `control-api` (delivery module in `dnscraft-api`), role viewer/admin read,
       admin write.
-  - [x] Phase 0: owner decisions recorded in `SPEC-control-api.md` (WX7 paragraph), 2026-10-28:
+  - [x] Phase 0: owner decisions recorded in `docs/SPEC-control-api.md` (WX7 paragraph), 2026-10-28:
         (a) webhook only in v1, no ntfy/e-mail/push; (b) side by side with `tls.notifications`,
         migrate later; (c) ntfy not in v1; (d) `allowed_hosts` empty = reject all;
         (e) `allow_private_destinations` false.
@@ -159,4 +159,4 @@
       audit tests.
 - [x] After WX7 phase 0: all five owner decisions recorded; no egress code before that.
 - [ ] After WX8 phase 2: revoke-then-401 test green; error-code uniqueness test covers every
-      new code from `SPEC-control-api.md` § Error codes (WX2–WX8).
+      new code from `docs/SPEC-control-api.md` § Error codes (WX2–WX8).

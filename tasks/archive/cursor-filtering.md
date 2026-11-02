@@ -1,7 +1,7 @@
 # Next tasks for Cursor — `filtering` module
 
 > Ready-to-paste briefs, one per task, in dependency order. Each brief is self-contained.
-> Background: [SPEC-filtering.md](../../SPEC-filtering.md) · [plan.md](filtering-plan.md) ·
+> Background: [SPEC-filtering.md](../../docs/SPEC-filtering.md) · [plan.md](filtering-plan.md) ·
 > [todo.md](filtering-todo.md) (acceptance criteria) · [progress.md](../progress.md) (what is done, lessons).
 
 ## Rules for every task (paste once per session)

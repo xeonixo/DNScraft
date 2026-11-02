@@ -4,7 +4,7 @@ ACME DNS-01 certificates (Cloudflare), hot-reloadable `CertResolver`,
 DynDNS, and SNI helpers for DNScraft encrypted DNS listeners (`dns.<domain>` /
 `*.dns.<domain>`).
 
-Formal requirements: [`SPEC-tls.md`](../../SPEC-tls.md).
+Formal requirements: [`SPEC-tls.md`](../../docs/SPEC-tls.md).
 
 This crate does **not** bind sockets (`listeners`) and does **not** own the
 Client-ID registry (`policy` / `control-api`).

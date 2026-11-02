@@ -10,7 +10,7 @@ addresses, last seen) for the query log and for local-name / PTR data that
 `policy` answers. Sources are the UniFi Network local Integration API on a UniFi
 OS gateway, plus manual names for single IPs and CIDR ranges. This module never
 selects filter profiles or views — that stays in `policy`
-([CAPABILITY-MAP.md](CAPABILITY-MAP.md)).
+([CAPABILITY-MAP.md](../CAPABILITY-MAP.md)).
 
 ## Assumptions
 
@@ -150,7 +150,7 @@ impl ClientLookup {
 
 ### Trait boundary (vs `policy`)
 
-`policy` must not depend on this crate ([CAPABILITY-MAP.md](CAPABILITY-MAP.md)).
+`policy` must not depend on this crate ([CAPABILITY-MAP.md](../CAPABILITY-MAP.md)).
 Policy’s `ClientDirectory` trait uses policy-owned types (`addresses` →
 `Option<Arc<[IpAddr]>>`, `reverse` → `Option<Arc<str>>`, `local_domains` →
 `Arc<[String]>`; no `by_ip` on the trait). The **binary / `control-api`**

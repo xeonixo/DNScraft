@@ -7,7 +7,7 @@ become an `Arc` snapshot that answers `by_ip` / `by_name` / `reverse` /
 This crate never selects filter profiles or views (`policy`) and never blocks
 the DNS hot path on UniFi I/O (background sync only).
 
-Formal requirements: [`SPEC-clients.md`](../../SPEC-clients.md).
+Formal requirements: [`SPEC-clients.md`](../../docs/SPEC-clients.md).
 
 ## UniFi API key
 

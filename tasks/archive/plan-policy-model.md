@@ -1,6 +1,6 @@
 # Plan: policy model v2 — GP1/GP2/GP3 (source-IP selection, global records, node validity)
 
-> Source: `tasks/todo-spec-gaps.md` § Policy (GP1–GP3). Owner delegated the decisions
+> Source: `todo-spec-gaps.md` § Policy (GP1–GP3). Owner delegated the decisions
 > 2026-10-27. The spec is authoritative (`SPEC-policy.md` reviews 13 & 14). One commit per
 > task, Log entries in `progress.md`. Multi-crate: policy → listeners → control-api → assembler.
 

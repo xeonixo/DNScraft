@@ -1,6 +1,6 @@
 # Plan: web-ui blocking control-api gaps (GA1–GA4, GA6)
 
-> Source: `tasks/todo-spec-gaps.md` § control-api. These five gaps block the web-ui
+> Source: `todo-spec-gaps.md` § control-api. These five gaps block the web-ui
 > screens documented in `SPEC-web-ui.md` § Current-state alignment. Tracking IDs are
 > stable. One commit per task, `Co-Authored-By` line, Log entry in `progress.md`.
 > Crate-scoped gates (fmt/clippy/test on `dnscraft-api`) per task; workspace gates at

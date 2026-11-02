@@ -467,7 +467,7 @@ config is not ready.
 
 ## Log and statistics aggregation
 
-Hub-and-spoke exactly as recorded in [CAPABILITY-MAP.md](CAPABILITY-MAP.md):
+Hub-and-spoke exactly as recorded in [CAPABILITY-MAP.md](../CAPABILITY-MAP.md):
 logs are aggregated on the master only; sub-nodes keep a short local buffer
 (default 24 h), stream to the master, and backfill after an outage.
 

@@ -30,7 +30,7 @@ Definition of Done: tests green, behaviour checked at runtime, docs updated.
           back unchanged.
   - Verification: `cargo test -p dnscraft-api --locked` (new tests: object/string mix, PUT, duplicate
     label, rollback of an old snapshot), clippy/fmt clean; `docs/API-REFERENCE.md` and
-    `SPEC-control-api.md` updated.
+    `docs/SPEC-control-api.md` updated.
   - Dependencies: D2. Files: `crates/dnscraft-api/src/api/policy_routes.rs`, `api/router.rs`,
     config validation in `crates/dnscraft-api/src/config_apply.rs`, `crates/dnscraft-policy` registry
     accessor, `tests/policy_records_http.rs`, docs. Scope: M.
@@ -91,8 +91,8 @@ Definition of Done: tests green, behaviour checked at runtime, docs updated.
 
 - [x] **T5** Specs and docs
   - Acceptance:
-    - [ ] `SPEC.md` (Client ID row), `SPEC-web-ui.md` (`/doh-clients` row, resolved open questions),
-          `SPEC-control-api.md`, `SPEC-listeners.md` stale reference fixed, `tasks/todo-webui-*` items
+    - [ ] `docs/SPEC.md` (Client ID row), `docs/SPEC-web-ui.md` (`/doh-clients` row, resolved open questions),
+          `docs/SPEC-control-api.md`, `docs/SPEC-listeners.md` stale reference fixed, `tasks/todo-webui-*` items
           ticked.
   - Verification: grep for the old wording; links resolve. Dependencies: T1–T4. Scope: S.
 
@@ -105,7 +105,7 @@ Definition of Done: tests green, behaviour checked at runtime, docs updated.
 ## Phase 2: Client ID is the fallback Netzbereich for unrecognised IPs
 
 - [x] **T6** Spec change: selection order subnet → Client-ID pin → default
-  - Acceptance: `SPEC-policy.md` selection section, review log entry (narrows #13: a pin never beats a matching subnet), `SPEC-listeners`
+  - Acceptance: `docs/SPEC-policy.md` selection section, review log entry (narrows #13: a pin never beats a matching subnet), `SPEC-listeners`
     and `SPEC-clients` cross references; node-validity rule for pins stated (pin to a view not valid
     on this node falls back to subnet/default).
   - Verification: owner approval recorded. Dependencies: D1. Scope: S.

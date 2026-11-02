@@ -1,6 +1,6 @@
 # Todo: web-ui prototype placeholders awaiting backend (WP1–WP5)
 
-> Spec: `SPEC-web-ui.md` § "Required control-api additions" and § "Feature coverage
+> Spec: `docs/SPEC-web-ui.md` § "Required control-api additions" and § "Feature coverage
 > beyond the core screens". Prototype: `docs/design/web-ui-prototype.html` (shows these
 > as placeholders). Control-api gaps: `tasks/todo-webui-api-gaps.md`.
 > Each task needs owner sign-off on the proposed route shape before implementation.

@@ -1,6 +1,6 @@
 # Todo: TLS & control-api spec gaps (spec everything + implement)
 
-> Contract & ordering: `tasks/plan-tls-api-gaps.md`. Parallel by crate.
+> Contract & ordering: `plan-tls-api-gaps.md`. Parallel by crate.
 > Tick items only when the owning crate's focused check passes.
 
 ## Phase 1 — TLS crate (Agent T)

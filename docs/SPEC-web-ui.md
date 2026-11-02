@@ -28,7 +28,7 @@ refer to `tasks/todo-spec-gaps.md`):
   overrides), but the policy crate still does Client-ID selection and per-view
   records. The UI must build against the intended model and treat the crate's
   current behaviour as temporary.
-- **Prototype placeholders** (`docs/design/web-ui-prototype.html`): the Alerts
+- **Prototype placeholders** (`design/web-ui-prototype.html`): the Alerts
   screen, the blocked-services catalog, the automatic-backup status in
   Einstellungen → Konfiguration and the update notice in Einstellungen → Allgemein
   are shown as placeholders because no endpoint or catalog exists yet. They are
@@ -689,7 +689,7 @@ offers a dead end. Section labels are translated small caps
 with slight letter-spacing; each item is an icon plus a label following the SF
 Symbols metaphor. The active item uses the accent tint, never a colored bar. On
 compact width the sidebar collapses to a drawer opened from the toolbar,
-preserving the same grouping. The prototype at `docs/design/web-ui-prototype.html`
+preserving the same grouping. The prototype at `design/web-ui-prototype.html`
 is the reference for this structure.
 
 ### Responsive structure and screen patterns

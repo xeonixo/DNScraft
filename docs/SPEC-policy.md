@@ -2,7 +2,7 @@
 
 > Module id `policy` · crate `crates/dnscraft-policy` · depends on: `resolver`, `filtering`
 > (and a `ClientDirectory` **trait** only — no hard dependency on the `clients` crate;
-> see [CAPABILITY-MAP.md](CAPABILITY-MAP.md))
+> see [CAPABILITY-MAP.md](../CAPABILITY-MAP.md))
 > Project-wide decisions: [SPEC.md](SPEC.md)
 
 ## Objective
@@ -315,7 +315,7 @@ Per profile flags:
 
 Trait lives in `dnscraft-policy` and returns policy-owned types (no dependency on
 `dnscraft-clients` / `ClientInfo`). Cross-module decision in
-[tasks/archive/policy-plan.md](tasks/archive/policy-plan.md):
+[tasks/archive/policy-plan.md](../tasks/archive/policy-plan.md):
 
 ```rust
 pub trait ClientDirectory: Send + Sync {

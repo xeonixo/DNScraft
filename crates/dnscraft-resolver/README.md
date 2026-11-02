@@ -6,7 +6,7 @@ This crate walks the delegation chain from the root servers itself — no upstre
 resolver, no filter lists, no listeners. You hand it a question; it returns an
 answer. Policy, clients, and DoT/DoH sit in other modules.
 
-Formal requirements live in [`SPEC-resolver.md`](../../SPEC-resolver.md).
+Formal requirements live in [`SPEC-resolver.md`](../../docs/SPEC-resolver.md).
 This README is the practical overview: what works today, how to try it, and how
 to call the API.
 
@@ -254,7 +254,7 @@ fn only_corp() -> Result<RequestFlags, Box<dyn std::error::Error>> {
 Loop protection for forwarding is described under **Forwarding** in
 [Behaviour in short](#behaviour-in-short).
 
-The eventual DNScraft TOML shape is sketched in the [spec](../../SPEC-resolver.md#configuration-excerpt-toml);
+The eventual DNScraft TOML shape is sketched in the [spec](../../docs/SPEC-resolver.md#configuration-excerpt-toml);
 this crate still takes a Rust `ResolverConfig` directly.
 
 ## Errors

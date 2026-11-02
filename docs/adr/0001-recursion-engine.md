@@ -3,7 +3,7 @@
 - Status: Accepted — Option D (amended 2026-10-24, see "Final decision")
 - Date: 2026-10-24
 - Deciders: project owner, at Checkpoint A
-- Scope: `crates/dnscraft-resolver` ([SPEC-resolver.md](../../SPEC-resolver.md))
+- Scope: `crates/dnscraft-resolver` ([SPEC-resolver.md](../SPEC-resolver.md))
 
 ## Context
 

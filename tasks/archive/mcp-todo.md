@@ -1,6 +1,6 @@
 # Tasks: `mcp` module
 
-> Plan: [mcp-plan.md](mcp-plan.md) · Spec: [SPEC-mcp.md](../../SPEC-mcp.md) · Resume log: [progress.md](../progress.md)
+> Plan: [mcp-plan.md](mcp-plan.md) · Spec: [SPEC-mcp.md](../../docs/SPEC-mcp.md) · Resume log: [progress.md](../progress.md)
 >
 > Agent rules (paste at the start of every session): "Agent rules for every MCP task" in
 > [mcp-plan.md](mcp-plan.md). Definition of done per task: `cargo fmt --all --check`,

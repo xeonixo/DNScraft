@@ -1,7 +1,7 @@
 # Plan: cluster
 
 > Module id `cluster` · crate `crates/dnscraft-cluster` · depends on: `control-api`
-> Spec: [SPEC-cluster.md](../SPEC-cluster.md) (DRAFT) · [SPEC-control-api.md](../SPEC-control-api.md)
+> Spec: [SPEC-cluster.md](../../docs/SPEC-cluster.md) (DRAFT) · [SPEC-control-api.md](../../docs/SPEC-control-api.md)
 > Status: owner-approved 2026-10-27. Tasks: [todo-cluster.md](todo-cluster.md).
 
 ## Context

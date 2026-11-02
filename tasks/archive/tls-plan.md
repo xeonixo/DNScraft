@@ -1,6 +1,6 @@
 # Implementation Plan: `tls` module
 
-> Spec: [SPEC-tls.md](../../SPEC-tls.md) · Project spec: [SPEC.md](../../SPEC.md) ·
+> Spec: [SPEC-tls.md](../../docs/SPEC-tls.md) · Project spec: [SPEC.md](../../docs/SPEC.md) ·
 > Tasks: [tls-todo.md](tls-todo.md) · Resume log: [progress.md](../progress.md) ·
 > Shared decisions for all three plans: [policy-plan.md § Cross-module decisions](policy-plan.md#cross-module-decisions)
 

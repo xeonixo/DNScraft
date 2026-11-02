@@ -25,14 +25,14 @@ and (3) possibly give that iPhone its own Netzbereich/profile even on mobile dat
   `<id>.dns.<public_domain>`.
 - `RequestContext.client_id` reaches the policy pipeline and the decision record, but
   `PolicySnapshot::select` ignores it: **view/zone selection is source-IP only** (longest-prefix
-  subnet → default view). That is owner decision #13 of `SPEC-policy.md` (2026-10-26): the Client ID
+  subnet → default view). That is owner decision #13 of `docs/SPEC-policy.md` (2026-10-26): the Client ID
   "only authenticates the client to the listener and enriches the log, never the chosen zone".
 - Consequence: an iPhone on mobile data (public IP, no matching Netzbereich) always gets the default
   Netzbereich and its profile.
 - The query log stores `client_id` and `client_name`; `client_name` comes from the client directory
   by IP, so a public DoH query has an id but usually no name.
-- `.mobileconfig` generation is promised by `SPEC.md` ("UI generates Apple `.mobileconfig` profiles")
-  and listed as an open question in `SPEC-web-ui.md`; nothing is implemented.
+- `.mobileconfig` generation is promised by `docs/SPEC.md` ("UI generates Apple `.mobileconfig` profiles")
+  and listed as an open question in `docs/SPEC-web-ui.md`; nothing is implemented.
 - The public hostname is `tls.public_domain` (config, `GET /api/v1/tls`).
 
 ## Dependency graph
@@ -71,7 +71,7 @@ Phase 2:  T6 spec change ─► T7 policy: subnet → pin → default ─► T8 
    - A pin points at a **view (Netzbereich)**, which already points at a profile. For "same rules,
      different records" the owner creates a view such as "Unterwegs" with the **same profile** as the
      home view and **per-view record overrides** (records are a global name space with
-     `overrides` keyed by view id, `SPEC-policy.md` review 14). No new concept.
+     `overrides` keyed by view id, `docs/SPEC-policy.md` review 14). No new concept.
    - This reverses owner decision #13 only in part: the Client ID still never beats a matching
      subnet; it only replaces the default for unmatched IPs.
 

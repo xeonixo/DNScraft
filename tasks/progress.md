@@ -2,6 +2,17 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-11-02 — docs cleanup: archive done tasks, SPECs → `docs/`
+
+- **Archived** (implemented): assembler, spec-gaps, audit-cleanup, policy-model,
+  tls-api-gaps, webui plan (+ api-gaps plan), domain-zones, MCP/N14 briefings,
+  rust-embed notes, common-brief scratchpad → `tasks/archive/`.
+- **Still open in `tasks/`:** Client-ID plan/todo, webui-api/extra/prototype gaps,
+  public-web, multi-target-names, llm-domain-classifier, revoked-node-id issue,
+  `cursor-next.md`, this log.
+- **SPECs** moved from repo root to `docs/SPEC*.md`; CAPABILITY-MAP / README /
+  ADRs / crate READMEs / task links updated.
+
 ## 2026-11-01 — improvement pass (web API gaps, CI, public-web, hygiene)
 
 - **GA-W4:** Stale session cookie cleared on public auth routes; logout is
@@ -65,8 +76,8 @@ Resume point for interrupted sessions. Newest entry first.
 
 - **Landed:** control-api `web-ui` feature (`rust-embed` of `embed-web-ui/`); SPA
   fallback beside API; JSON 404 for `/api`/`/mcp` misses preserved; embed tests.
-- **SPEC:** open question 1 resolved (option a); `SPEC-control-api.md` Non-goals
-  and `SPEC-web-ui.md` CSP / Serving updated to match shipped policy for owner review.
+- **SPEC:** open question 1 resolved (option a); `docs/SPEC-control-api.md` Non-goals
+  and `docs/SPEC-web-ui.md` CSP / Serving updated to match shipped policy for owner review.
 - **Next:** owner human review of commits on main before release enablement
   (still copy `web/build` → `embed-web-ui/`).
 
@@ -254,7 +265,7 @@ Resume point for interrupted sessions. Newest entry first.
   token create/revoke), GA14 (`/status` version + readiness), GA17, GA18 (filter-set pause is runtime),
   GA19 (manual TLS mode), GA20 (RFC 3339 timestamps), GA23, GA25, GA28 (`seed_if_empty`), GA29 (readiness
   producers, API side).
-- **Done (spec):** GA7, GA21, GA24, GA26 decided in `SPEC-control-api.md`.
+- **Done (spec):** GA7, GA21, GA24, GA26 decided in `docs/SPEC-control-api.md`.
 - **Web-ui backends:** WX8 sessions (`/auth/sessions`, migration v9), WX5 `/stats/domains/{name}`, WP1
   `/alerts`; WX3/WX4/WX6 backend sub-items ticked.
 - **Open:** GA5/GA6c/GA29 wiring (assembler must `with_clients`, `expect_module`/`set_ready`, `seed_if_empty`);
@@ -452,11 +463,11 @@ success-criteria tables, measurements and review findings of resolver, filtering
 | `clients` | COMPLETE (Checkpoint C, 2026-10-25) | [plan](archive/clients-plan.md) · [tasks](archive/clients-todo.md) | archived log, coverage 86.2 % |
 | `tls` | COMPLETE (Checkpoint C, 2026-10-25, LE staging accepted) | [plan](archive/tls-plan.md) · [tasks](archive/tls-todo.md) | archived log, coverage 80.3 % |
 | `policy` | COMPLETE (Checkpoint C, 2026-10-25; P13 SafeSearch, P14 schedules) | [plan](archive/policy-plan.md) · [tasks](archive/policy-todo.md) | archived log, coverage 92.9 % |
-| `listeners` | COMPLETE (Checkpoint D, 2026-10-26) | [plan](archive/listeners-plan.md) · [tasks](archive/listeners-todo.md) | [SPEC-listeners.md](../SPEC-listeners.md); crates `dnscraft-listeners` + `dnscraft` |
-| `control-api` | COMPLETE and wired into `dnscraft` (assembler + GA-W4/W5/W6 API gaps 2026-11-01) | [plan](archive/plan-control-api.md) · [tasks](archive/todo-control-api.md) · [webui gaps](todo-webui-api-gaps.md) | [SPEC-control-api.md](../SPEC-control-api.md); crate `dnscraft-api` |
-| `mcp` | COMPLETE (Checkpoint F, 2026-10-27; owner approved) | [plan](archive/mcp-plan.md) · [tasks](archive/mcp-todo.md) | [SPEC-mcp.md](../SPEC-mcp.md); crates `dnscraft-mcp` + `dnscraft-api`; coverage 94.84 % |
-| `web-ui` | in progress (SPA + mock + rust-embed; release still copies `web/build` → `embed-web-ui/`) | [SPEC-web-ui.md](../SPEC-web-ui.md) · [web/](../web/) | matches CAPABILITY-MAP / README |
-| `cluster` | COMPLETE (Checkpoint F, 2026-10-27; owner approved) and wired into `dnscraft` | [plan](archive/plan-cluster.md) · [tasks](archive/todo-cluster.md) | [SPEC-cluster.md](../SPEC-cluster.md); crates `dnscraft-cluster` + `dnscraft-api`; loopback + fuzz + security suites |
+| `listeners` | COMPLETE (Checkpoint D, 2026-10-26) | [plan](archive/listeners-plan.md) · [tasks](archive/listeners-todo.md) | [SPEC-listeners.md](../docs/SPEC-listeners.md); crates `dnscraft-listeners` + `dnscraft` |
+| `control-api` | COMPLETE and wired into `dnscraft` (assembler + GA-W4/W5/W6 API gaps 2026-11-01) | [plan](archive/plan-control-api.md) · [tasks](archive/todo-control-api.md) · [webui gaps](todo-webui-api-gaps.md) | [SPEC-control-api.md](../docs/SPEC-control-api.md); crate `dnscraft-api` |
+| `mcp` | COMPLETE (Checkpoint F, 2026-10-27; owner approved) | [plan](archive/mcp-plan.md) · [tasks](archive/mcp-todo.md) | [SPEC-mcp.md](../docs/SPEC-mcp.md); crates `dnscraft-mcp` + `dnscraft-api`; coverage 94.84 % |
+| `web-ui` | in progress (SPA + mock + rust-embed; release still copies `web/build` → `embed-web-ui/`) | [SPEC-web-ui.md](../docs/SPEC-web-ui.md) · [web/](../web/) | matches CAPABILITY-MAP / README |
+| `cluster` | COMPLETE (Checkpoint F, 2026-10-27; owner approved) and wired into `dnscraft` | [plan](archive/plan-cluster.md) · [tasks](archive/todo-cluster.md) | [SPEC-cluster.md](../docs/SPEC-cluster.md); crates `dnscraft-cluster` + `dnscraft-api`; loopback + fuzz + security suites |
 
 - Toolchain: MSRV **1.88**, toolchain `stable`; all dependencies on their latest stable versions
   (2026-10-25); ring-only TLS enforced by `cargo deny` bans; `cargo deny check` runs in CI.
@@ -652,7 +663,7 @@ the CL15 follow-up).
 
 - 2026-10-26 — **control-api: A14 done + reviewed (hardening, threat-model, coverage, README, final DoD).** One commit (`a5e0abf`). New `tests/security.rs` (9 tests) consolidating the threat model: wildcard/public bind rejection, public-listener path isolation in both directions, path traversal, SQL injection, CSRF bypass, forwarded-header spoofing, token/session replay, secret leakage, and an OIDC alg allow-list unit test. **Real vulnerability found + fixed:** raw `PUT /config` accepted `filtering.lists[].source.file = "../../etc/passwd"` (the `..` guard only existed on `PUT /filter-lists`); a shared `list_source_path_is_safe` helper (using `Path::components()` → `Component::ParentDir`) now guards both paths, with a positive control. Coverage `cargo llvm-cov -p dnscraft-api` = 88.98 % lines (≥ 80 %). README rewritten with the four required explanations + a SPEC success-criteria traceability table (all 13 closed). Gates: `fmt --all`, `clippy --workspace --all-targets -D warnings`, `cargo deny check` green; crypto trees empty; `cargo test -p dnscraft-api` 193 green; `cargo test --workspace` 1581 passed / 7 failed — the 7 are the known pre-existing macOS listeners failures (checkpoint_c 3 + tcp 2 + udp 1 + runtime 1; pass on Linux CI). **Checkpoint F: owner approved** (all gates green). Next: mcp M20–M27 (Phase 3) can start.
 
-- 2026-10-26 — **web-ui + cluster specs drafted (DRAFT).** `SPEC-web-ui.md` (696 lines) and `SPEC-cluster.md` (867 lines), both DRAFT with open owner questions. web-ui: SvelteKit SPA + rust-embed, OIDC cookie session + CSRF, Paraglide i18n with a code→message catalogue; flags static-serving ownership (SPEC-control-api § Non-goals says control-api does not serve UI) and an audit-log role contradiction. cluster: hub-and-spoke mTLS (per-node cert, node_id in SAN), full-snapshot config sync with `If-Match`/412, FIFO offline write queue with `Idempotency-Key`, transactional log outbox with dedupe/backfill; flags single-master SPOF, offline auth-state (token hashes excluded from config export), and a SPEC-control-api naming inconsistency (`control_api.config.conflict` in § Cluster hooks vs `control_api.config.version` in the error table). Owner review required before any plan/tasks. **web-ui is being revised now to apply Apple's design language** (per owner request).
+- 2026-10-26 — **web-ui + cluster specs drafted (DRAFT).** `docs/SPEC-web-ui.md` (696 lines) and `docs/SPEC-cluster.md` (867 lines), both DRAFT with open owner questions. web-ui: SvelteKit SPA + rust-embed, OIDC cookie session + CSRF, Paraglide i18n with a code→message catalogue; flags static-serving ownership (SPEC-control-api § Non-goals says control-api does not serve UI) and an audit-log role contradiction. cluster: hub-and-spoke mTLS (per-node cert, node_id in SAN), full-snapshot config sync with `If-Match`/412, FIFO offline write queue with `Idempotency-Key`, transactional log outbox with dedupe/backfill; flags single-master SPOF, offline auth-state (token hashes excluded from config export), and a SPEC-control-api naming inconsistency (`control_api.config.conflict` in § Cluster hooks vs `control_api.config.version` in the error table). Owner review required before any plan/tasks. **web-ui is being revised now to apply Apple's design language** (per owner request).
 
 - 2026-10-26 — **mcp: M19 done + reviewed (write-path security suite).** One commit (`ca9b0bd`), no production code changed. New `tests/injection.rs` (6 tests) + a matrix test; 127 tests green. Matrix covers all 5 write tools × {`mcp:read`,`mcp:write`} × {gate on/off} with mock call counters proving a rejected request never reaches the backend; hostile `reason` values asserted equal to `sanitize(..., CAP_REASON)`; explicit no-allow/no-`$`/no-wildcard/TLD/IP tests; error-code uniqueness across all `mcp.*` + 14 forwarded codes. Mutation probes (recorded, restored): protected check removed, scope `==`→`!=`, sanitizer disabled, gate ignored, and a header/body `Mcp-Name` patch of rmcp 3.7.0 in the registry — each caught by a named test. Next: Checkpoint W → Phase 3 (M20–M27), gated on control-api Checkpoint F.
 
@@ -716,9 +727,9 @@ the CL15 follow-up).
 
 - 2026-10-26 — **control-api: A0 done.** New crate `crates/dnscraft-api` (workspace member, workspace lints). `ControlApiConfig` (bind/port/tls/trusted_proxies/auth/query_log/rate_limit) with internal-only bind validation (loopback/RFC1918/ULA/CGNAT accepted; `0.0.0.0`/`::` and public rejected) and full spec-limits validation (retention, rows, lockout, TTLs, rate limits); `IpTruncate` enum + `parse`; `ControlApiError` with all 21 spec error-table codes + uniqueness test. 8 tests green; `cargo fmt -p dnscraft-api` and `clippy -p dnscraft-api -D warnings` clean. Note: workspace-wide `cargo fmt --all --check` is currently red only because of the other agent's unformatted listeners tests (not this crate). Next: A1 (SQLite storage + migrations).
 
-- 2026-10-26 — **control-api: owner approval + decisions resolved; A0 start.** Owner approved the plan and dependency table ("ok, mach weiter"); `SPEC-control-api.md` status → APPROVED. Resolved per the plan's recommendations: (1) OIDC via `openidconnect` 4.0.1 (`default-features=false` + custom reqwest client) with two `[advisories] ignore` entries (RUSTSEC-2026-0387 `crypto-bigint`, RUSTSEC-2023-0071 `rsa`; verify-only justification — both concern private-key timing, control-api only verifies public-key signatures); the `deny.toml` ignores are applied in A9 when the crate is actually added. (2) Pin `rusqlite` 0.40.0 + `uuid` 1.26.0 to honour MSRV 1.88. (3) `tower-http` 0.6.11 `trace` as a direct dependency. (4) `control_api.tls.self_signed` stays warning-level (not startup-blocking). Next: A0 (crate skeleton, config model, error type).
+- 2026-10-26 — **control-api: owner approval + decisions resolved; A0 start.** Owner approved the plan and dependency table ("ok, mach weiter"); `docs/SPEC-control-api.md` status → APPROVED. Resolved per the plan's recommendations: (1) OIDC via `openidconnect` 4.0.1 (`default-features=false` + custom reqwest client) with two `[advisories] ignore` entries (RUSTSEC-2026-0387 `crypto-bigint`, RUSTSEC-2023-0071 `rsa`; verify-only justification — both concern private-key timing, control-api only verifies public-key signatures); the `deny.toml` ignores are applied in A9 when the crate is actually added. (2) Pin `rusqlite` 0.40.0 + `uuid` 1.26.0 to honour MSRV 1.88. (3) `tower-http` 0.6.11 `trace` as a direct dependency. (4) `control_api.tls.self_signed` stays warning-level (not startup-blocking). Next: A0 (crate skeleton, config model, error type).
 
-- 2026-10-26 — **plan: control-api plan and tasks (dependency dry-check done).** Created `tasks/plan-control-api.md` and `tasks/todo-control-api.md` (phases A0–A14, checkpoints A–F); success criteria 11–13 in `SPEC-control-api.md` (TLS bootstrap switch, NDJSON export primary, audit redaction). Dependency dry-check in a scratch crate (not in the repo): `axum` 0.8.9, `tower-http` 0.6.11, `rusqlite` 0.40.0 (`bundled`), `argon2` 0.6.0, `uuid` 1.26.0 are all ring-only and `cargo deny check` green. `openidconnect` 4.0.1 is **ring-only** (no aws-lc/openssl) but pulls the RustCrypto `rsa`/`crypto-bigint`/`p256`/`p384` stack with 2 advisories (RUSTSEC-2026-0387 crypto-bigint, RUSTSEC-2023-0071 rsa) → `cargo deny check` fails unless 2 `[advisories] ignore` entries are added (verify-only justification) or OIDC is hand-rolled on `ring::signature`. MSRV note: `rusqlite` 0.41 / `uuid` 1.29 declare rust-version 1.89 > workspace 1.88 → pinned 0.40/1.26. Next: **owner approval** of plan/deps (openidconnect advisory decision + MSRV) before A0.
+- 2026-10-26 — **plan: control-api plan and tasks (dependency dry-check done).** Created `tasks/plan-control-api.md` and `tasks/todo-control-api.md` (phases A0–A14, checkpoints A–F); success criteria 11–13 in `docs/SPEC-control-api.md` (TLS bootstrap switch, NDJSON export primary, audit redaction). Dependency dry-check in a scratch crate (not in the repo): `axum` 0.8.9, `tower-http` 0.6.11, `rusqlite` 0.40.0 (`bundled`), `argon2` 0.6.0, `uuid` 1.26.0 are all ring-only and `cargo deny check` green. `openidconnect` 4.0.1 is **ring-only** (no aws-lc/openssl) but pulls the RustCrypto `rsa`/`crypto-bigint`/`p256`/`p384` stack with 2 advisories (RUSTSEC-2026-0387 crypto-bigint, RUSTSEC-2023-0071 rsa) → `cargo deny check` fails unless 2 `[advisories] ignore` entries are added (verify-only justification) or OIDC is hand-rolled on `ring::signature`. MSRV note: `rusqlite` 0.41 / `uuid` 1.29 declare rust-version 1.89 > workspace 1.88 → pinned 0.40/1.26. Next: **owner approval** of plan/deps (openidconnect advisory decision + MSRV) before A0.
 
 - 2026-10-26 — **spec: control-api self-signed bootstrap cert.** Owner idea: instead of refusing to start without a certificate, serve a persisted self-signed cert (`rcgen`, already a workspace dep; no new dependency) until the `tls` module has an ACME cert, then switch automatically; `tls_mode` + fingerprint in status, warning `control_api.tls.self_signed` (replaces `tls.no_cert`).
 

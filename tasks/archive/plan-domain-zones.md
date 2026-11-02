@@ -7,7 +7,7 @@
 > Does **not** replace [plan.md](plan.md) (Named Client IDs). That plan stays the active
 > Client-ID workstream; this file is a parallel feature plan.
 >
-> MCP Domain-Zonen tools remain deferred (see [SPEC-mcp.md](../SPEC-mcp.md) Non-goals).
+> MCP Domain-Zonen tools remain deferred (see [SPEC-mcp.md](../../docs/SPEC-mcp.md) Non-goals).
 
 ## Overview
 

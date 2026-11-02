@@ -4,7 +4,7 @@ Client-side SvelteKit SPA (adapter-static, `index.html` fallback). Production
 assets land in `web/build/` and are embedded into `dnscraft-api` via the
 `web-ui` Cargo feature (`rust-embed` of `embed-web-ui/`).
 
-Spec: [`SPEC-web-ui.md`](../SPEC-web-ui.md). Control plane contract:
+Spec: [`SPEC-web-ui.md`](../docs/SPEC-web-ui.md). Control plane contract:
 [`docs/API-REFERENCE.md`](../docs/API-REFERENCE.md).
 
 ## Commands

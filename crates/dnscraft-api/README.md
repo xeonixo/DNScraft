@@ -6,7 +6,7 @@ tokens). This crate is the internal-only configuration boundary for the web UI
 and the MCP server. The `dnscraft` binary assembles live engines and mounts this
 crate; see [`crates/dnscraft/README.md`](../dnscraft/README.md).
 
-Formal requirements: [`SPEC-control-api.md`](../../SPEC-control-api.md).
+Formal requirements: [`SPEC-control-api.md`](../../docs/SPEC-control-api.md).
 Endpoint explorer: [`docs/API-REFERENCE.md`](../../docs/API-REFERENCE.md).
 Plan / task list (historical): [`tasks/archive/todo-control-api.md`](../../tasks/archive/todo-control-api.md).
 

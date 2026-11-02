@@ -5,7 +5,7 @@ and DoQ. Turns each wire query into a `policy::RequestContext`, calls
 `PolicyEngine::handle`, and writes the answer back with the transport's framing
 and the internet-exposure rules from SPEC.md.
 
-Formal requirements: [`SPEC-listeners.md`](../../SPEC-listeners.md).
+Formal requirements: [`SPEC-listeners.md`](../../docs/SPEC-listeners.md).
 Plan / remaining tasks: [`tasks/todo-listeners.md`](../../tasks/todo-listeners.md).
 
 ## Listener model

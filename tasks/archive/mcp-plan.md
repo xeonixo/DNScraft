@@ -1,6 +1,6 @@
 # Implementation Plan: `mcp` module
 
-> Spec: [SPEC-mcp.md](../../SPEC-mcp.md) · Project spec: [SPEC.md](../../SPEC.md) ·
+> Spec: [SPEC-mcp.md](../../docs/SPEC-mcp.md) · Project spec: [SPEC.md](../../docs/SPEC.md) ·
 > Tasks: [mcp-todo.md](mcp-todo.md) · Resume log: [progress.md](../progress.md) ·
 > Capability map: [CAPABILITY-MAP.md](../../CAPABILITY-MAP.md) ·
 > Related plan: [plan-control-api.md](plan-control-api.md)

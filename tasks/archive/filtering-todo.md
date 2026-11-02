@@ -1,6 +1,6 @@
 # Tasks: `filtering` module
 
-> Plan: [filtering-plan.md](filtering-plan.md) · Spec: [SPEC-filtering.md](../../SPEC-filtering.md) · Resume log: [progress.md](../progress.md)
+> Plan: [filtering-plan.md](filtering-plan.md) · Spec: [SPEC-filtering.md](../../docs/SPEC-filtering.md) · Resume log: [progress.md](../progress.md)
 > Definition of done per task: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`,
 > `cargo test --workspace --locked` green; lead review; committed.
 

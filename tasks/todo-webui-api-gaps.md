@@ -1,6 +1,7 @@
 # Todo: web-ui blocking control-api gaps (GA1–GA4, GA6)
 
-> Contract & ordering: `plan-webui-api-gaps.md`. Gaps: `todo-spec-gaps.md` § control-api.
+> Contract & ordering: [`archive/plan-webui-api-gaps.md`](archive/plan-webui-api-gaps.md).
+> Gaps: [`archive/todo-spec-gaps.md`](archive/todo-spec-gaps.md) § control-api.
 > One commit per task, `Co-Authored-By` line, Log entry in `progress.md`. Crate-scoped
 > gates (`cargo fmt --check`, `cargo clippy -p dnscraft-api --all-targets`,
 > `cargo test -p dnscraft-api`) per task.

@@ -1,6 +1,6 @@
 # Implementation Plan: `clients` module
 
-> Spec: [SPEC-clients.md](../../SPEC-clients.md) · Project spec: [SPEC.md](../../SPEC.md) ·
+> Spec: [SPEC-clients.md](../../docs/SPEC-clients.md) · Project spec: [SPEC.md](../../docs/SPEC.md) ·
 > Tasks: [clients-todo.md](clients-todo.md) · Resume log: [progress.md](../progress.md) ·
 > Shared decisions for all three plans: [policy-plan.md § Cross-module decisions](policy-plan.md#cross-module-decisions)
 

@@ -12,8 +12,8 @@ and RBAC in
 [`crates/dnscraft-api/src/api/auth/roles.rs`](../crates/dnscraft-api/src/api/auth/roles.rs);
 MCP tools are registered in
 [`crates/dnscraft-mcp/src/tools/`](../crates/dnscraft-mcp/src/tools/). The formal
-specs are [`SPEC-control-api.md`](../SPEC-control-api.md) and
-[`SPEC-mcp.md`](../SPEC-mcp.md).
+specs are [`SPEC-control-api.md`](SPEC-control-api.md) and
+[`SPEC-mcp.md`](SPEC-mcp.md).
 
 ## Conventions
 
@@ -153,7 +153,7 @@ returned. Without a TLS engine → `control_api.not_ready`. Record mutations hol
 the same Cloudflare `write_guard` as ACME/DynDNS. Attach/detach updates
 `dns_provider.zones` only — never creates or deletes a Cloudflare zone.
 DNScraft proxies Zone DNS:Edit; Cloudflare stays authoritative
-([SPEC.md](../SPEC.md) Non-goals).
+([SPEC.md](SPEC.md) Non-goals).
 
 | Method | Path | Summary |
 |---|---|---|

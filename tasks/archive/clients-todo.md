@@ -1,6 +1,6 @@
 # Tasks: `clients` module
 
-> Plan: [clients-plan.md](clients-plan.md) · Spec: [SPEC-clients.md](../../SPEC-clients.md) · Resume log: [progress.md](../progress.md)
+> Plan: [clients-plan.md](clients-plan.md) · Spec: [SPEC-clients.md](../../docs/SPEC-clients.md) · Resume log: [progress.md](../progress.md)
 > Definition of done per task: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`,
 > `cargo test --workspace --locked` green; lead review; committed. Fixtures are invented (documentation ranges,
 > `example.com`); never real captures. No test touches a real gateway.

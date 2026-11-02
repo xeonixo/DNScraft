@@ -15,7 +15,7 @@ diverging matrices and double-counting strikes.
 ## Decision
 
 1. One shared **`Admission`** (source class, per-source / per-Client-ID token buckets, ban table)
-   consulted by every transport ([SPEC-listeners.md](../../SPEC-listeners.md) admission section;
+   consulted by every transport ([SPEC-listeners.md](../SPEC-listeners.md) admission section;
    task N3).
 2. **Pre-handshake refusals** for banned public sources (close before TLS/QUIC work); SNI/path
    Client-ID gates apply for public×public; node hostname / apex reject without a ban strike
@@ -42,6 +42,6 @@ diverging matrices and double-counting strikes.
 
 ## Links
 
-- [SPEC-listeners.md](../../SPEC-listeners.md) — admission / public Client ID rules
+- [SPEC-listeners.md](../SPEC-listeners.md) — admission / public Client ID rules
 - [tasks/todo-listeners.md](../../tasks/todo-listeners.md) — N3, N6, Checkpoint C
 - Commits: N3 admission (see progress log 2026-10-25); `fcd74fe` (shared admission follow-up)

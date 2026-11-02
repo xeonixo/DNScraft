@@ -8,13 +8,13 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use dnscraft_filtering::{
-    FilterConfig, FilterEngine, FilterSetConfig, EmptyBodies, ListBodies, ManualClock, SetId,
+    EmptyBodies, FilterConfig, FilterEngine, FilterSetConfig, ListBodies, ManualClock, SetId,
     SnapshotBuilder,
 };
 use dnscraft_policy::{
     AnswerOrigin, ClientFlags, DecisionStep, DnsProtocol, ListenerId, NoClients, PolicyConfig,
     PolicyEngine, ProfileConfig, ProfileId, RequestContext, SafeSearchConfig, ViewConfig, ViewId,
-    ViewRecordConfig,
+    ViewOverride, ViewRecordConfig,
 };
 use dnscraft_proto::{Class, Name, RData, Rcode, RecordType};
 use dnscraft_resolver::dnssec::TrustAnchors;
@@ -299,7 +299,7 @@ async fn local_records_split_horizon_per_view() {
     let mut app = rec(name, RData::A(Ipv4Addr::new(192, 0, 2, 10)));
     app.overrides.insert(
         ViewId::new("guest").unwrap(),
-        Some(RData::A(Ipv4Addr::new(198, 51, 100, 10))),
+        ViewOverride::Data(RData::A(Ipv4Addr::new(198, 51, 100, 10))),
     );
     let records = vec![app];
     let views = vec![
@@ -395,7 +395,8 @@ async fn local_records_empty_override_yields_nodata_in_that_view() {
         name,
         RData::AAAA(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)),
     );
-    aaaa.overrides.insert(ViewId::new("guest").unwrap(), None);
+    aaaa.overrides
+        .insert(ViewId::new("guest").unwrap(), ViewOverride::NoAnswer);
     let records = vec![rec(name, RData::A(Ipv4Addr::new(192, 0, 2, 10))), aaaa];
     let views = vec![
         ViewConfig {

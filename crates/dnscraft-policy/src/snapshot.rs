@@ -44,6 +44,8 @@ pub struct SnapshotView {
     /// Local records as seen in this view: the global table with this view's
     /// overrides applied (built once per snapshot).
     pub(crate) records: HashMap<Name, ViewRrSets>,
+    /// Owners (wildcards included) this view resolves publicly, never locally.
+    pub(crate) public: HashSet<Name>,
 }
 
 impl SnapshotView {
@@ -302,7 +304,7 @@ impl PolicySnapshot {
                 }
             }
 
-            let records = build_view_records(&config.records, &view.id)?;
+            let (records, public) = build_view_records(&config.records, &view.id)?;
             view_by_id.insert(view.id.clone(), view_idx);
             views.push(SnapshotView {
                 id: view.id,
@@ -310,6 +312,7 @@ impl PolicySnapshot {
                 profile_idx,
                 nodes: Arc::from(view.nodes),
                 records,
+                public,
             });
         }
 
@@ -487,7 +490,8 @@ fn validate_safesearch(mut cfg: SafeSearchConfig) -> Result<SafeSearchConfig, Po
 fn build_view_records(
     records: &[ViewRecordConfig],
     view: &ViewId,
-) -> Result<HashMap<Name, ViewRrSets>, PolicyError> {
+) -> Result<(HashMap<Name, ViewRrSets>, HashSet<Name>), PolicyError> {
+    let mut public: HashSet<Name> = HashSet::new();
     let mut by_name: HashMap<Name, Vec<ViewRecordConfig>> = HashMap::new();
     let mut ensure_known: HashSet<Name> = HashSet::new();
     for record in records {
@@ -500,6 +504,10 @@ fn build_view_records(
             return Err(PolicyError::InvalidConfig {
                 reason: ConfigReason::UnsupportedRecordType,
             });
+        }
+        if record.is_public_in(view) {
+            public.insert(record.name.clone());
+            continue;
         }
         match record.rdata_for(view) {
             Some(rdata) => {
@@ -543,7 +551,7 @@ fn build_view_records(
             .into();
         out.insert(name, ViewRrSets { records });
     }
-    Ok(out)
+    Ok((out, public))
 }
 
 #[cfg(test)]
@@ -552,7 +560,7 @@ mod tests {
     use super::*;
     use crate::config::{
         ClientIdEntry, ClientIdMeta, DEFAULT_LOCAL_NXDOMAIN_SUFFIXES, ProfileConfig, SCHEDULE_WEEK,
-        SafeSearchConfig, ViewConfig, ViewRecordConfig,
+        SafeSearchConfig, ViewConfig, ViewOverride, ViewRecordConfig,
     };
     use crate::ids::{ClientId, NodeId, ProfileId, ViewId};
     use dnscraft_proto::{Name, RData};
@@ -1049,7 +1057,7 @@ mod tests {
         let mut cfg = spec_excerpt_config();
         cfg.records[0].overrides.insert(
             ViewId::new("nowhere").unwrap(),
-            Some(RData::A(Ipv4Addr::new(192, 0, 2, 99))),
+            ViewOverride::Data(RData::A(Ipv4Addr::new(192, 0, 2, 99))),
         );
         let err = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap_err();
         assert!(matches!(
@@ -1065,7 +1073,7 @@ mod tests {
         let mut cfg = spec_excerpt_config();
         cfg.records[0].overrides.insert(
             ViewId::new("lan").unwrap(),
-            Some(RData::A(Ipv4Addr::new(192, 0, 2, 50))),
+            ViewOverride::Data(RData::A(Ipv4Addr::new(192, 0, 2, 50))),
         );
         let snap = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap();
         let name = Name::from_ascii("nas.lan.example.com").unwrap();
@@ -1086,7 +1094,7 @@ mod tests {
             name: Name::from_ascii("nas.lan.example.com").unwrap(),
             ttl: 60,
             rdata: RData::AAAA(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x10)),
-            overrides: BTreeMap::from([(ViewId::new("lan").unwrap(), None)]),
+            overrides: BTreeMap::from([(ViewId::new("lan").unwrap(), ViewOverride::NoAnswer)]),
         });
         let snap = PolicySnapshot::build(cfg, &[set("default")], &[]).unwrap();
         let name = Name::from_ascii("nas.lan.example.com").unwrap();

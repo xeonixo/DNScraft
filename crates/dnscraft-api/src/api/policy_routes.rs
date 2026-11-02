@@ -16,8 +16,8 @@ use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use dnscraft_policy::{
-    ClientId, DEFAULT_RECORD_TTL, ViewId, ViewRecordConfig, check_client_device,
-    check_client_label, format_rdata, parse_record_type, record_type_text,
+    ClientId, DEFAULT_RECORD_TTL, PUBLIC_OVERRIDE, ViewId, ViewOverride, ViewRecordConfig,
+    check_client_device, check_client_label, format_rdata, parse_record_type, record_type_text,
 };
 use dnscraft_proto::{Name, RData, RecordType};
 use serde::{Deserialize, Serialize};
@@ -556,9 +556,11 @@ fn build_record(body: RecordBody) -> Result<ViewRecordConfig, ControlApiError> {
         let view_id = ViewId::new(view).map_err(|_| invalid("invalid override view id"))?;
         // Empty string = suppress this type in the view (not inherit).
         let value = if text.is_empty() {
-            None
+            ViewOverride::NoAnswer
+        } else if text == PUBLIC_OVERRIDE {
+            ViewOverride::Public
         } else {
-            Some(parse_rdata(rtype, text)?)
+            ViewOverride::Data(parse_rdata(rtype, text)?)
         };
         overrides.insert(view_id, value);
     }
@@ -621,12 +623,7 @@ fn record_json(record: &ViewRecordConfig) -> Value {
     let overrides: BTreeMap<String, String> = record
         .overrides
         .iter()
-        .map(|(view, rdata)| {
-            (
-                view.to_string(),
-                rdata.as_ref().map_or_else(String::new, rdata_text),
-            )
-        })
+        .map(|(view, ov)| (view.to_string(), ov.to_text()))
         .collect();
     json!({
         "name": record.name.to_string(),

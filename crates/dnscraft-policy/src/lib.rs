@@ -32,9 +32,10 @@ mod util;
 
 pub use config::{
     ClientFlags, ClientIdEntry, ClientIdMeta, DEFAULT_LOCAL_NXDOMAIN_SUFFIXES, DEFAULT_RECORD_TTL,
-    DnsProtocol, MAX_CLIENT_DEVICE_CHARS, MAX_CLIENT_LABEL_CHARS, PolicyConfig, ProfileConfig,
-    RequestContext, SAFESEARCH_PROVIDERS, SCHEDULE_WEEK, SafeSearchConfig, ScheduleConfig,
-    ViewConfig, ViewRecordConfig, YoutubeMode, check_client_device, check_client_label,
+    DnsProtocol, MAX_CLIENT_DEVICE_CHARS, MAX_CLIENT_LABEL_CHARS, PUBLIC_OVERRIDE, PolicyConfig,
+    ProfileConfig, RequestContext, SAFESEARCH_PROVIDERS, SCHEDULE_WEEK, SafeSearchConfig,
+    ScheduleConfig, ViewConfig, ViewOverride, ViewRecordConfig, YoutubeMode, check_client_device,
+    check_client_label,
 };
 pub use decision::{
     AnswerOrigin, ChainHop, DecisionRecord, DecisionStep, DecisionTimings, FilterHit,

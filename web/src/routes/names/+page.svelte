@@ -240,12 +240,7 @@
 			),
 	);
 
-	const inheritPlaceholder = $derived(
-		publicLookup.kind === 'found' ||
-			(publicLookup.kind === 'absent' && formPublicContent.trim() !== '')
-			? m.names_overrides_inherit_public()
-			: m.names_overrides_inherit_standard(),
-	);
+	const inheritPlaceholder = $derived(m.names_overrides_inherit_public());
 
 	const overridesEmptyText = $derived(
 		publicLookup.kind === 'found' || formPublicContent.trim() !== ''
@@ -534,7 +529,7 @@
 				: formRdata.trim();
 		const required = !(
 			(publicEditable && formPublicContent.trim() === '' && publicBaseline.recordId) ||
-			Object.values(overridesFromRows(overrideRows)).some((value) => value !== '')
+			Object.values(overridesFromRows(overrideRows)).some(isOverrideData)
 		);
 		return validateRdata(
 			data,
@@ -549,18 +544,22 @@
 		return validateRdata(data, false);
 	});
 
+	const PUBLIC_OVERRIDE = '@public';
+	const isOverrideData = (value: string): boolean => value !== '' && value !== PUBLIC_OVERRIDE;
+
 	function rowsFromOverrides(map: Record<string, string>): OverrideRow[] {
 		return Object.entries(map).map(([view, value]) => ({
 			key: nextOverrideKey++,
 			view,
-			value,
+			value: value === PUBLIC_OVERRIDE ? '' : value,
 			noAnswer: value === '',
 		}));
 	}
 
 	/**
-	 * Missing key = inherit. Empty string = no answer (NODATA). Non-empty = replacement.
-	 * Rows without a view, or with neither value nor noAnswer, are dropped (inherit).
+	 * Missing key = inherit the answer above. Empty string = no answer (NODATA).
+	 * Non-empty = replacement. A row with a view but neither value nor noAnswer
+	 * resolves publicly ("wie öffentlich"); rows without a view are dropped.
 	 */
 	function overridesFromRows(list: OverrideRow[]): Record<string, string> {
 		const map: Record<string, string> = {};
@@ -571,9 +570,7 @@
 				map[view] = '';
 				continue;
 			}
-			const value = row.value.trim();
-			if (value === '') continue;
-			map[view] = value;
+			map[view] = row.value.trim() || PUBLIC_OVERRIDE;
 		}
 		return map;
 	}
@@ -727,7 +724,7 @@
 		let rdata = publicEditable && publicContent !== '' ? publicContent : formRdata.trim();
 		if (rdata === '' && editing) rdata = editing.rdata;
 		// Local-only record without a default answer: the backend needs a base value, so reuse an override.
-		if (rdata === '') rdata = Object.values(overrides).find((value) => value !== '') ?? '';
+		if (rdata === '') rdata = Object.values(overrides).find(isOverrideData) ?? '';
 		if (rdata === '' || validateRdata(rdata, true)) return;
 
 		busy = true;

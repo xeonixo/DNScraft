@@ -642,7 +642,7 @@
 	"names_standard_aligned": "Wird mit öffentlich gleichgezogen.",
 	"names_section_overrides": "Abweichungen",
 	"names_field_overrides": "Abweichungen",
-	"names_overrides_hint": "Nur Netzbereiche mit anderem Wert oder ohne Antwort. Fehlt eine Zeile, gilt die Antwort oben.",
+	"names_overrides_hint": "Nur Netzbereiche mit anderem Wert oder ohne Antwort. Fehlt eine Zeile, gilt die Antwort oben. Eine Zeile ohne Wert löst den Namen live öffentlich auf.",
 	"names_overrides_view": "Netzbereich",
 	"names_overrides_value": "Wert",
 	"names_overrides_no_answer": "Keine Antwort",

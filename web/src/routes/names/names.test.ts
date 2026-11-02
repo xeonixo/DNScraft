@@ -178,7 +178,7 @@ describe('names sheet Antwort then Abweichungen', () => {
 		expect(within(dialog).getByText(m.names_section_overrides())).toBeInTheDocument();
 		expect(within(dialog).getByLabelText(m.names_overrides_value())).toHaveAttribute(
 			'placeholder',
-			m.names_overrides_inherit_standard(),
+			m.names_overrides_inherit_public(),
 		);
 	});
 

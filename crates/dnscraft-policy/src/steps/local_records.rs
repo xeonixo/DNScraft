@@ -110,7 +110,12 @@ fn answer_from_view(view: &SnapshotView, query: &Query) -> Option<Outcome> {
 }
 
 /// Exact owner, else longest `*.<parent>` match (RFC 4592-style walk-up).
+///
+/// A name the view marks public is never answered here, wildcards included.
 fn lookup_rrsets<'a>(view: &'a SnapshotView, name: &Name) -> Option<(&'a ViewRrSets, Name)> {
+    if view.public.contains(name) {
+        return None;
+    }
     if let Some(rrsets) = view.records.get(name) {
         return Some((rrsets, name.clone()));
     }
@@ -120,6 +125,9 @@ fn lookup_rrsets<'a>(view: &'a SnapshotView, name: &Name) -> Option<(&'a ViewRrS
             return None;
         }
         let wild = wildcard_name(&parent)?;
+        if view.public.contains(&wild) {
+            return None;
+        }
         if let Some(rrsets) = view.records.get(&wild) {
             return Some((rrsets, name.clone()));
         }
@@ -228,6 +236,7 @@ mod unit {
             profile_idx: 0,
             nodes: Arc::from(Vec::new()),
             records: map,
+            public: Default::default(),
         }
     }
 
@@ -386,5 +395,23 @@ mod unit {
         };
         assert_eq!(recs[0].name, qname);
         assert_eq!(recs[0].rdata, RData::A(Ipv4Addr::new(192, 0, 2, 9)));
+    }
+
+    #[test]
+    fn local_records_public_name_skips_wildcard() {
+        let wild = Name::from_ascii("*.example.com").unwrap();
+        let host = Name::from_ascii("v4.example.com").unwrap();
+        let mut view = view_with(vec![(
+            wild,
+            vec![rec("*.example.com", RData::A(Ipv4Addr::new(10, 0, 0, 1)))],
+        )]);
+        let query = |name: &Name| Query {
+            name: name.clone(),
+            qtype: RecordType::A,
+            qclass: Class::IN,
+        };
+        assert!(answer_from_view(&view, &query(&host)).is_some());
+        view.public.insert(host.clone());
+        assert!(answer_from_view(&view, &query(&host)).is_none());
     }
 }

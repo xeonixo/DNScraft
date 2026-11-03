@@ -440,7 +440,11 @@
 			? m.cluster_connection_connected()
 			: m.cluster_connection_offline()}
 	{@const transportLabel =
-		detail.transport === 'mtls' ? m.cluster_transport_mtls() : m.cluster_value_unknown()}
+		detail.transport === 'quic'
+			? m.cluster_transport_quic()
+			: detail.transport === 'h2' || detail.transport === 'mtls'
+				? m.cluster_transport_h2()
+				: m.cluster_value_unknown()}
 	<Sheet open={true} title={m.cluster_detail_title()} onclose={() => (detail = null)}>
 		<GroupedList>
 			<GroupedRow

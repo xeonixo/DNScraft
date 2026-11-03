@@ -171,7 +171,7 @@ pub(crate) async fn list_nodes(
             "local": true,
             "connected": true,
             "remote_addr": Value::Null,
-            "transport": Value::Null,
+            "transport": status.active_transport.clone(),
             "display_name": meta_of(&status.node_id).0,
             "hostname": meta_of(&status.node_id).1,
         }));
@@ -199,8 +199,11 @@ pub(crate) async fn list_nodes(
             "local": false,
             "connected": is_connected,
             "remote_addr": node.remote_addr,
-            // Cluster peer links are always mTLS over HTTP/2.
-            "transport": "mtls",
+            // Prefer-QUIC peers advertise `transport_quic` / `transport_h2` in Hello.
+            "transport": state
+                .cluster_broadcast()
+                .and_then(|broadcast| broadcast.stream_transport(&node.node_id))
+                .unwrap_or(if is_connected { "mtls" } else { "none" }),
             "display_name": meta_of(&node.node_id).0,
             "hostname": meta_of(&node.node_id).1,
         }));

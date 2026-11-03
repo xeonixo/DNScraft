@@ -1300,6 +1300,8 @@
 	"cluster_connection_offline": "Offline",
 	"cluster_connection_local": "This node",
 	"cluster_transport_mtls": "mTLS · HTTP/2",
+	"cluster_transport_quic": "mTLS · QUIC",
+	"cluster_transport_h2": "mTLS · HTTP/2",
 	"cluster_value_unknown": "—",
 	"cluster_revoke_title": "Revoke node",
 	"cluster_revoke_body": "Revoke node {id} from the cluster? The node loses its configuration and its access to the cluster and must join again to work.",

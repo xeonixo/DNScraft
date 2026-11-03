@@ -122,6 +122,12 @@ pub struct Hello {
     pub capabilities: Vec<String>,
 }
 
+/// Capability: the live downstream stream is carried over QUIC/HTTP/3.
+pub const CAP_TRANSPORT_QUIC: &str = "transport_quic";
+
+/// Capability: the live downstream stream is carried over TCP/HTTP/2.
+pub const CAP_TRANSPORT_H2: &str = "transport_h2";
+
 /// Capability: the node accepts [`CloudflareTokenPush`] records.
 pub const CAP_CLOUDFLARE_TOKEN: &str = "cloudflare_token";
 
@@ -543,6 +549,30 @@ impl ConfigSync {
     /// Lag for one node, if it is connected.
     pub fn node_lag(&self, node_id: &str) -> Option<NodeLag> {
         self.lag().into_iter().find(|lag| lag.node_id == node_id)
+    }
+
+    /// Stream transport a connected node advertised in its Hello capabilities.
+    ///
+    /// Returns `"quic"` / `"h2"` when the peer tagged the stream; `None` when
+    /// the node is offline or an older peer omitted the tag.
+    pub fn stream_transport(&self, node_id: &str) -> Option<&'static str> {
+        let state = self.lock();
+        let node = state.nodes.get(node_id)?;
+        if node
+            .capabilities
+            .iter()
+            .any(|cap| cap == CAP_TRANSPORT_QUIC)
+        {
+            Some("quic")
+        } else if node
+            .capabilities
+            .iter()
+            .any(|cap| cap == CAP_TRANSPORT_H2)
+        {
+            Some("h2")
+        } else {
+            None
+        }
     }
 
     /// Registers a newly connected stream and reconciles its version.

@@ -1300,6 +1300,8 @@
 	"cluster_connection_offline": "Offline",
 	"cluster_connection_local": "Dieser Knoten",
 	"cluster_transport_mtls": "mTLS · HTTP/2",
+	"cluster_transport_quic": "mTLS · QUIC",
+	"cluster_transport_h2": "mTLS · HTTP/2",
 	"cluster_value_unknown": "—",
 	"cluster_revoke_title": "Knoten widerrufen",
 	"cluster_revoke_body": "Knoten {id} im Cluster widerrufen? Der Knoten verliert seine Konfiguration und seinen Zugriff auf den Cluster und muss neu beitreten, um wieder zu funktionieren.",

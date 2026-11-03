@@ -284,7 +284,8 @@ impl ClusterClient {
         }
 
         if self.transport_mode.try_quic() {
-            let hello = self.stream_hello(last_applied_version, last_acked_log_seq);
+            let hello =
+                self.stream_hello(last_applied_version, last_acked_log_seq, ActiveTransport::Quic);
             let body = serde_json::to_vec(&hello).map_err(|error| ClusterError::Internal {
                 message: format!("encode stream hello: {error}"),
             })?;
@@ -336,6 +337,7 @@ impl ClusterClient {
         &self,
         last_applied_version: Option<i64>,
         last_acked_log_seq: Option<u64>,
+        transport: ActiveTransport,
     ) -> StreamRecord {
         StreamRecord::Hello(Hello {
             protocol: PROTOCOL_VERSION,
@@ -347,6 +349,15 @@ impl ClusterClient {
                     crate::sync::CAP_CLOUDFLARE_TOKEN.to_owned(),
                     crate::rpc::CAP_REVERSE_RPC.to_owned(),
                 ];
+                match transport {
+                    ActiveTransport::Quic => {
+                        caps.push(crate::sync::CAP_TRANSPORT_QUIC.to_owned());
+                    }
+                    ActiveTransport::H2 => {
+                        caps.push(crate::sync::CAP_TRANSPORT_H2.to_owned());
+                    }
+                    ActiveTransport::None => {}
+                }
                 if self.compression_enabled {
                     caps.push(crate::compress::CAP_COMPRESS_ZSTD.to_owned());
                 }
@@ -363,7 +374,8 @@ impl ClusterClient {
         last_applied_version: Option<i64>,
         last_acked_log_seq: Option<u64>,
     ) -> Result<ClusterStream, ClusterError> {
-        let hello = self.stream_hello(last_applied_version, last_acked_log_seq);
+        let hello =
+            self.stream_hello(last_applied_version, last_acked_log_seq, ActiveTransport::H2);
         let body = serde_json::to_vec(&hello).map_err(|error| ClusterError::Internal {
             message: format!("encode stream hello: {error}"),
         })?;

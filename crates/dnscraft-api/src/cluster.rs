@@ -1996,10 +1996,11 @@ async fn run_sub_node_loop(
             status.master_reachable = true;
             sync_transport_from_client(status, &client);
         });
+        let transport = client.active_transport();
         if std::mem::take(&mut lost_connection) {
-            tracing::info!("reconnected to the cluster master");
+            tracing::info!(%transport, "reconnected to the cluster master");
         } else {
-            tracing::info!("connected to the cluster master");
+            tracing::info!(%transport, "connected to the cluster master");
         }
 
         // Resume the query-log outbox from the master's cursor. A master

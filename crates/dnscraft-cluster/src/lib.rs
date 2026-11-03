@@ -71,6 +71,7 @@ pub use settings::{
 pub use store::{ClusterNode, ClusterStore, MintedJoinToken};
 pub use sync::{
     AuthSnapshotApplier, AuthSnapshotPush, CAP_CLOUDFLARE_TOKEN, CAP_TLS_CERTIFICATE,
+    CAP_TRANSPORT_H2, CAP_TRANSPORT_QUIC,
     CertInstaller, ClientsDirectoryPush, CloudflareTokenPush, ConfigAck, ConfigApplier, ConfigPush,
     ConfigSync, Hello, NodeLag, SecretPush, StreamError, StreamRecord, TlsCertificatePush,
     TlsRenewed, canonical_snapshot_bytes, snapshot_digest,

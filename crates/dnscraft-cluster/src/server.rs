@@ -293,6 +293,11 @@ impl ClusterBroadcast {
             .collect()
     }
 
+    /// Live stream transport (`quic` / `h2`) a connected node advertised, if any.
+    pub fn stream_transport(&self, node_id: &str) -> Option<&'static str> {
+        self.config_sync.stream_transport(node_id)
+    }
+
     /// Invokes a reverse RPC on a connected protocol-v2 node and waits for the reply.
     pub async fn invoke_rpc(
         &self,

@@ -13,7 +13,7 @@ permissions:
   packages: write # ghcr.io
 
 env:
-  IMAGE: ghcr.io/${{ github.repository }}
+  IMAGE: ghcr.io/xeonixo/dnscraft
 
 jobs:
   build:

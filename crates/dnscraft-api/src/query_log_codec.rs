@@ -374,6 +374,10 @@ pub(crate) fn hydrate_wire(
             record.entry(key).or_insert(value);
         }
     }
+    // Rows without detail drop these keys; the wire contract (and the UI) expects them present.
+    record.entry("steps").or_insert_with(|| json!([]));
+    record.entry("selection").or_insert_with(|| json!({ "cause": "default" }));
+    record.entry("filter").or_insert(Json::Null);
     Json::Object(record)
 }
 
@@ -532,5 +536,31 @@ mod tests {
         assert_eq!(wire["rcode"], "NXDOMAIN");
         assert_eq!(wire["steps"][0]["stage"], "filter_qname");
         assert_eq!(wire["filter"]["block_mode"], "nxdomain");
+    }
+
+    #[test]
+    fn hydrate_fills_dropped_detail_keys_for_detail_less_rows() {
+        let cols = WireColumns {
+            id: "id2",
+            node_id: "dns1",
+            listener_id: "lan",
+            protocol: ProtocolCode::Udp53,
+            source_ip: "192.0.2.1",
+            source_ip_truncated: false,
+            client_id: None,
+            device_id: None,
+            query_name: "ok.example",
+            query_type: i64::from(RecordType::A.value()),
+            query_class: i64::from(Class::IN.value()),
+            view_id: "default",
+            profile_id: "default",
+            status: StatusCode::Allowed,
+            answer_source: AnswerSourceCode::Resolver,
+            rcode: 0,
+        };
+        let wire = hydrate_wire(json!({"answer_size": 10}), None, &cols);
+        assert_eq!(wire["steps"], json!([]));
+        assert_eq!(wire["selection"]["cause"], "default");
+        assert!(wire["filter"].is_null());
     }
 }

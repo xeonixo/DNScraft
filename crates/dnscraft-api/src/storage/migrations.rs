@@ -299,6 +299,9 @@ pub(crate) const MIGRATIONS: &[&str] = &[
         detail  TEXT NOT NULL,
         PRIMARY KEY (node_id, id)
     );",
+    // v12: v11 made the primary key (node_id, id), so lookups by `id` alone
+    // (live-stream hydration, record detail) lost their index and scanned the table.
+    "CREATE INDEX IF NOT EXISTS query_log_id_idx ON query_log(id);",
 ];
 
 /// Applies every migration newer than the recorded version, then records it.
@@ -334,7 +337,7 @@ mod tests {
     fn device_id_migration_adds_column_and_index() {
         let mut conn = Connection::open_in_memory().unwrap();
         migrate(&mut conn).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 11);
+        assert_eq!(schema_version(&conn).unwrap(), 12);
 
         let columns: Vec<String> = conn
             .prepare("PRAGMA table_info(query_log)")
@@ -371,7 +374,7 @@ mod tests {
     fn audit_log_rejects_update_and_delete_after_v2() {
         let mut conn = Connection::open_in_memory().unwrap();
         migrate(&mut conn).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 11);
+        assert_eq!(schema_version(&conn).unwrap(), 12);
 
         conn.execute(
             "INSERT INTO audit_log (

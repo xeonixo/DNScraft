@@ -206,6 +206,99 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     // rows keep NULL and fall back to client id / name / address when grouped.
     "ALTER TABLE query_log ADD COLUMN device_id TEXT;
      CREATE INDEX IF NOT EXISTS query_log_device_idx ON query_log(device_id);",
+    // v11: compact on-disk query-log encoding.
+    // - Closed enums (status/protocol/answer_source) and DNS type/class/rcode
+    //   become INTEGER columns (legacy TEXT cells still readable via affinity).
+    // - `cached` flags resolve-from-cache hits without keeping `steps` on every row.
+    // - `query_log_detail` holds steps/selection/timings for block/error rows only.
+    // Existing `record` JSON is left as-is; new writes store a slim blob and the
+    // reader hydrates wire fields from columns (+ detail on demand).
+    "CREATE TABLE query_log_v11 (
+        id         TEXT NOT NULL,
+        time       INTEGER NOT NULL,
+        node_id    TEXT NOT NULL,
+        source_ip  TEXT NOT NULL,
+        query_name TEXT NOT NULL,
+        listener_id TEXT NOT NULL DEFAULT '',
+        protocol INTEGER NOT NULL DEFAULT 0,
+        source_ip_truncated INTEGER NOT NULL DEFAULT 0,
+        client_id TEXT,
+        client_name TEXT,
+        query_type INTEGER NOT NULL DEFAULT 0,
+        query_class INTEGER NOT NULL DEFAULT 1,
+        view_id TEXT NOT NULL DEFAULT '',
+        profile_id TEXT NOT NULL DEFAULT '',
+        status INTEGER NOT NULL DEFAULT 0,
+        answer_source INTEGER NOT NULL DEFAULT 0,
+        rcode INTEGER NOT NULL DEFAULT 0,
+        record TEXT NOT NULL DEFAULT '{}',
+        seq INTEGER,
+        device_id TEXT,
+        cached INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (node_id, id)
+    );
+    INSERT INTO query_log_v11 (
+        id, time, node_id, source_ip, query_name, listener_id, protocol,
+        source_ip_truncated, client_id, client_name, query_type, query_class,
+        view_id, profile_id, status, answer_source, rcode, record, seq,
+        device_id, cached
+    )
+    SELECT
+        id, time, node_id, source_ip, query_name, listener_id,
+        CASE protocol
+            WHEN 'udp53' THEN 1 WHEN 'tcp53' THEN 2 WHEN 'dot' THEN 3
+            WHEN 'doh' THEN 4 WHEN 'doq' THEN 5
+            ELSE COALESCE(protocol, 0)
+        END,
+        source_ip_truncated, client_id, client_name,
+        CASE query_type
+            WHEN 'A' THEN 1 WHEN 'NS' THEN 2 WHEN 'CNAME' THEN 5 WHEN 'SOA' THEN 6
+            WHEN 'PTR' THEN 12 WHEN 'MX' THEN 15 WHEN 'TXT' THEN 16 WHEN 'AAAA' THEN 28
+            WHEN 'SRV' THEN 33 WHEN 'DNAME' THEN 39 WHEN 'OPT' THEN 41 WHEN 'DS' THEN 43
+            WHEN 'RRSIG' THEN 46 WHEN 'NSEC' THEN 47 WHEN 'DNSKEY' THEN 48
+            WHEN 'NSEC3' THEN 50 WHEN 'NSEC3PARAM' THEN 51 WHEN 'SVCB' THEN 64
+            WHEN 'HTTPS' THEN 65 WHEN 'ANY' THEN 255 WHEN 'CAA' THEN 257
+            ELSE COALESCE(query_type, 0)
+        END,
+        CASE query_class
+            WHEN 'IN' THEN 1 WHEN 'CH' THEN 3 WHEN 'NONE' THEN 254 WHEN 'ANY' THEN 255
+            ELSE COALESCE(query_class, 1)
+        END,
+        view_id, profile_id,
+        CASE status
+            WHEN 'allowed' THEN 1 WHEN 'blocked' THEN 2 WHEN 'servfail' THEN 3
+            WHEN 'dnssec_bogus' THEN 4
+            ELSE COALESCE(status, 0)
+        END,
+        CASE answer_source
+            WHEN 'resolver' THEN 1 WHEN 'synth_any' THEN 2 WHEN 'resolve_error' THEN 3
+            WHEN 'local_view' THEN 4 WHEN 'local_client' THEN 5 WHEN 'bypass' THEN 6
+            WHEN 'filter_block' THEN 7 WHEN 'listener_ddr' THEN 8
+            ELSE COALESCE(answer_source, 0)
+        END,
+        CASE rcode
+            WHEN 'NOERROR' THEN 0 WHEN 'FORMERR' THEN 1 WHEN 'SERVFAIL' THEN 2
+            WHEN 'NXDOMAIN' THEN 3 WHEN 'NOTIMP' THEN 4 WHEN 'REFUSED' THEN 5
+            WHEN 'YXDOMAIN' THEN 6 WHEN 'YXRRSET' THEN 7 WHEN 'NXRRSET' THEN 8
+            WHEN 'NOTAUTH' THEN 9 WHEN 'NOTZONE' THEN 10
+            ELSE COALESCE(rcode, 0)
+        END,
+        record, seq, device_id, 0
+    FROM query_log;
+    DROP TABLE query_log;
+    ALTER TABLE query_log_v11 RENAME TO query_log;
+    CREATE INDEX IF NOT EXISTS query_log_time_idx ON query_log(time);
+    CREATE INDEX IF NOT EXISTS query_log_client_idx ON query_log(client_id);
+    CREATE INDEX IF NOT EXISTS query_log_status_idx ON query_log(status);
+    CREATE UNIQUE INDEX IF NOT EXISTS query_log_node_seq_idx ON query_log(node_id, seq);
+    CREATE UNIQUE INDEX IF NOT EXISTS query_log_node_id_idx ON query_log(node_id, id);
+    CREATE INDEX IF NOT EXISTS query_log_device_idx ON query_log(device_id);
+    CREATE TABLE IF NOT EXISTS query_log_detail (
+        node_id TEXT NOT NULL,
+        id      TEXT NOT NULL,
+        detail  TEXT NOT NULL,
+        PRIMARY KEY (node_id, id)
+    );",
 ];
 
 /// Applies every migration newer than the recorded version, then records it.
@@ -241,7 +334,7 @@ mod tests {
     fn device_id_migration_adds_column_and_index() {
         let mut conn = Connection::open_in_memory().unwrap();
         migrate(&mut conn).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 10);
+        assert_eq!(schema_version(&conn).unwrap(), 11);
 
         let columns: Vec<String> = conn
             .prepare("PRAGMA table_info(query_log)")
@@ -251,6 +344,7 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert!(columns.iter().any(|name| name == "device_id"));
+        assert!(columns.iter().any(|name| name == "cached"));
 
         let index: i64 = conn
             .query_row(
@@ -261,13 +355,23 @@ mod tests {
             )
             .unwrap();
         assert_eq!(index, 1);
+
+        let detail: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'query_log_detail'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(detail, 1);
     }
 
     #[test]
     fn audit_log_rejects_update_and_delete_after_v2() {
         let mut conn = Connection::open_in_memory().unwrap();
         migrate(&mut conn).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 10);
+        assert_eq!(schema_version(&conn).unwrap(), 11);
 
         conn.execute(
             "INSERT INTO audit_log (

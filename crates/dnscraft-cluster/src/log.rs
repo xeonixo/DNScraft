@@ -159,6 +159,13 @@ pub trait LogOutbox: Send + Sync {
     async fn prune(&self, _cutoff: SystemTime) -> Result<u64, ClusterError> {
         Ok(0)
     }
+
+    /// Moves the local outbox past a master cursor that is already ahead of
+    /// this node's sequence allocator (for example after a `node_id` rename
+    /// reused the mTLS identity with a fresh counter). Default is a no-op.
+    async fn align_with_master(&self, _master_highest: u64) -> Result<(), ClusterError> {
+        Ok(())
+    }
 }
 
 /// Master ingest hook.
@@ -348,7 +355,12 @@ impl LogStreamer {
     /// the loss is reported ([`Backfill::gap`]) and sending resumes from the
     /// oldest buffered row. The returned [`LogGap`](ClusterError::LogGap)
     /// count is bounded by `buffer_retention`.
+    ///
+    /// When the master's cursor is ahead of the local allocator (stale seq
+    /// space), [`LogOutbox::align_with_master`] runs first so new rows can
+    /// ship instead of sitting forever below the master's ack.
     pub async fn backfill(&self, master_highest: u64) -> Result<Backfill, ClusterError> {
+        self.outbox.align_with_master(master_highest).await?;
         let local = self.outbox.next_unacked_seq().await?;
         let want = master_highest.saturating_add(1);
         let from_seq = local.max(want);

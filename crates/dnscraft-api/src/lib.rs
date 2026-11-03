@@ -34,6 +34,7 @@ mod oidc_runtime;
 mod oidc_secrets;
 mod protected_list;
 mod query_log;
+mod query_log_codec;
 mod server;
 mod stats;
 mod storage;
@@ -98,7 +99,10 @@ pub use stats::{
     StatsOverview, StatsScope, TOP_CLIENTS_MAX, TOP_DOMAINS_MAX, TopBy, TopClient, TopClients,
     TopDomain, TopDomains,
 };
-pub use storage::{AuditRecord, ConfigStore, Db};
+pub use storage::{
+    AuditRecord, CLUSTER_DB_FILE, CONFIG_DB_FILE, ConfigStore, DB_SUBDIR, Db, cluster_db_path,
+    config_db_path, database_dir, ensure_database_layout,
+};
 pub use system::run_backup_if_due;
 pub use system::{BannedSource, WebBans};
 pub use unifi_secrets::get_api_key;

@@ -32,14 +32,16 @@ Docker: see the [root README](../../README.md) and [`deploy/README.md`](../../de
 ## What starts
 
 1. Parse TOML + load env/`*_FILE` secrets (TLS PEMs, cluster join token, …).
-2. Open `data_dir` SQLite (`dnscraft.db`): seed from TOML when empty, then
+2. Open `data_dir/db` SQLite (`dnscraft.db`; legacy root-level files are
+   moved here on first boot): seed from TOML when empty, then
    `apply_stored_current` so a second boot restores the last API snapshot
-   without inventing a new version.
+   without inventing a new version. Mount or symlink `data_dir/db` to put
+   databases on another volume.
 3. Build engines (resolver, filtering, clients, tls, policy) and start listeners.
 4. Serve the control API (`/healthz`, `/readyz`, `/api/v1`, …).
 5. If `[control_api.mcp] enabled = true`, mount `/mcp/v1`.
 6. If `[cluster] role` is `master` or `sub_node`, start `ClusterRuntime`
-   (registry / offline queue in `cluster.db`).
+   (registry / offline queue in `data_dir/db/cluster.db`).
 
 Public DoH/DoT/DoQ listeners never expose the control plane; path isolation is
 enforced in `dnscraft-listeners` and regression-tested in `dnscraft-api`.

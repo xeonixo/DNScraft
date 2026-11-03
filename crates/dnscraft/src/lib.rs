@@ -13,7 +13,10 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dnscraft_api::{Audit, ClusterRuntime, ConfigService, ConfigStore, Db, QueryLog};
+use dnscraft_api::{
+    Audit, ClusterRuntime, ConfigService, ConfigStore, Db, QueryLog, config_db_path,
+    ensure_database_layout,
+};
 use dnscraft_cluster::{ClusterConfig, Role};
 use dnscraft_listeners::{
     ChannelSink, Clock, ListenerSet, ListenersConfig, ListenersStatus, QueryEventSink, SystemClock,
@@ -32,8 +35,6 @@ pub use config::{
 };
 pub use engine::{Engines, build_engine};
 
-/// SQLite file holding the config versions and the audit log (`data_dir`).
-const CONFIG_DB_FILE: &str = "dnscraft.db";
 /// Audit node id for a standalone (non-cluster) assembler.
 const CONFIG_NODE_ID: &str = "local";
 /// Bounded query-log channel capacity; a full channel drops events and counts
@@ -41,9 +42,6 @@ const CONFIG_NODE_ID: &str = "local";
 const QUERY_LOG_CHANNEL_CAPACITY: usize = 4096;
 /// Capacity of the opt-in stdout JSON-lines debug channel.
 const STDOUT_LOG_CHANNEL_CAPACITY: usize = 1024;
-/// Cluster registry and offline-write queue file under `data_dir` (same name
-/// the cluster runtime uses for the master registry).
-const CLUSTER_DB_FILE: &str = "cluster.db";
 
 /// Top-level startup/runtime error; every error maps to exit code 2.
 ///
@@ -282,7 +280,13 @@ pub async fn build_with_enrollment(
     // after that the stored snapshot is applied to the live engines below (D4).
     let snapshot = config_snapshot(&config, &listeners)?;
     let data_dir = engine::engine_data_dir(&config);
-    let db_path = data_dir.join(CONFIG_DB_FILE);
+    ensure_database_layout(&data_dir).map_err(|e| {
+        Error::startup(
+            "dnscraft.startup.store",
+            format!("database layout under {}: {e}", data_dir.display()),
+        )
+    })?;
+    let db_path = config_db_path(&data_dir);
     let db = Db::open(&db_path, Arc::new(dnscraft_api::SystemClock))
         .await
         .map_err(|e| Error::startup("dnscraft.startup.store", format!("config store: {e}")))?;

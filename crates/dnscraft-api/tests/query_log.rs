@@ -906,6 +906,72 @@ async fn query_log_outbox_cursors_are_per_node() {
 }
 
 #[tokio::test]
+async fn query_log_outbox_prune_ignores_foreign_node_seqs() {
+    let clock = Arc::new(ManualClock::new(base_time()));
+    let db = Db::open_in_memory(clock).await.unwrap();
+    // Leftover rows from a previous `local` id share the DB with the enrolled
+    // node; their high seqs must not widen the prune window.
+    let leftover = QueryLog::new(
+        db.clone(),
+        dnscraft_api::QueryLogConfig::default(),
+        "local",
+    );
+    let node = QueryLog::new(db, dnscraft_api::QueryLogConfig::default(), "waldo");
+
+    leftover
+        .insert_batch(vec![sample_event(at_secs(BASE_SECS - 2 * 86_400), 0)])
+        .await
+        .unwrap();
+    // Force a high allocator on `local` so its expired seq sits above waldo's.
+    for i in 1..5 {
+        leftover
+            .insert_batch(vec![sample_event(
+                at_secs(BASE_SECS - 2 * 86_400 + i as u64),
+                i,
+            )])
+            .await
+            .unwrap();
+    }
+    node.insert_batch(vec![sample_event(at_secs(BASE_SECS - 60), 10)])
+        .await
+        .unwrap();
+    assert_eq!(node.next_seq().await.unwrap(), 1);
+    let fresh = node.outbox_rows(1, 10).await.unwrap();
+    assert_eq!(fresh.len(), 1);
+
+    // Pruning expired `local` rows must not clear waldo's fresh outbox seq.
+    let cutoff_us = ((BASE_SECS - 86_400) * 1_000_000) as i64;
+    assert_eq!(node.prune_outbox_before(cutoff_us).await.unwrap(), 0);
+    assert_eq!(node.outbox_rows(1, 10).await.unwrap().len(), 1);
+    assert!(leftover.prune_outbox_before(cutoff_us).await.unwrap() >= 1);
+}
+
+#[tokio::test]
+async fn query_log_outbox_rebases_when_master_cursor_is_ahead() {
+    let (log, _clock) = harness(dnscraft_api::QueryLogConfig::default()).await;
+    log.insert_batch(vec![sample_event(at_secs(BASE_SECS - 1), 0)])
+        .await
+        .unwrap();
+    assert_eq!(log.next_seq().await.unwrap(), 1);
+
+    // Master already holds seqs past our allocator (rename / stale seq space).
+    assert!(log.rebase_outbox(100).await.unwrap());
+    assert_eq!(log.next_seq().await.unwrap(), 101);
+    assert!(log.outbox_rows(1, 10).await.unwrap().is_empty());
+
+    log.insert_batch(vec![sample_event(at_secs(BASE_SECS), 1)])
+        .await
+        .unwrap();
+    assert_eq!(log.next_seq().await.unwrap(), 101);
+    let rows = log.outbox_rows(101, 10).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0, 101);
+
+    // A second align with the same cursor is a no-op.
+    assert!(!log.rebase_outbox(100).await.unwrap());
+}
+
+#[tokio::test]
 async fn query_log_retention_deletes_rows_outside_the_configured_window() {
     let (log, clock) = harness(dnscraft_api::QueryLogConfig {
         retention_days: 1,

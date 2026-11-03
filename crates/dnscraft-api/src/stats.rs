@@ -38,6 +38,10 @@ use serde::Serialize;
 use serde_json::Value as Json;
 use tokio::sync::mpsc;
 
+use crate::query_log_codec::{
+    StatusCode, rcode_to_str, read_answer_source, read_protocol, read_rcode, read_status,
+};
+
 use crate::error::ControlApiError;
 use crate::query_log::{QueryLog, QueryLogFilter};
 use crate::storage::{Db, db_err};
@@ -359,11 +363,25 @@ impl QueryLog {
                     })
                     .map_err(db_err)?;
                 let since_us = if seeded { recent_us } else { 0 };
+                // Rollup tables keep string labels so older buckets stay comparable.
                 tx.execute(
                     "INSERT INTO stats_hourly (
                          hour, node_id, profile_id, protocol, answer_source, query_count
                      )
-                     SELECT time / 3600000000, node_id, profile_id, protocol, answer_source, COUNT(*)
+                     SELECT time / 3600000000, node_id, profile_id,
+                            CASE protocol
+                                WHEN 1 THEN 'udp53' WHEN 2 THEN 'tcp53' WHEN 3 THEN 'dot'
+                                WHEN 4 THEN 'doh' WHEN 5 THEN 'doq'
+                                ELSE CAST(protocol AS TEXT)
+                            END,
+                            CASE answer_source
+                                WHEN 1 THEN 'resolver' WHEN 2 THEN 'synth_any'
+                                WHEN 3 THEN 'resolve_error' WHEN 4 THEN 'local_view'
+                                WHEN 5 THEN 'local_client' WHEN 6 THEN 'bypass'
+                                WHEN 7 THEN 'filter_block' WHEN 8 THEN 'listener_ddr'
+                                ELSE CAST(answer_source AS TEXT)
+                            END,
+                            COUNT(*)
                      FROM query_log
                      WHERE time >= ?1
                      GROUP BY 1, 2, 3, 4, 5
@@ -376,7 +394,20 @@ impl QueryLog {
                     "INSERT INTO stats_daily (
                          day, node_id, profile_id, protocol, answer_source, query_count
                      )
-                     SELECT time / 86400000000, node_id, profile_id, protocol, answer_source, COUNT(*)
+                     SELECT time / 86400000000, node_id, profile_id,
+                            CASE protocol
+                                WHEN 1 THEN 'udp53' WHEN 2 THEN 'tcp53' WHEN 3 THEN 'dot'
+                                WHEN 4 THEN 'doh' WHEN 5 THEN 'doq'
+                                ELSE CAST(protocol AS TEXT)
+                            END,
+                            CASE answer_source
+                                WHEN 1 THEN 'resolver' WHEN 2 THEN 'synth_any'
+                                WHEN 3 THEN 'resolve_error' WHEN 4 THEN 'local_view'
+                                WHEN 5 THEN 'local_client' WHEN 6 THEN 'bypass'
+                                WHEN 7 THEN 'filter_block' WHEN 8 THEN 'listener_ddr'
+                                ELSE CAST(answer_source AS TEXT)
+                            END,
+                            COUNT(*)
                      FROM query_log
                      WHERE time >= ?1
                      GROUP BY 1, 2, 3, 4, 5
@@ -535,7 +566,7 @@ impl QueryLog {
                     "SELECT COALESCE(device_id, client_id, CASE WHEN client_name IS NULL THEN source_ip ELSE '' END) AS cid,
                             COALESCE(MAX(client_name), ''),
                             COUNT(*) AS queries,
-                            COALESCE(SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END), 0)
+                            COALESCE(SUM(CASE WHEN status = 2 THEN 1 ELSE 0 END), 0)
                                 AS blocked
                      FROM query_log
                      WHERE time >= ?1 AND time <= ?2
@@ -653,7 +684,7 @@ impl QueryLog {
                 let sql = format!(
                     "SELECT query_name,
                             COUNT(*) AS queries,
-                            COALESCE(SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END), 0)
+                            COALESCE(SUM(CASE WHEN status = 2 THEN 1 ELSE 0 END), 0)
                                 AS blocked
                      FROM query_log
                      WHERE time >= ?1 AND time <= ?2
@@ -688,8 +719,9 @@ impl QueryLog {
 
     /// Cache hit statistics for `[from_us, to_us]`.
     ///
-    /// Counts the `resolve` pipeline step stored in each record: `cache` is a
-    /// hit, everything else (`recursion`, `stale`) is a miss.
+    /// Uses the denormalised `cached` column (set when a resolve step came from
+    /// cache). Hits are `cached = 1`; misses are allowed rows that did not hit
+    /// cache — the same population the old `steps`-scan counted.
     pub async fn cache_stats(
         &self,
         from_us: Option<i64>,
@@ -717,15 +749,13 @@ impl QueryLog {
             .with_read_conn(move |conn| {
                 conn.query_row(
                     "SELECT
-                         COALESCE(SUM(CASE WHEN json_extract(step.value, '$.source') = 'cache'
-                                           THEN 1 ELSE 0 END), 0),
-                         COALESCE(SUM(CASE WHEN json_extract(step.value, '$.source') <> 'cache'
+                         COALESCE(SUM(CASE WHEN cached = 1 THEN 1 ELSE 0 END), 0),
+                         COALESCE(SUM(CASE WHEN cached = 0 AND status = 1
                                            THEN 1 ELSE 0 END), 0)
-                     FROM query_log AS q, json_each(q.record, '$.steps') AS step
-                     WHERE q.time >= ?1 AND q.time <= ?2
-                       AND (?3 IS NULL OR q.node_id = ?3)
-                       AND (?4 IS NULL OR q.profile_id = ?4)
-                       AND json_extract(step.value, '$.stage') = 'resolve'",
+                     FROM query_log
+                     WHERE time >= ?1 AND time <= ?2
+                       AND (?3 IS NULL OR node_id = ?3)
+                       AND (?4 IS NULL OR profile_id = ?4)",
                     params![from, to, scope.node_id, scope.profile_id],
                     |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
                 )
@@ -766,7 +796,7 @@ impl QueryLog {
                     .prepare(
                         "SELECT (time / ?5) * ?5,
                                 COUNT(*),
-                                COALESCE(SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END), 0)
+                                COALESCE(SUM(CASE WHEN status = 2 THEN 1 ELSE 0 END), 0)
                          FROM query_log
                          WHERE time >= ?1 AND time <= ?2
                            AND (?3 IS NULL OR node_id = ?3)
@@ -942,14 +972,12 @@ async fn raw_counts(
         let rows = stmt
             .query_map(params![from, to, scope.node_id, scope.profile_id], |row| {
                 Ok((
-                    [
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                        row.get::<_, String>(5)?,
-                    ],
+                    read_protocol(row.get_ref(0)?),
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    read_answer_source(row.get_ref(3)?),
+                    read_rcode(row.get_ref(4)?),
+                    read_status(row.get_ref(5)?),
                     row.get::<_, Option<String>>(6)?,
                     row.get::<_, i64>(7)?,
                 ))
@@ -969,12 +997,12 @@ async fn raw_counts(
             by_reason: BTreeMap::new(),
         };
         for row in rows {
-            let ([protocol, view, profile, answer_source, rcode, status], json, count) =
+            let (protocol, view, profile, answer_source, rcode, status, json, count) =
                 row.map_err(db_err)?;
             out.total += count;
-            match status.as_str() {
-                "allowed" => out.allowed += count,
-                "blocked" => out.blocked += count,
+            match status {
+                StatusCode::Allowed => out.allowed += count,
+                StatusCode::Blocked => out.blocked += count,
                 _ => {}
             }
             // `[dnssec, filter.list_id, filter.reason]`, each `null` when absent.
@@ -989,11 +1017,15 @@ async fn raw_counts(
                     .unwrap_or_default()
                     .to_owned()
             };
-            *out.by_protocol.entry(protocol).or_default() += count;
+            *out.by_protocol
+                .entry(protocol.as_str().to_owned())
+                .or_default() += count;
             *out.by_view.entry(view).or_default() += count;
             *out.by_profile.entry(profile).or_default() += count;
-            *out.by_answer_source.entry(answer_source).or_default() += count;
-            *out.by_rcode.entry(rcode).or_default() += count;
+            *out.by_answer_source
+                .entry(answer_source.as_str().to_owned())
+                .or_default() += count;
+            *out.by_rcode.entry(rcode_to_str(rcode)).or_default() += count;
             *out.dnssec.entry(text_at(0)).or_default() += count;
             for (map, key) in [
                 (&mut out.by_list, text_at(1)),
@@ -1636,7 +1668,7 @@ impl QueryLog {
             };
             let (total, blocked): (i64, i64) = conn
                 .query_row(
-                    "SELECT COUNT(*), COALESCE(SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END), 0)
+                    "SELECT COUNT(*), COALESCE(SUM(CASE WHEN status = 2 THEN 1 ELSE 0 END), 0)
                      FROM query_log WHERE query_name = ?1 AND time >= ?2",
                     params![name, from],
                     |row| Ok((row.get(0)?, row.get(1)?)),
@@ -1664,7 +1696,7 @@ impl QueryLog {
             let mut stmt = conn
                 .prepare(
                     "SELECT time / ?4 AS day, COUNT(*),
-                            COALESCE(SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END), 0)
+                            COALESCE(SUM(CASE WHEN status = 2 THEN 1 ELSE 0 END), 0)
                      FROM query_log WHERE query_name = ?1 AND time >= ?2
                      GROUP BY day ORDER BY day",
                 )
@@ -1691,7 +1723,7 @@ impl QueryLog {
                         Ok((
                             row.get::<_, String>(0)?,
                             row.get::<_, i64>(1)?,
-                            row.get::<_, String>(2)?,
+                            read_status(row.get_ref(2)?),
                             row.get::<_, String>(3)?,
                         ))
                     },
@@ -1706,7 +1738,7 @@ impl QueryLog {
                     serde_json::json!({
                         "id": id,
                         "time": format_micros(time),
-                        "status": status,
+                        "status": status.as_str(),
                         "rule_text": filter.get("rule_text").cloned().unwrap_or(Json::Null),
                         "source": filter.get("reason").cloned().unwrap_or(Json::Null),
                     })

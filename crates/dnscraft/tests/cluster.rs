@@ -175,7 +175,7 @@ fn sub_applied_version(api: u16, admin: &str) -> i64 {
 /// A token of `scope` created straight in the data directory's database.
 async fn token(data_dir: &Path, scope: Scope) -> String {
     let db = Db::open(
-        &data_dir.join("dnscraft.db"),
+        &dnscraft_api::config_db_path(data_dir),
         Arc::new(dnscraft_api::SystemClock),
     )
     .await

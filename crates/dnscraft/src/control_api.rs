@@ -12,8 +12,8 @@ use dnscraft_api::{
     AppState, Audit, AuthState, ClusterRuntime, ClusterRuntimeOptions, ClusterStore, ConfigService,
     ControlApiTls, Db, EngineStatusProvider, EngineTlsAdmin, ListenersStatusProvider,
     LocalAccountStore, OfflineWriteQueue, OidcRuntime, QueryLog, Readiness, ServiceCatalogProvider,
-    SessionStore, SystemClock, TlsStatusProvider, TokenStore, dispatch_alerts, mcp_backend_inner,
-    run_backup_if_due,
+    SessionStore, SystemClock, TlsStatusProvider, TokenStore, cluster_db_path, dispatch_alerts,
+    mcp_backend_inner, run_backup_if_due,
 };
 use dnscraft_cluster::{ClusterConfig, Role};
 use dnscraft_filtering::{FilterEngine, ServiceCatalog};
@@ -23,7 +23,7 @@ use dnscraft_tls::CertResolver;
 use tokio::task::JoinHandle;
 
 use crate::engine::{EngineDirectory, Engines};
-use crate::{CLUSTER_DB_FILE, Config, Enrollment, Error};
+use crate::{Config, Enrollment, Error};
 
 /// How long [`start`] waits after spawning `serve` to catch an immediate
 /// startup failure (invalid config, bind error, TLS setup).
@@ -446,7 +446,7 @@ async fn start_cluster(
 ) -> Result<(AppState, ClusterRuntime), Error> {
     if cluster.role == Role::SubNode && cluster.offline_writes.enabled {
         let store = ClusterStore::open(
-            &data_dir.join(CLUSTER_DB_FILE),
+            &cluster_db_path(data_dir),
             Arc::new(SystemClock),
             cluster.join.token_ttl,
         )

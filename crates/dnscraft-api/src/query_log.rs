@@ -8,10 +8,11 @@
 //! [`QueryLog::flush_ready`] in tests) drains the channel and batch-inserts
 //! into SQLite.
 //!
-//! Records are stored as one JSON document per row plus denormalised columns
-//! for filtering and ordering. The document contains the full
-//! [`dnscraft_policy::DecisionRecord`] (pipeline steps, filter hit, timings),
-//! which backs the "why blocked?" endpoint.
+//! On disk, closed enums and DNS type/class/rcode are integers; the JSON blob
+//! is slim (no column duplicates). Pipeline `steps` / `selection`
+//! for block and error rows live in `query_log_detail` and are merged only for
+//! `GET /query-log/{id}` (and cluster outbox shipping). The public wire shape
+//! stays stringly-typed — see [`crate::query_log_codec`].
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
@@ -39,7 +40,68 @@ use tokio::sync::{broadcast, mpsc};
 
 use crate::config::{IpTruncate, QueryLogConfig};
 use crate::error::ControlApiError;
+use crate::query_log_codec::{
+    self, AnswerSourceCode, ProtocolCode, StatusCode, WireColumns, hydrate_wire, parse_query_type,
+    read_answer_source, read_protocol, read_query_class, read_query_type, read_rcode, read_status,
+    split_record,
+};
 use crate::storage::{Db, db_err, kv_get, kv_set};
+
+/// Columns selected when hydrating a stored row into the wire document.
+const HYDRATE_COLS: &str = "id, node_id, listener_id, protocol, source_ip, source_ip_truncated,
+    client_id, device_id, query_name, query_type, query_class, view_id, profile_id,
+    status, answer_source, rcode, record";
+
+/// Maps one `HYDRATE_COLS` (+ optional detail) row into the public wire JSON.
+fn hydrate_from_row(
+    row: &rusqlite::Row<'_>,
+    detail: Option<Json>,
+) -> rusqlite::Result<Result<Json, ControlApiError>> {
+    let id: String = row.get(0)?;
+    let node_id: String = row.get(1)?;
+    let listener_id: String = row.get(2)?;
+    let protocol = read_protocol(row.get_ref(3)?);
+    let source_ip: String = row.get(4)?;
+    let source_ip_truncated: i64 = row.get(5)?;
+    let client_id: Option<String> = row.get(6)?;
+    let device_id: Option<String> = row.get(7)?;
+    let query_name: String = row.get(8)?;
+    let query_type = read_query_type(row.get_ref(9)?);
+    let query_class = read_query_class(row.get_ref(10)?);
+    let view_id: String = row.get(11)?;
+    let profile_id: String = row.get(12)?;
+    let status = read_status(row.get_ref(13)?);
+    let answer_source = read_answer_source(row.get_ref(14)?);
+    let rcode = read_rcode(row.get_ref(15)?);
+    let raw: String = row.get(16)?;
+    let slim: Json = match serde_json::from_str(&raw) {
+        Ok(value) => value,
+        Err(_) => {
+            return Ok(Err(ControlApiError::QueryLogRead {
+                message: "stored query-log record is not valid JSON".to_owned(),
+            }));
+        }
+    };
+    let cols = WireColumns {
+        id: &id,
+        node_id: &node_id,
+        listener_id: &listener_id,
+        protocol,
+        source_ip: &source_ip,
+        source_ip_truncated: source_ip_truncated != 0,
+        client_id: client_id.as_deref(),
+        device_id: device_id.as_deref(),
+        query_name: &query_name,
+        query_type,
+        query_class,
+        view_id: &view_id,
+        profile_id: &profile_id,
+        status,
+        answer_source,
+        rcode,
+    };
+    Ok(Ok(hydrate_wire(slim, detail, &cols)))
+}
 
 /// Largest batch drained from the channel before one SQLite transaction.
 const BATCH_MAX: usize = 1024;
@@ -342,7 +404,7 @@ impl QueryLog {
             .with_read_conn(move |conn| {
                 let placeholders = vec!["?"; ids.len()].join(",");
                 let sql = format!(
-                    "SELECT record, status, node_id FROM query_log
+                    "SELECT {HYDRATE_COLS} FROM query_log
                      WHERE id IN ({placeholders}){clause}
                      ORDER BY time ASC, rowid ASC"
                 );
@@ -350,22 +412,14 @@ impl QueryLog {
                 values.extend(clause_values);
                 let mut stmt = conn.prepare(&sql).map_err(db_err)?;
                 let rows = stmt
-                    .query_map(params_from_iter(values), |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                        ))
-                    })
+                    .query_map(params_from_iter(values), |row| hydrate_from_row(row, None))
                     .map_err(db_err)?;
                 rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
             })
             .await?;
         fetched
             .into_iter()
-            .map(|(raw, status, node_id)| {
-                hydrate_record(raw, status, node_id).map(|record| record.to_string())
-            })
+            .map(|result| result.map(|record| record.to_string()))
             .collect()
     }
 
@@ -504,6 +558,17 @@ impl QueryLog {
                 let tx = conn.transaction().map_err(db_err)?;
                 // Retention is an indexed range delete; running it with each batch
                 // keeps the window bounded without an extra timer task.
+                tx.execute(
+                    "DELETE FROM query_log_detail
+                     WHERE EXISTS (
+                         SELECT 1 FROM query_log q
+                         WHERE q.node_id = query_log_detail.node_id
+                           AND q.id = query_log_detail.id
+                           AND q.time < ?1
+                     )",
+                    params![cutoff],
+                )
+                .map_err(db_err)?;
                 tx.execute("DELETE FROM query_log WHERE time < ?1", params![cutoff])
                     .map_err(db_err)?;
                 // The per-node `seq` is allocated in this same transaction: a
@@ -518,11 +583,17 @@ impl QueryLog {
                              id, time, node_id, source_ip, query_name, listener_id,
                              protocol, source_ip_truncated, client_id, client_name,
                              query_type, query_class, view_id, profile_id, status,
-                             answer_source, rcode, record, seq, device_id
+                             answer_source, rcode, record, seq, device_id, cached
                          ) VALUES (
                              ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20
+                             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21
                          )",
+                        )
+                        .map_err(db_err)?;
+                    let mut detail_stmt = tx
+                        .prepare(
+                            "INSERT INTO query_log_detail (node_id, id, detail)
+                             VALUES (?1, ?2, ?3)",
                         )
                         .map_err(db_err)?;
                     for (offset, row) in rows.iter().enumerate() {
@@ -549,8 +620,14 @@ impl QueryLog {
                             row.record,
                             seq,
                             row.device_id,
+                            row.cached,
                         ])
                         .map_err(db_err)?;
+                        if let Some(detail) = &row.detail {
+                            detail_stmt
+                                .execute(params![row.node_id, row.id, detail])
+                                .map_err(db_err)?;
+                        }
                     }
                 }
                 if !rows.is_empty() {
@@ -582,6 +659,17 @@ impl QueryLog {
             .saturating_sub(window);
         self.db
             .with_conn(move |conn| {
+                conn.execute(
+                    "DELETE FROM query_log_detail
+                     WHERE EXISTS (
+                         SELECT 1 FROM query_log q
+                         WHERE q.node_id = query_log_detail.node_id
+                           AND q.id = query_log_detail.id
+                           AND q.time < ?1
+                     )",
+                    params![cutoff],
+                )
+                .map_err(db_err)?;
                 conn.execute("DELETE FROM query_log WHERE time < ?1", params![cutoff])
                     .map_err(db_err)
             })
@@ -608,7 +696,7 @@ impl QueryLog {
                 .map_err(read_error)?
         };
 
-        let mut sql = String::from("SELECT record, status, node_id FROM query_log WHERE 1 = 1");
+        let mut sql = format!("SELECT {HYDRATE_COLS} FROM query_log WHERE 1 = 1");
         sql.push_str(&conditions);
         let column = match filter.order_by {
             OrderBy::Time => "time",
@@ -633,24 +721,17 @@ impl QueryLog {
             .with_read_conn(move |conn| {
                 let mut stmt = conn.prepare(&sql).map_err(db_err)?;
                 let rows = stmt
-                    .query_map(params_from_iter(values), |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                        ))
-                    })
+                    .query_map(params_from_iter(values), |row| hydrate_from_row(row, None))
                     .map_err(db_err)?;
-                rows.collect::<Result<Vec<(String, String, String)>, _>>()
-                    .map_err(db_err)
+                rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
             })
             .await
             .map_err(read_error)?;
 
         let has_more = fetched.len() > limit as usize;
         let mut records = Vec::with_capacity(fetched.len().min(limit as usize));
-        for (raw, status, node_id) in fetched.into_iter().take(limit as usize) {
-            records.push(hydrate_record(raw, status, node_id)?);
+        for result in fetched.into_iter().take(limit as usize) {
+            records.push(result?);
         }
         Ok(QueryLogPage {
             records,
@@ -674,7 +755,7 @@ impl QueryLog {
     ) -> Result<Vec<(i64, String)>, ControlApiError> {
         let (conditions, mut values) = filter_clause(filter);
         let sql = format!(
-            "SELECT rowid, record, status, node_id FROM query_log WHERE 1 = 1{conditions}
+            "SELECT rowid, {HYDRATE_COLS} FROM query_log WHERE 1 = 1{conditions}
              AND rowid > ? ORDER BY rowid LIMIT ?"
         );
         values.push(Value::Integer(after_rowid));
@@ -685,12 +766,48 @@ impl QueryLog {
                 let mut stmt = conn.prepare(&sql).map_err(db_err)?;
                 let rows = stmt
                     .query_map(params_from_iter(values), |row| {
-                        Ok((
-                            row.get::<_, i64>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                            row.get::<_, String>(3)?,
-                        ))
+                        let rowid: i64 = row.get(0)?;
+                        // Shift: hydrate_from_row expects cols starting at 0.
+                        let record = {
+                            let id: String = row.get(1)?;
+                            let node_id: String = row.get(2)?;
+                            let listener_id: String = row.get(3)?;
+                            let protocol = read_protocol(row.get_ref(4)?);
+                            let source_ip: String = row.get(5)?;
+                            let source_ip_truncated: i64 = row.get(6)?;
+                            let client_id: Option<String> = row.get(7)?;
+                            let device_id: Option<String> = row.get(8)?;
+                            let query_name: String = row.get(9)?;
+                            let query_type = read_query_type(row.get_ref(10)?);
+                            let query_class = read_query_class(row.get_ref(11)?);
+                            let view_id: String = row.get(12)?;
+                            let profile_id: String = row.get(13)?;
+                            let status = read_status(row.get_ref(14)?);
+                            let answer_source = read_answer_source(row.get_ref(15)?);
+                            let rcode = read_rcode(row.get_ref(16)?);
+                            let raw: String = row.get(17)?;
+                            let slim: Json = serde_json::from_str(&raw).unwrap_or(json!({}));
+                            let cols = WireColumns {
+                                id: &id,
+                                node_id: &node_id,
+                                listener_id: &listener_id,
+                                protocol,
+                                source_ip: &source_ip,
+                                source_ip_truncated: source_ip_truncated != 0,
+                                client_id: client_id.as_deref(),
+                                device_id: device_id.as_deref(),
+                                query_name: &query_name,
+                                query_type,
+                                query_class,
+                                view_id: &view_id,
+                                profile_id: &profile_id,
+                                status,
+                                answer_source,
+                                rcode,
+                            };
+                            hydrate_wire(slim, None, &cols)
+                        };
+                        Ok((rowid, record))
                     })
                     .map_err(db_err)?;
                 rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
@@ -699,19 +816,15 @@ impl QueryLog {
             .map_err(|error| ControlApiError::QueryLogExport {
                 message: error.to_string(),
             })?;
-        fetched
+        Ok(fetched
             .into_iter()
-            .map(|(rowid, raw, status, node_id)| {
-                hydrate_record(raw, status, node_id)
-                    .map(|record| (rowid, record.to_string()))
-                    .map_err(|error| ControlApiError::QueryLogExport {
-                        message: error.to_string(),
-                    })
-            })
-            .collect()
+            .map(|(rowid, record)| (rowid, record.to_string()))
+            .collect())
     }
 
     /// Loads one record by id, or `None` when it is absent (or aged out).
+    ///
+    /// Merges `query_log_detail` when present so "why blocked?" sees steps.
     pub async fn get(&self, id: &str) -> Result<Option<Json>, ControlApiError> {
         let id = id.to_owned();
         let raw = self
@@ -719,14 +832,17 @@ impl QueryLog {
             .with_read_conn(move |conn| {
                 use rusqlite::OptionalExtension as _;
                 conn.query_row(
-                    "SELECT record, status, node_id FROM query_log WHERE id = ?1",
+                    &format!(
+                        "SELECT {HYDRATE_COLS},
+                                (SELECT detail FROM query_log_detail d
+                                 WHERE d.node_id = query_log.node_id AND d.id = query_log.id)
+                         FROM query_log WHERE id = ?1"
+                    ),
                     params![id],
                     |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                        ))
+                        let detail: Option<String> = row.get(17)?;
+                        let detail = detail.and_then(|raw| serde_json::from_str(&raw).ok());
+                        hydrate_from_row(row, detail)
                     },
                 )
                 .optional()
@@ -736,7 +852,7 @@ impl QueryLog {
             .map_err(read_error)?;
         match raw {
             None => Ok(None),
-            Some((raw, status, node_id)) => hydrate_record(raw, status, node_id).map(Some),
+            Some(result) => result.map(Some),
         }
     }
 
@@ -746,50 +862,96 @@ impl QueryLog {
     /// the stored query-log record plus the denormalised columns the master
     /// needs to re-insert it with the originating `node_id`, `time` and `seq`.
     /// Rows below `from_seq` (already acked) are skipped; an empty result
-    /// means the local outbox has drained.
+    /// means the local outbox has drained. Only rows for this node's id are
+    /// considered — leftover seqs from a previous `node_id` on the same DB
+    /// must not enter the outbox.
     pub async fn outbox_rows(
         &self,
         from_seq: i64,
         max: usize,
     ) -> Result<Vec<(i64, String, Json)>, ControlApiError> {
         let max = i64::try_from(max.max(1)).unwrap_or(i64::MAX);
+        let node_id = self.node_id.clone();
         self.db
             .with_conn(move |conn| {
                 let mut stmt = conn
                     .prepare(
-                        "SELECT seq, id, time, source_ip, query_name, listener_id, protocol,
-                                source_ip_truncated, client_id, client_name, query_type,
-                                query_class, view_id, profile_id, status, answer_source, rcode,
-                                record
-                         FROM query_log
-                         WHERE seq IS NOT NULL AND seq >= ?1
-                         ORDER BY seq LIMIT ?2",
+                        "SELECT q.seq, q.id, q.time, q.source_ip, q.query_name, q.listener_id,
+                                q.protocol, q.source_ip_truncated, q.client_id, q.client_name,
+                                q.query_type, q.query_class, q.view_id, q.profile_id, q.status,
+                                q.answer_source, q.rcode, q.record, d.detail
+                         FROM query_log q
+                         LEFT JOIN query_log_detail d
+                           ON d.node_id = q.node_id AND d.id = q.id
+                         WHERE q.node_id = ?1 AND q.seq IS NOT NULL AND q.seq >= ?2
+                         ORDER BY q.seq LIMIT ?3",
                     )
                     .map_err(db_err)?;
                 let rows = stmt
-                    .query_map(params![from_seq, max], |row| {
+                    .query_map(params![node_id, from_seq, max], |row| {
                         let seq: i64 = row.get(0)?;
                         let id: String = row.get(1)?;
-                        let record: String = row.get(17)?;
+                        let time_us: i64 = row.get(2)?;
+                        let source_ip: String = row.get(3)?;
+                        let query_name: String = row.get(4)?;
+                        let listener_id: String = row.get(5)?;
+                        let protocol = read_protocol(row.get_ref(6)?);
+                        let truncated = row.get::<_, i64>(7)? != 0;
+                        let client_id: Option<String> = row.get(8)?;
+                        let client_name: Option<String> = row.get(9)?;
+                        let query_type = read_query_type(row.get_ref(10)?);
+                        let query_class = read_query_class(row.get_ref(11)?);
+                        let view_id: String = row.get(12)?;
+                        let profile_id: String = row.get(13)?;
+                        let status = read_status(row.get_ref(14)?);
+                        let answer_source = read_answer_source(row.get_ref(15)?);
+                        let rcode = read_rcode(row.get_ref(16)?);
+                        let raw: String = row.get(17)?;
+                        let detail = row
+                            .get::<_, Option<String>>(18)?
+                            .and_then(|raw| serde_json::from_str(&raw).ok());
+                        let slim: Json = serde_json::from_str(&raw).unwrap_or(json!({}));
+                        // Cluster wire stays stringly typed for protocol compat.
+                        let wire = hydrate_wire(
+                            slim,
+                            detail,
+                            &WireColumns {
+                                id: &id,
+                                node_id: "", // stamped by the master from the cert
+                                listener_id: &listener_id,
+                                protocol,
+                                source_ip: &source_ip,
+                                source_ip_truncated: truncated,
+                                client_id: client_id.as_deref(),
+                                device_id: None,
+                                query_name: &query_name,
+                                query_type,
+                                query_class,
+                                view_id: &view_id,
+                                profile_id: &profile_id,
+                                status,
+                                answer_source,
+                                rcode,
+                            },
+                        );
                         let document = json!({
                             "id": id,
-                            "time_us": row.get::<_, i64>(2)?,
-                            "source_ip": row.get::<_, String>(3)?,
-                            "query_name": row.get::<_, String>(4)?,
-                            "listener_id": row.get::<_, String>(5)?,
-                            "protocol": row.get::<_, String>(6)?,
-                            "source_ip_truncated": row.get::<_, i64>(7)? != 0,
-                            "client_id": row.get::<_, Option<String>>(8)?,
-                            "client_name": row.get::<_, Option<String>>(9)?,
-                            "query_type": row.get::<_, String>(10)?,
-                            "query_class": row.get::<_, String>(11)?,
-                            "view_id": row.get::<_, String>(12)?,
-                            "profile_id": row.get::<_, String>(13)?,
-                            "status": row.get::<_, String>(14)?,
-                            "answer_source": row.get::<_, String>(15)?,
-                            "rcode": row.get::<_, String>(16)?,
-                            "record": serde_json::from_str::<Json>(&record)
-                                .unwrap_or(Json::String(record)),
+                            "time_us": time_us,
+                            "source_ip": source_ip,
+                            "query_name": query_name,
+                            "listener_id": listener_id,
+                            "protocol": protocol.as_str(),
+                            "source_ip_truncated": truncated,
+                            "client_id": client_id,
+                            "client_name": client_name,
+                            "query_type": wire["query"]["type"].clone(),
+                            "query_class": wire["query"]["class"].clone(),
+                            "view_id": view_id,
+                            "profile_id": profile_id,
+                            "status": status.as_str(),
+                            "answer_source": answer_source.as_str(),
+                            "rcode": query_log_codec::rcode_to_str(rcode),
+                            "record": wire,
                         });
                         Ok((seq, id, document))
                     })
@@ -863,10 +1025,12 @@ impl QueryLog {
 
         let node_for_tx = node_id.clone();
         let batch_len = rows.len() as u64;
-        self.db
+        let (highest, inserted_ids) = self
+            .db
             .with_conn(move |conn| {
                 let tx = conn.transaction().map_err(db_err)?;
                 let mut duplicates = 0u64;
+                let mut inserted_ids = Vec::with_capacity(rows.len());
                 for (row, seq, device_id) in &rows {
                     let seq =
                         i64::try_from(*seq).map_err(|_| ControlApiError::QueryLogInvalid {
@@ -891,16 +1055,35 @@ impl QueryLog {
                         duplicates = duplicates.saturating_add(1);
                         continue;
                     }
+                    let status = StatusCode::from_str(&row.status);
+                    let (slim, detail) = split_record(row.record.clone(), status);
+                    let cached = slim
+                        .pointer("/steps")
+                        .and_then(Json::as_array)
+                        .into_iter()
+                        .flatten()
+                        .chain(
+                            detail
+                                .as_ref()
+                                .and_then(|value| value.get("steps"))
+                                .and_then(Json::as_array)
+                                .into_iter()
+                                .flatten(),
+                        )
+                        .any(|step| {
+                            step.get("stage").and_then(Json::as_str) == Some("resolve")
+                                && step.get("source").and_then(Json::as_str) == Some("cache")
+                        });
                     let inserted = tx
                         .execute(
                             "INSERT INTO query_log (
                              id, time, node_id, source_ip, query_name, listener_id,
                              protocol, source_ip_truncated, client_id, client_name,
                              query_type, query_class, view_id, profile_id, status,
-                             answer_source, rcode, record, seq, device_id
+                             answer_source, rcode, record, seq, device_id, cached
                          ) VALUES (
                              ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20
+                             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21
                          ) ON CONFLICT DO NOTHING",
                             params![
                                 row.id,
@@ -909,25 +1092,41 @@ impl QueryLog {
                                 row.source_ip,
                                 row.query_name,
                                 row.listener_id,
-                                row.protocol,
+                                ProtocolCode::from_str(&row.protocol).as_i64(),
                                 i64::from(row.source_ip_truncated),
                                 row.client_id,
                                 row.client_name,
-                                row.query_type,
-                                row.query_class,
+                                parse_query_type(&row.query_type)
+                                    .map(i64::from)
+                                    .unwrap_or(0),
+                                query_log_codec::parse_query_class(&row.query_class)
+                                    .map(i64::from)
+                                    .unwrap_or(1),
                                 row.view_id,
                                 row.profile_id,
-                                row.status,
-                                row.answer_source,
-                                row.rcode,
-                                row.record.to_string(),
+                                status.as_i64(),
+                                AnswerSourceCode::from_str(&row.answer_source).as_i64(),
+                                query_log_codec::rcode_from_str(&row.rcode),
+                                slim.to_string(),
                                 seq,
                                 device_id,
+                                i64::from(cached),
                             ],
                         )
                         .map_err(db_err)?;
                     if inserted == 0 {
                         duplicates = duplicates.saturating_add(1);
+                    } else {
+                        if let Some(detail) = detail {
+                            tx.execute(
+                                "INSERT INTO query_log_detail (node_id, id, detail)
+                                 VALUES (?1, ?2, ?3)
+                                 ON CONFLICT(node_id, id) DO UPDATE SET detail = excluded.detail",
+                                params![node_for_tx, row.id, detail.to_string()],
+                            )
+                            .map_err(db_err)?;
+                        }
+                        inserted_ids.push(row.id.clone());
                     }
                 }
                 let highest = highest_contiguous_seq(&tx, &node_for_tx)?;
@@ -940,9 +1139,15 @@ impl QueryLog {
                         "cluster log ingest skipped duplicate rows"
                     );
                 }
-                Ok(u64::try_from(highest).unwrap_or_default())
+                Ok((u64::try_from(highest).unwrap_or_default(), inserted_ids))
             })
-            .await
+            .await?;
+        // Fan newly ingested remote rows into the live SSE stream so the
+        // master's query-log UI sees sub-node traffic without a refresh.
+        for id in inserted_ids {
+            let _ = self.stream_tx.send(Arc::from(id));
+        }
+        Ok(highest)
     }
 
     /// Returns the next unacknowledged outbox `seq` for this node.
@@ -953,13 +1158,15 @@ impl QueryLog {
     /// oldest row wins so the gap is reported instead of retried forever.
     pub async fn next_seq(&self) -> Result<i64, ControlApiError> {
         let key = outbox_key(ACKED_SEQ_PREFIX, &self.node_id);
+        let node_id = self.node_id.clone();
         self.db
             .with_conn(move |conn| {
                 let acked = read_counter(conn, &key, 0)?;
                 let oldest: Option<i64> = conn
                     .query_row(
-                        "SELECT MIN(seq) FROM query_log WHERE seq IS NOT NULL",
-                        [],
+                        "SELECT MIN(seq) FROM query_log
+                         WHERE node_id = ?1 AND seq IS NOT NULL",
+                        params![node_id],
                         |row| row.get(0),
                     )
                     .map_err(db_err)?;
@@ -975,6 +1182,10 @@ impl QueryLog {
     /// `buffer_retention`. The rows stay in the local query log; only their
     /// `seq` is cleared, so [`Self::next_seq`] skips them and the gap is
     /// reported. Returns how many outbox rows were detached.
+    ///
+    /// Only this node's rows are touched. Seq numbers from another `node_id`
+    /// that still sit in the same DB (for example after renaming `local` →
+    /// the enrolled id) must not widen the prune window and wipe fresh rows.
     pub async fn prune_outbox_before(&self, cutoff_us: i64) -> Result<u64, ControlApiError> {
         let node_id = self.node_id.clone();
         self.db
@@ -985,13 +1196,58 @@ impl QueryLog {
                 let changed = conn
                     .execute(
                         "UPDATE query_log SET seq = NULL
-                         WHERE seq > ?1
+                         WHERE node_id = ?1
+                           AND seq > ?2
                            AND seq <= (SELECT MAX(seq) FROM query_log
-                                       WHERE seq > ?1 AND time < ?2)",
-                        params![acked, cutoff_us],
+                                       WHERE node_id = ?1 AND seq > ?2 AND time < ?3)",
+                        params![node_id, acked, cutoff_us],
                     )
                     .map_err(db_err)?;
                 Ok(u64::try_from(changed).unwrap_or(u64::MAX))
+            })
+            .await
+    }
+
+    /// Advances the local outbox past a master cursor that is already ahead of
+    /// this node's sequence allocator.
+    ///
+    /// That happens when the same mTLS `node_id` previously shipped under a
+    /// different local allocator (for example rows stamped `local` while the
+    /// cert said `waldo`): the master still holds a high contiguous seq, but
+    /// this process allocates from a fresh, lower counter. Without a rebase,
+    /// every new row sits below the master's cursor and is never sent — and a
+    /// global prune of leftover foreign seqs can even clear them first.
+    ///
+    /// When `master_highest + 1` is already past the next local allocation,
+    /// the allocator and ack cursor jump forward and any local outbox seqs at
+    /// or below `master_highest` are detached (the rows stay in the query log).
+    pub async fn rebase_outbox(&self, master_highest: u64) -> Result<bool, ControlApiError> {
+        let node_id = self.node_id.clone();
+        let master_highest =
+            i64::try_from(master_highest).map_err(|_| ControlApiError::QueryLogInvalid {
+                reason: "log sequence number out of range".to_owned(),
+            })?;
+        self.db
+            .transaction(move |conn| {
+                let alloc_key = outbox_key(SEQ_ALLOC_PREFIX, &node_id);
+                let ack_key = outbox_key(ACKED_SEQ_PREFIX, &node_id);
+                let next_alloc = read_counter(conn, &alloc_key, 1)?;
+                let want_next = master_highest.saturating_add(1);
+                if want_next <= next_alloc {
+                    return Ok(false);
+                }
+                let acked = read_counter(conn, &ack_key, 0)?;
+                if master_highest > acked {
+                    kv_set(conn, &ack_key, &master_highest.to_string())?;
+                }
+                kv_set(conn, &alloc_key, &want_next.to_string())?;
+                conn.execute(
+                    "UPDATE query_log SET seq = NULL
+                     WHERE node_id = ?1 AND seq IS NOT NULL AND seq <= ?2",
+                    params![node_id, master_highest],
+                )
+                .map_err(db_err)?;
+                Ok(true)
             })
             .await
     }
@@ -1101,25 +1357,6 @@ pub(crate) fn register_sql_functions(conn: &Connection) -> rusqlite::Result<()> 
     )
 }
 
-/// Merges denormalised columns into the stored JSON document on read.
-///
-/// `status` fills records written before that field was embedded. `node_id`
-/// always comes from the SQL column so cluster ingest (and older sub-node rows
-/// that still say `"local"` inside the document) agree with filters.
-fn hydrate_record(raw: String, status: String, node_id: String) -> Result<Json, ControlApiError> {
-    let mut record: Json =
-        serde_json::from_str(&raw).map_err(|_| ControlApiError::QueryLogRead {
-            message: "stored query-log record is not valid JSON".to_owned(),
-        })?;
-    if let Some(obj) = record.as_object_mut() {
-        if obj.get("status").and_then(Json::as_str).is_none() {
-            obj.insert("status".to_owned(), Json::String(status));
-        }
-        obj.insert("node_id".to_owned(), Json::String(node_id));
-    }
-    Ok(record)
-}
-
 /// Stamps the enrolled node id and re-enriches the client from the master's
 /// directory before a remote row is stored.
 fn prepare_remote_row(
@@ -1210,11 +1447,16 @@ fn filter_clause(filter: &QueryLogFilter) -> (String, Vec<Value>) {
     }
     if let Some(protocol) = &filter.protocol {
         sql.push_str(" AND protocol = ?");
-        values.push(Value::Text(protocol.clone()));
+        values.push(Value::Integer(ProtocolCode::from_str(protocol).as_i64()));
     }
     if let Some(query_type) = &filter.query_type {
-        sql.push_str(" AND query_type = ?");
-        values.push(Value::Text(query_type.clone()));
+        if let Some(code) = parse_query_type(query_type) {
+            sql.push_str(" AND query_type = ?");
+            values.push(Value::Integer(i64::from(code)));
+        } else {
+            // Unknown mnemonic: match nothing rather than scan as text.
+            sql.push_str(" AND 0");
+        }
     }
     if let Some(view_id) = &filter.view_id {
         sql.push_str(" AND view_id = ?");
@@ -1226,20 +1468,27 @@ fn filter_clause(filter: &QueryLogFilter) -> (String, Vec<Value>) {
     }
     if let Some(status) = &filter.status {
         if status == "cache" {
-            // Same resolve-step test as `cache_stats_scoped`: a cache hit is not
-            // a stored status column.
+            // New rows set `cached`; legacy fat blobs still expose steps in record.
             sql.push_str(
-                " AND EXISTS (SELECT 1 FROM json_each(query_log.record, '$.steps') AS step \
-                 WHERE json_extract(step.value, '$.stage') = 'resolve' \
-                   AND json_extract(step.value, '$.source') = 'cache')",
+                " AND (cached = 1 OR EXISTS (
+                     SELECT 1 FROM json_each(query_log.record, '$.steps') AS step
+                     WHERE json_extract(step.value, '$.stage') = 'resolve'
+                       AND json_extract(step.value, '$.source') = 'cache'
+                   ) OR EXISTS (
+                     SELECT 1 FROM query_log_detail d, json_each(d.detail, '$.steps') AS step
+                     WHERE d.node_id = query_log.node_id AND d.id = query_log.id
+                       AND json_extract(step.value, '$.stage') = 'resolve'
+                       AND json_extract(step.value, '$.source') = 'cache'
+                   ))",
             );
         } else {
             sql.push_str(" AND status = ?");
-            values.push(Value::Text(status.clone()));
+            values.push(Value::Integer(StatusCode::from_str(status).as_i64()));
         }
     }
     if filter.only_blocked {
-        sql.push_str(" AND status = 'blocked'");
+        sql.push_str(" AND status = ?");
+        values.push(Value::Integer(StatusCode::Blocked.as_i64()));
     }
     if filter.only_with_clients {
         sql.push_str(
@@ -1371,19 +1620,21 @@ struct PreparedRow {
     source_ip: String,
     query_name: String,
     listener_id: String,
-    protocol: &'static str,
+    protocol: i64,
     source_ip_truncated: bool,
     client_id: Option<String>,
     client_name: Option<String>,
     device_id: Option<String>,
-    query_type: String,
-    query_class: String,
+    query_type: i64,
+    query_class: i64,
     view_id: String,
     profile_id: String,
-    status: &'static str,
-    answer_source: &'static str,
-    rcode: String,
+    status: i64,
+    answer_source: i64,
+    rcode: i64,
     record: String,
+    detail: Option<String>,
+    cached: i64,
 }
 
 fn prepare_row(
@@ -1416,46 +1667,35 @@ fn prepare_row(
     );
     let client_name = client.as_ref().map(|client| client.display_name.clone());
     let query_name = normalize_name(&event.query.name.to_string());
-    let query_type = event.query.qtype.to_string();
-    let query_class = event.query.qclass.to_string();
-    let protocol = event.protocol.as_str();
-    let status = status_str(&event.decision, event.rcode);
-    let answer_source = answer_origin_str(event.decision.answer_source);
-    let rcode = event.rcode.to_string();
+    let protocol = ProtocolCode::from_dns(event.protocol);
+    let status = StatusCode::from_str(status_str(&event.decision, event.rcode));
+    let answer_source = AnswerSourceCode::from_origin(event.decision.answer_source);
     let decision = &event.decision;
+    let cached = decision.steps.iter().any(|step| {
+        matches!(
+            step,
+            DecisionStep::Resolve {
+                source: AnswerSource::Cache,
+                ..
+            }
+        )
+    });
     let mut record = json!({
-        "id": id,
-        "node_id": node_id,
-        "listener_id": event.listener_id.as_str(),
-        "protocol": protocol,
-        "source_ip": source_ip.to_string(),
-        "source_ip_truncated": truncated,
-        "client_id": client_id,
         "client": client.as_ref().map(client_json),
-        "query": {
-            "name": query_name,
-            "type": query_type,
-            "class": query_class,
-        },
-        "view_id": decision.view_id.as_str(),
-        "profile_id": decision.profile_id.as_str(),
         "filter_set": decision.filter_set.as_str(),
-        "selection": selection_json(decision.selection),
-        "steps": decision.steps.iter().map(step_json).collect::<Vec<_>>(),
-        "answer_source": answer_source,
-        "status": status,
         "filter": decision.filter.as_ref().map(filter_json),
         "dnssec": decision.dnssec.map(dnssec_str),
         "forward_zone": decision.forward_zone.as_ref().map(|zone| zone.as_str()),
-        "rcode": rcode,
         "answer_size": event.answer_size,
+        "time": format_rfc3339_micros(event.time),
+        "selection": selection_json(decision.selection),
+        "steps": decision.steps.iter().map(step_json).collect::<Vec<_>>(),
         "timings": {
             "select_us": decision.timings.select_us,
             "filter_us": decision.timings.filter_us,
             "resolve_us": decision.timings.resolve_us,
             "total_us": decision.timings.total_us,
         },
-        "time": format_rfc3339_micros(event.time),
     });
     // Omitted when empty (blocked / failed answers): keeps the stored row small.
     if !event.answers.is_empty() {
@@ -1465,14 +1705,11 @@ fn prepare_row(
             .map(|answer| json!({ "type": answer.rtype, "data": answer.data, "ttl": answer.ttl }))
             .collect();
     }
-    if let Some(device_id) = &device_id {
-        record["device_id"] = json!(device_id);
-    }
     if let Some(peer_ip) = event.peer_ip {
         let (peer, _) = truncate_ip(peer_ip, config.ip_truncate);
         record["peer_ip"] = json!(peer.to_string());
     }
-    let record = record.to_string();
+    let (slim, detail) = split_record(record, status);
     Ok(PreparedRow {
         id,
         time_us: system_time_micros(event.time),
@@ -1480,19 +1717,21 @@ fn prepare_row(
         source_ip: source_ip.to_string(),
         query_name,
         listener_id: event.listener_id.as_str().to_owned(),
-        protocol,
+        protocol: protocol.as_i64(),
         source_ip_truncated: truncated,
         client_id,
         client_name,
         device_id,
-        query_type,
-        query_class,
+        query_type: i64::from(event.query.qtype.value()),
+        query_class: i64::from(event.query.qclass.value()),
         view_id: decision.view_id.as_str().to_owned(),
         profile_id: decision.profile_id.as_str().to_owned(),
-        status,
-        answer_source,
-        rcode,
-        record,
+        status: status.as_i64(),
+        answer_source: answer_source.as_i64(),
+        rcode: i64::from(event.rcode.value()),
+        record: slim.to_string(),
+        detail: detail.map(|value| value.to_string()),
+        cached: i64::from(cached),
     })
 }
 

@@ -1079,6 +1079,20 @@ impl LogOutbox for QueryLogOutbox {
             .await
             .map_err(internal)
     }
+
+    async fn align_with_master(&self, master_highest: u64) -> Result<(), ClusterError> {
+        match self.log.rebase_outbox(master_highest).await {
+            Ok(true) => {
+                tracing::warn!(
+                    master_highest,
+                    "cluster log outbox rebased past the master's cursor"
+                );
+                Ok(())
+            }
+            Ok(false) => Ok(()),
+            Err(error) => Err(internal(error)),
+        }
+    }
 }
 
 /// Master hook: deduplicating query-log ingest.
@@ -1410,7 +1424,7 @@ impl ClusterRuntime {
         })?;
         let ca = ClusterCa::load_or_generate(&config.tls.ca_cert)?;
         let store = ClusterStore::open(
-            &options.data_dir.join("cluster.db"),
+            &crate::cluster_db_path(&options.data_dir),
             clock.clone(),
             config.join.token_ttl,
         )

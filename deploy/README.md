@@ -18,7 +18,7 @@ curl -fsS http://127.0.0.1:80/healthz
 dig @127.0.0.1 -p 5300 example.com A +short
 ```
 
-Data persists in the `dnscraft-data` volume (mounted at `data_dir = /var/lib/dnscraft`).
+Data persists in the `dnscraft-data` volume (mounted at `data_dir = /var/lib/dnscraft`). SQLite files live under `data_dir/db/` (`dnscraft.db`, `cluster.db`) so that directory alone can be bind-mounted onto another disk.
 
 ## Images
 

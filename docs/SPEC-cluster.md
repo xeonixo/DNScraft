@@ -336,7 +336,7 @@ still replicated so any node can adopt a view without a per-node diff.
 
 ### Durable relayed answers
 
-The master keeps the answer to each relayed write in `cluster.db`
+The master keeps the answer to each relayed write in `data_dir/db/cluster.db`
 (`relay_responses`, keyed by the dedupe key) for 24 h, so a retry that spans a
 master restart returns the stored answer and is not applied twice. If storing
 the answer fails after the write was applied, the failure is logged and the

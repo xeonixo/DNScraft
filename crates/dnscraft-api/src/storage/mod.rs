@@ -20,12 +20,17 @@ mod config_store;
 mod db;
 mod kv;
 mod migrations;
+mod paths;
 
 pub(crate) use kv::{kv_get, kv_set};
 
 pub use audit::AuditRecord;
 pub use config_store::ConfigStore;
 pub use db::Db;
+pub use paths::{
+    CLUSTER_DB_FILE, CONFIG_DB_FILE, DB_SUBDIR, cluster_db_path, config_db_path, database_dir,
+    ensure_database_layout,
+};
 
 /// Maps a `rusqlite` error to the storage invariant code.
 pub(crate) fn db_err(err: rusqlite::Error) -> crate::error::ControlApiError {

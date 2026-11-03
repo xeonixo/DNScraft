@@ -121,6 +121,8 @@ const MICROS_PER_DAY: i64 = 86_400_000_000;
 const SEQ_ALLOC_PREFIX: &str = "query_log.seq_alloc.";
 /// `kv` key prefix for the highest contiguously acknowledged `seq` on a node.
 const ACKED_SEQ_PREFIX: &str = "query_log.acked_seq.";
+/// Per-node `kv` key prefix for the contiguous-run cursor of ingested remote rows.
+const CONTIGUOUS_SEQ_PREFIX: &str = "query_log.contiguous_seq.";
 
 /// Client-directory data attached to a query-log record.
 ///
@@ -1130,6 +1132,7 @@ impl QueryLog {
                     }
                 }
                 let highest = highest_contiguous_seq(&tx, &node_for_tx)?;
+                store_contiguous_seq(&tx, &node_for_tx, highest)?;
                 tx.commit().map_err(db_err)?;
                 if duplicates > 0 {
                     tracing::debug!(
@@ -1293,20 +1296,49 @@ fn outbox_key(prefix: &str, node_id: &str) -> String {
 /// sequence (`0` when none).
 ///
 /// Finds the first stored sequence with no `seq + 1` successor: a gap makes
-/// every later sequence non-contiguous, so it is not acknowledged. Uses the
-/// `(node_id, seq)` index and returns one row.
+/// every later sequence non-contiguous, so it is not acknowledged. The search
+/// resumes from the cursor persisted by [`store_contiguous_seq`] — everything
+/// below it was contiguous already — so a healthy stream costs a few index
+/// probes instead of a scan of the node's whole retained log. Falls back to a
+/// full scan when the cursor row was pruned.
 fn highest_contiguous_seq(conn: &Connection, node_id: &str) -> Result<i64, ControlApiError> {
+    let key = outbox_key(CONTIGUOUS_SEQ_PREFIX, node_id);
+    let cursor = read_counter(conn, &key, 0)?;
+    let start = if cursor > 0
+        && conn
+            .query_row(
+                "SELECT 1 FROM query_log WHERE node_id = ?1 AND seq = ?2",
+                params![node_id, cursor],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(db_err)?
+            .is_some()
+    {
+        cursor
+    } else {
+        0
+    };
     conn.query_row(
         "SELECT COALESCE(MIN(q.seq), 0) FROM query_log q
-         WHERE q.node_id = ?1 AND q.seq IS NOT NULL
+         WHERE q.node_id = ?1 AND q.seq >= ?2
            AND NOT EXISTS (
                SELECT 1 FROM query_log n
                WHERE n.node_id = q.node_id AND n.seq = q.seq + 1
            )",
-        params![node_id],
+        params![node_id, start],
         |row| row.get(0),
     )
     .map_err(db_err)
+}
+
+/// Persists the contiguous-run cursor for [`highest_contiguous_seq`].
+fn store_contiguous_seq(conn: &Connection, node_id: &str, seq: i64) -> Result<(), ControlApiError> {
+    kv_set(
+        conn,
+        &outbox_key(CONTIGUOUS_SEQ_PREFIX, node_id),
+        &seq.to_string(),
+    )
 }
 
 /// Reads a persisted cursor value, or `default` when the key is absent.

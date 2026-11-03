@@ -41,6 +41,7 @@ use crate::sync::{
     AuthSnapshotApplier, AuthSnapshotPush, CertInstaller, ConfigAck, ConfigApplier, ConfigPush,
     Hello, StreamError, StreamRecord,
 };
+use crate::compress::{DEFAULT_LEVEL, ZstdEnvelope};
 use crate::transport::{
     ActiveTransport, DEFAULT_QUIC_CONNECT_TIMEOUT, FallbackReason, TransportMode,
 };
@@ -72,6 +73,10 @@ pub struct ClusterClient {
     last_transport: RwLock<(ActiveTransport, Option<FallbackReason>)>,
     /// Node identity PEM material for QUIC dials (same cert as the HTTP client).
     identity: RwLock<NodeIdentity>,
+    /// Send large POST bodies as [`ZstdEnvelope`] when true (protocol 2).
+    compression_enabled: bool,
+    /// zstd level 1–3 for outbound envelopes.
+    compression_level: i32,
 }
 
 impl ClusterClient {
@@ -110,6 +115,8 @@ impl ClusterClient {
             quic_connect_timeout: DEFAULT_QUIC_CONNECT_TIMEOUT,
             last_transport: RwLock::new((ActiveTransport::None, None)),
             identity: RwLock::new(identity.duplicate()?),
+            compression_enabled: true,
+            compression_level: DEFAULT_LEVEL,
         })
     }
 
@@ -133,6 +140,14 @@ impl ClusterClient {
     #[must_use]
     pub fn with_quic_connect_timeout(mut self, timeout: Duration) -> Self {
         self.quic_connect_timeout = timeout;
+        self
+    }
+
+    /// Enables or disables zstd envelopes on large cluster POSTs (logs, etc.).
+    #[must_use]
+    pub fn with_compression(mut self, enabled: bool, level: i32) -> Self {
+        self.compression_enabled = enabled;
+        self.compression_level = level.clamp(1, 3);
         self
     }
 
@@ -297,7 +312,12 @@ impl ClusterClient {
                     | ClusterError::NodeRevoked { .. }
                     | ClusterError::TransportTls { .. }),
                 ) => return Err(error),
-                Err(_) => {
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        reason = "quic_unavailable",
+                        "cluster Prefer-QUIC failed; falling back to HTTP/2"
+                    );
                     *self.last_transport.write().unwrap_or_else(PoisonError::into_inner) = (
                         ActiveTransport::None,
                         Some(FallbackReason::QuicUnavailable),
@@ -325,9 +345,11 @@ impl ClusterClient {
             capabilities: {
                 let mut caps = vec![
                     crate::sync::CAP_CLOUDFLARE_TOKEN.to_owned(),
-                    crate::compress::CAP_COMPRESS_ZSTD.to_owned(),
                     crate::rpc::CAP_REVERSE_RPC.to_owned(),
                 ];
+                if self.compression_enabled {
+                    caps.push(crate::compress::CAP_COMPRESS_ZSTD.to_owned());
+                }
                 if self.tls_certificate {
                     caps.push(crate::sync::CAP_TLS_CERTIFICATE.to_owned());
                 }
@@ -609,9 +631,10 @@ impl ClusterClient {
     /// identity from the client certificate and rejects a mismatch with
     /// `cluster.log_stream.invalid`. The records are opaque to this crate.
     pub async fn post_logs(&self, batch: &LogBatch) -> Result<u64, ClusterError> {
-        let body = serde_json::to_vec(batch).map_err(|error| ClusterError::Internal {
+        let plain = serde_json::to_vec(batch).map_err(|error| ClusterError::Internal {
             message: format!("encode log batch: {error}"),
         })?;
+        let body = self.encode_post_body(&plain)?;
         let response = self
             .http()
             .post(format!("{}{LOGS_PATH}", self.base_url))
@@ -622,6 +645,17 @@ impl ClusterClient {
             .map_err(master_unavailable)?;
         let ack: LogAck = json_body(ensure_success(response).await?).await?;
         Ok(ack.acked_seq)
+    }
+
+    /// Encodes `plain` as a [`ZstdEnvelope`] when compression is enabled.
+    fn encode_post_body(&self, plain: &[u8]) -> Result<Vec<u8>, ClusterError> {
+        if !self.compression_enabled {
+            return Ok(plain.to_vec());
+        }
+        let envelope = ZstdEnvelope::compress(plain, self.compression_level)?;
+        serde_json::to_vec(&envelope).map_err(|error| ClusterError::Internal {
+            message: format!("encode zstd envelope: {error}"),
+        })
     }
 
     /// Posts a reverse-RPC reply for a master-initiated [`crate::rpc::RpcRequest`].

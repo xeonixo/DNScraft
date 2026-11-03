@@ -41,11 +41,19 @@ access to a sub-node's loopback control-api for status and maintenance.
 3. **Default cluster listen port `443`** (was `8443`). Still bound only to loopback or
    private/ULA addresses — never `0.0.0.0`/`::` on the public internet. The master serves
    **UDP and TCP on the same port** (QUIC + h2). `master_url` for sub-nodes uses that port.
+   When a DoH listener already covers that `IP:port` (or
+   `cluster.listen.share_with_listener` names one), the control plane **colocates** on the
+   DoH socket via **SNI mux** (cluster `server_name` → cluster CA mTLS; other SNIs → ACME
+   DoH) plus path dispatch (`/cluster/v1/*` vs `/dns-query`). Path-only sharing without SNI
+   separation is not sufficient: DoH uses `with_no_client_auth()`, cluster needs handshake
+   mTLS. A single `quinn` endpoint on UDP/443 demuxes DoH-h3 and Cluster-h3 the same way.
 4. **zstd compression (v2 only).** When both sides advertise `capabilities` including
-   `compress=zstd`, request and response bodies for cluster `POST`s and NDJSON stream
-   records may be zstd-compressed. Enforce a **decompressed size cap** per message and a
+   `compress=zstd`, request bodies for cluster log (and other large) `POST`s **must** be
+   sent as a `ZstdEnvelope` (or negotiated Content-Encoding) and decompressed before
+   validate/ingest. Enforce a **decompressed size cap** per message and a
    **compression window ≤ 8 MiB**. Peers without the capability send and receive plaintext
-   (v1-compatible). Compression is off by default until capability negotiation succeeds.
+   (v1-compatible). Settings `compression.enabled` must wire into the client; advertising
+   the capability without compressing is a bug.
 5. **Reverse tunnel over the sub-initiated session.** On v2, the same mTLS session
    multiplexes **master→sub typed RPCs** and an allowlisted **HTTP CONNECT** proxy to the
    sub-node's **loopback control-api only** (read-oriented admin proxy sketch in
@@ -69,8 +77,9 @@ access to a sub-node's loopback control-api for status and maintenance.
   ports on sub-nodes; misuse surface is limited by RPC allowlist and CONNECT target allowlist.
 - Protocol 1 implementations remain valid; mixed fleets during rollout must be observable via
   `protocol_version`, `active_transport`, and `fallback_reason` on node status (SPEC-control-api.md).
-- Default port **443** may collide with DoH/listener planning on the master host; operators
-  colocate cluster on a private IP or distinct host (bind is still non-public).
+- Default port **443** shared with DoH on the same private bind is **colocation** (SNI +
+  path mux), not a configuration error. Distinct non-DoH listeners on the same address
+  remain a collision.
 
 ## Alternatives considered
 

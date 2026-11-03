@@ -120,6 +120,32 @@ pub fn wants_zstd(capabilities: &[String]) -> bool {
     capabilities.iter().any(|c| c == CAP_COMPRESS_ZSTD)
 }
 
+/// True when `body` is a JSON object with `"encoding":"zstd"` (envelope shape).
+pub fn looks_like_zstd_envelope(body: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("encoding")
+                .and_then(|encoding| encoding.as_str())
+                .map(|encoding| encoding == "zstd")
+        })
+        .unwrap_or(false)
+}
+
+/// Decompresses a [`ZstdEnvelope`] body, or returns `body` unchanged.
+pub fn maybe_decompress_body(body: &[u8]) -> Result<Vec<u8>, ClusterError> {
+    if !looks_like_zstd_envelope(body) {
+        return Ok(body.to_vec());
+    }
+    let envelope: ZstdEnvelope = serde_json::from_slice(body).map_err(|error| {
+        ClusterError::Compression {
+            reason: format!("invalid zstd envelope: {error}"),
+        }
+    })?;
+    envelope.decompress()
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {

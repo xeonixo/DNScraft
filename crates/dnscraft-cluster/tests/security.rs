@@ -300,6 +300,7 @@ async fn start_server(
             listen: ListenConfig {
                 bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
                 port: 0,
+            share_with_listener: None,
             },
             server_name: "127.0.0.1".to_owned(),
             node_cert_ttl: NODE_CERT_TTL,
@@ -1096,7 +1097,11 @@ async fn threat_per_node_quotas_bound_a_faulty_node() {
     let payload_b1 = batch_for("node-b", 1);
     let max_log_bytes = [&payload_a1, &payload_a2, &payload_b1]
         .iter()
-        .map(|batch| serde_json::to_vec(batch).unwrap().len() as u64)
+        .map(|batch| {
+            let plain = serde_json::to_vec(batch).unwrap();
+            let envelope = dnscraft_cluster::ZstdEnvelope::compress(&plain, 3).unwrap();
+            serde_json::to_vec(&envelope).unwrap().len() as u64
+        })
         .max()
         .unwrap();
 

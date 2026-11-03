@@ -219,6 +219,7 @@ impl DohHarness {
             event_sink,
             alt_svc_port: std::sync::Arc::new(std::sync::atomic::AtomicU16::new(0)),
             web,
+            cluster: std::sync::Arc::new(dnscraft_listeners::ClusterSlot::default()),
             bound: bound_tx,
             shutdown: shutdown_rx,
             trusted_proxies: std::sync::Arc::new(std::sync::RwLock::new(trusted_proxies)),

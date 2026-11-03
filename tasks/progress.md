@@ -9,7 +9,7 @@ Resume point for interrupted sessions. Newest entry first.
   gate asserted in-process.
 - CONNECT: `ensure_connect_request` + host loopback checks; code
   `cluster.reverse_rpc.denied`; unit tests for LAN deny / path deny / disabled.
-- DoH collision: `PUT /cluster/settings` listen vs DoH → `409 cluster.listen.collision`;
+- DoH same bind:port: colocation (SNI + `/cluster/v1`); non-DoH overlap → `409 cluster.listen.collision`;
   API test; restart_required still set on non-colliding port change.
 - UI: restart banner on `/cluster` (en/de) + vitest page coverage for transport
   save and banner.

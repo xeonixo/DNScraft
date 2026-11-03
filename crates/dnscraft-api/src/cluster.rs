@@ -40,11 +40,11 @@ use tokio::task::JoinHandle;
 use dnscraft_cluster::{
     ActiveTransport, ActorValidator, AuthSnapshotApplier, AuthSnapshotSource, Backfill,
     ClusterBroadcast, ClusterCa, ClusterClient, ClusterConfig, ClusterError, ClusterServer,
-    ClusterServerConfig, ClusterStore, ConfigApplier, ConfigSync, LogIngest, LogOutbox, LogRecord,
-    LogStreamer, NodeIdentity, OfflineWriteQueue, PendingNodeIdentity, PROTOCOL_VERSION,
-    RPC_CONFIG_REAPPLY, RPC_NODE_DIAGNOSTICS, RPC_NODE_STATUS, RPC_RUNTIME_EXEC, RelayResponse,
-    RelayedActor, Role, RpcRequest, RpcResponse, RuntimeCommandApplier, StreamRecord,
-    TlsCertificateSource, TlsPaths, WriteExecutor, WriteRelay,
+    ClusterServerConfig, ClusterSettings, ClusterStore, ConfigApplier, ConfigSync, LogIngest,
+    LogOutbox, LogRecord, LogStreamer, NodeIdentity, OfflineWriteQueue, PendingNodeIdentity,
+    PROTOCOL_VERSION, RPC_CONFIG_REAPPLY, RPC_NODE_DIAGNOSTICS, RPC_NODE_STATUS, RPC_RUNTIME_EXEC,
+    RelayResponse, RelayedActor, Role, RpcRequest, RpcResponse, RuntimeCommandApplier, StreamRecord,
+    TlsCertificateSource, TlsPaths, TransportMode, WriteExecutor, WriteRelay,
 };
 use dnscraft_common::clock::{Clock, add_duration, wait_until};
 use dnscraft_common::secret::Secret;
@@ -1224,6 +1224,10 @@ pub struct ClusterRuntimeOptions {
     /// Sub-node: a pushed certificate is installed into it (and the node
     /// advertises the `tls_certificate` capability only when it is set).
     pub tls_engine: Option<Arc<TlsEngine>>,
+    /// Shared DoH cluster slot for SNI/path colocation on `:443`.
+    pub cluster_slot: Option<Arc<dnscraft_listeners::ClusterSlot>>,
+    /// When true, start the master control plane colocated (no own bind).
+    pub colocate_with_doh: bool,
 }
 
 impl ClusterRuntimeOptions {
@@ -1237,6 +1241,8 @@ impl ClusterRuntimeOptions {
             join_token: None,
             master_cert_pem: None,
             tls_engine: None,
+            cluster_slot: None,
+            colocate_with_doh: false,
         }
     }
 }
@@ -1250,7 +1256,7 @@ pub struct ClusterRuntime {
     shutdown: watch::Sender<bool>,
     notify: Arc<Notify>,
     tasks: Vec<JoinHandle<()>>,
-    server: Option<ClusterServer>,
+    server: Option<Arc<ClusterServer>>,
 }
 
 impl ClusterRuntime {
@@ -1344,17 +1350,17 @@ impl ClusterRuntime {
 
     /// The master listener's bound address (useful when the port was `0`).
     pub fn listen_addr(&self) -> Option<std::net::SocketAddr> {
-        self.server.as_ref().map(ClusterServer::addr)
+        self.server.as_ref().map(|server| server.addr())
     }
 
     /// The master's own server certificate (PEM), for bootstrap pinning.
     pub fn server_cert_pem(&self) -> Option<&str> {
-        self.server.as_ref().map(ClusterServer::server_cert_pem)
+        self.server.as_ref().map(|server| server.server_cert_pem())
     }
 
     /// The master's volatile broadcast handle, when this runtime is the master.
     pub fn broadcast_handle(&self) -> Option<ClusterBroadcast> {
-        self.server.as_ref().map(ClusterServer::broadcast_handle)
+        self.server.as_ref().map(|server| server.broadcast_handle())
     }
 
     /// Master: pushes `engine`'s certificate to capable sub-nodes when they
@@ -1363,7 +1369,7 @@ impl ClusterRuntime {
     /// [`ClusterRuntimeOptions::tls_engine`]).
     pub fn attach_tls_engine(&self, engine: Arc<TlsEngine>) {
         if let Some(server) = &self.server {
-            attach_engine_to_server(server, engine);
+            attach_engine_to_server(server.as_ref(), engine);
         }
     }
 
@@ -1375,7 +1381,13 @@ impl ClusterRuntime {
             let _ = task.await;
         }
         if let Some(server) = self.server.take() {
-            server.shutdown().await;
+            match Arc::try_unwrap(server) {
+                Ok(server) => server.shutdown().await,
+                Err(server) => {
+                    // Handler still holds a clone; signal shutdown via Drop.
+                    drop(server);
+                }
+            }
         }
     }
 
@@ -1420,27 +1432,79 @@ impl ClusterRuntime {
             state.auth_state_arc().map(|auth| {
                 Arc::new(StateAuthSnapshotSource::new(auth)) as Arc<dyn AuthSnapshotSource>
             });
-        let server = ClusterServer::start(
-            ClusterServerConfig {
-                listen,
-                server_name: options.server_name.clone().unwrap_or_else(|| {
-                    config
-                        .listen
-                        .as_ref()
-                        .map_or_else(|| config.node_id.clone(), |listen| listen.bind.to_string())
+        let server_name = options.server_name.clone().unwrap_or_else(|| {
+            config
+                .listen
+                .as_ref()
+                .map_or_else(|| config.node_id.clone(), |listen| listen.bind.to_string())
+        });
+        let server_config = ClusterServerConfig {
+            listen,
+            server_name,
+            node_cert_ttl: config.join.node_cert_ttl,
+            quota: config.quota.clone(),
+            timing: config.timing.clone(),
+        };
+        let server = if options.colocate_with_doh {
+            ClusterServer::start_colocated(
+                server_config,
+                ca,
+                store.clone(),
+                clock.clone(),
+                write_executor,
+                log_ingest,
+                auth_snapshot,
+            )
+            .await?
+        } else {
+            ClusterServer::start(
+                server_config,
+                ca,
+                store.clone(),
+                clock.clone(),
+                write_executor,
+                log_ingest,
+                auth_snapshot,
+            )
+            .await?
+        };
+        let server = Arc::new(server);
+
+        if options.colocate_with_doh {
+            let Some(slot) = options.cluster_slot.as_ref() else {
+                return Err(ControlApiError::Internal {
+                    message: "cluster colocation requires a DoH cluster_slot".to_owned(),
+                });
+            };
+            let material = server.colocation();
+            let dispatch = Arc::clone(&server);
+            let attached = slot.set(dnscraft_listeners::ClusterAttachment {
+                cluster_sni: material.cluster_sni,
+                ca_cert_pem: material.ca_cert_pem,
+                server_cert_pem: material.server_cert_pem,
+                server_key_pem: material.server_key_pem,
+                handler: Arc::new(move |peer, peer_cert, req| {
+                    let dispatch = Arc::clone(&dispatch);
+                    Box::pin(async move {
+                        use http_body_util::BodyExt as _;
+                        let response = dispatch
+                            .handle_colocated_request(peer, peer_cert, req)
+                            .await;
+                        response.map(|body| {
+                            body.map_err(|error| -> Box<dyn std::error::Error + Send + Sync> {
+                                Box::new(error)
+                            })
+                            .boxed_unsync()
+                        })
+                    })
                 }),
-                node_cert_ttl: config.join.node_cert_ttl,
-                quota: config.quota.clone(),
-                timing: config.timing.clone(),
-            },
-            ca,
-            store.clone(),
-            clock.clone(),
-            write_executor,
-            log_ingest,
-            auth_snapshot,
-        )
-        .await?;
+            });
+            if !attached {
+                return Err(ControlApiError::Internal {
+                    message: "cluster colocation slot already filled".to_owned(),
+                });
+            }
+        }
 
         // Let the master's runtime-command endpoints push to connected nodes.
         state.attach_cluster_broadcast(server.broadcast_handle());
@@ -1448,7 +1512,7 @@ impl ClusterRuntime {
             state.clone(),
         )));
         if let Some(engine) = &options.tls_engine {
-            attach_engine_to_server(&server, Arc::clone(engine));
+            attach_engine_to_server(server.as_ref(), Arc::clone(engine));
         }
 
         let (version, snapshot) = service.current().await?;
@@ -1588,6 +1652,11 @@ impl ClusterRuntime {
             Ok(identity) => identity,
             Err(_) => enroll_identity(config, options).await?,
         };
+        let settings = ClusterSettings::load(&options.data_dir).unwrap_or_default();
+        let transport_mode = settings.transport.mode;
+        let quic_timeout =
+            Duration::from_millis(settings.transport.quic_connect_timeout_ms.max(1));
+        let compression = settings.compression;
         let client = Arc::new(
             ClusterClient::new_with_timing(
                 &master_url,
@@ -1595,8 +1664,17 @@ impl ClusterRuntime {
                 clock.clone(),
                 config.timing.clone(),
             )?
-            .with_tls_certificate(options.tls_engine.is_some()),
+            .with_tls_certificate(options.tls_engine.is_some())
+            .with_transport_mode(transport_mode)
+            .with_quic_connect_timeout(quic_timeout)
+            .with_compression(compression.enabled, compression.level),
         );
+        if matches!(transport_mode, TransportMode::H2Only) {
+            tracing::info!(
+                mode = %transport_mode,
+                "cluster sub-node transport pinned to HTTP/2"
+            );
+        }
         state.attach_cluster_uplink(Arc::clone(&client));
 
         let applier = Arc::new(

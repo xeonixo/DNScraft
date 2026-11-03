@@ -109,6 +109,7 @@ fn master_config(dir: &Path) -> ClusterConfig {
         listen: Some(ListenConfig {
             bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
             port: 0,
+        share_with_listener: None,
         }),
         transport: Default::default(),
         compression: Default::default(),
@@ -444,6 +445,7 @@ async fn sub_node_applies_a_master_push_and_acks_zero_lag() {
             listen: ListenConfig {
                 bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
                 port: 0,
+            share_with_listener: None,
             },
             server_name: "127.0.0.1".to_owned(),
             node_cert_ttl: NODE_CERT_TTL,
@@ -517,6 +519,7 @@ async fn sub_node_backfill_reports_a_gap_after_reconnect() {
             listen: ListenConfig {
                 bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
                 port: 0,
+            share_with_listener: None,
             },
             server_name: "127.0.0.1".to_owned(),
             node_cert_ttl: NODE_CERT_TTL,

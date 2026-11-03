@@ -59,7 +59,7 @@ pub use rpc::{
     wants_reverse_connect, wants_reverse_rpc,
 };
 pub use server::{
-    AuthSnapshotSource, CloudflareTokenSource, ClusterBroadcast, ClusterServer,
+    AuthSnapshotSource, CloudflareTokenSource, ClusterBroadcast, ClusterColocation, ClusterServer,
     ClusterServerConfig, HeartbeatRequest, HeartbeatResponse, StatusWarning, TlsCertificateSource,
     TlsCsrRequest, TlsCsrResponse, TlsCsrSigner,
 };

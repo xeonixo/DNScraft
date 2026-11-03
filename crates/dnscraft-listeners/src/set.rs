@@ -28,6 +28,7 @@ use crate::status::{ListenerStatus, ListenersStatus};
 use crate::tcp::{TcpServeParams, TcpStats, serve_tcp};
 use crate::tls::{PolicyClientIds, SniGate, TlsStats};
 use crate::udp::{UdpServeParams, UdpStats, serve_udp};
+use crate::cluster_slot::ClusterSlot;
 use crate::web::WebSlot;
 
 /// Shared runtime for all configured listeners.
@@ -40,6 +41,7 @@ pub struct ListenerSet<H: QueryHandler + ?Sized = PolicyEngine> {
     admission: Arc<Mutex<Admission>>,
     ddr: Arc<RwLock<DdrEndpoints>>,
     web: Arc<WebSlot>,
+    cluster: Arc<ClusterSlot>,
     /// Shared with DoH listeners; updated from `control_api.trusted_proxies`.
     trusted_proxies: Arc<RwLock<Vec<IpAddr>>>,
     public_domain: String,
@@ -184,6 +186,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
             admission,
             ddr,
             web: Arc::default(),
+            cluster: Arc::default(),
             trusted_proxies: Arc::new(RwLock::new(trusted_proxies)),
             public_domain,
             node_id,
@@ -235,6 +238,50 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
     /// Slot for the web UI / API handler served on local DoH listeners (empty → `404`).
     pub fn web_slot(&self) -> Arc<WebSlot> {
         Arc::clone(&self.web)
+    }
+
+    /// Slot for colocating the cluster control plane on DoH `:443` (SNI + `/cluster/v1`).
+    pub fn cluster_slot(&self) -> Arc<ClusterSlot> {
+        Arc::clone(&self.cluster)
+    }
+
+    /// DoH listeners that can host cluster colocation on `bind:port` (same IP/port, or
+    /// a wildcard DoH bind that covers `bind`).
+    pub fn doh_listeners_for_colocation(
+        &self,
+        bind: IpAddr,
+        port: u16,
+    ) -> Vec<ListenerConfig> {
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        inner
+            .config
+            .listeners
+            .iter()
+            .filter(|listener| {
+                listener.protocol == Protocol::Doh
+                    && listener.address.port() == port
+                    && (listener.address.ip() == bind
+                        || listener.address.ip().is_unspecified())
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Looks up a configured DoH listener by id (for `cluster.listen.share_with_listener`).
+    pub fn doh_listener_by_id(&self, id: &str) -> Option<ListenerConfig> {
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        inner
+            .config
+            .listeners
+            .iter()
+            .find(|listener| listener.protocol == Protocol::Doh && listener.id.as_str() == id)
+            .cloned()
     }
 
     /// Replaces the DoH trusted-proxy list (typically from `control_api.trusted_proxies`).
@@ -495,6 +542,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
                         event_sink: Some(Arc::clone(&self.sink)),
                         alt_svc_port: Arc::clone(&alt_svc_port),
                         trusted_proxies: Arc::clone(&self.trusted_proxies),
+                        cluster: Arc::clone(&self.cluster),
                         bound: h3_bound_tx,
                         shutdown: shutdown_rx.clone(),
                     }));
@@ -512,6 +560,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
                         alt_svc_port: Arc::clone(&alt_svc_port),
                         web: Arc::clone(&self.web),
                         trusted_proxies: Arc::clone(&self.trusted_proxies),
+                        cluster: Arc::clone(&self.cluster),
                         bound: tcp_bound_tx,
                         shutdown: shutdown_rx,
                     }));
@@ -568,6 +617,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
                         alt_svc_port,
                         web: Arc::clone(&self.web),
                         trusted_proxies: Arc::clone(&self.trusted_proxies),
+                        cluster: Arc::clone(&self.cluster),
                         bound: bound_tx,
                         shutdown: shutdown_rx,
                     }))

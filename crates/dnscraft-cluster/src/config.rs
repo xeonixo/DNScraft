@@ -297,6 +297,11 @@ pub struct ListenConfig {
     /// Bind port.
     #[serde(default = "default_cluster_port")]
     pub port: u16,
+    /// Optional DoH listener id to share `:443` with (SNI + path mux). When set,
+    /// or when a DoH listener already covers `bind:port`, the cluster does not
+    /// open its own socket.
+    #[serde(default)]
+    pub share_with_listener: Option<String>,
 }
 
 impl ListenConfig {

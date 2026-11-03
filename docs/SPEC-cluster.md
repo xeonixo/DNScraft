@@ -180,9 +180,12 @@ upstream messages are ordinary `POST`s on the same session (`/cluster/v1/logs`,
 | 0-RTT | **Disabled** on QUIC | n/a |
 
 - **Dual stack on the master:** `cluster.listen.port` (default **443**) binds **UDP**
-  (QUIC) and **TCP** (TLS + h2). Sub-nodes dial `master_url` on that port; mode
-  `auto` tries QUIC first, then falls back to h2 with `fallback_reason` recorded
-  on status (SPEC-control-api.md).
+  (QUIC) and **TCP** (TLS + h2), unless a DoH listener already covers that address
+  (or `share_with_listener` is set): then the control plane **colocates** on the DoH
+  socket (SNI → cluster CA mTLS vs ACME; path `/cluster/v1/*` vs `/dns-query`; one
+  `quinn` endpoint demuxes DoH-h3 and Cluster-h3). Sub-nodes dial `master_url` on that
+  port; mode `auto` tries QUIC first, then falls back to h2 with `fallback_reason`
+  recorded on status (SPEC-control-api.md).
 - **Capability negotiation:** `Hello.capabilities` may include `compress=zstd`,
   `reverse_rpc`, and existing gates (`tls_certificate`, `cloudflare_token`). The
   master never sends v2-only records to a peer without the capability (same rule
@@ -540,7 +543,7 @@ logs are aggregated on the master only; sub-nodes keep a short local buffer
 - A sender task batches contiguous unacked rows (`batch_max_records` default
   500 or `batch_interval` default 1 s, whichever fires first;
   `max_batch_bytes` 1 MiB) and `POST`s them to `/cluster/v1/logs` over the mTLS
-  session. When `compress=zstd` is negotiated (protocol 2), batch bodies may be
+  session. When `compress=zstd` is negotiated (protocol 2), batch bodies must be
   zstd-compressed subject to the same caps; protocol 1 sends plaintext only.
 - Batches carry `{ node_id, protocol, first_seq, last_seq, records[] }`.
   **`node_id` is taken from the authenticated connection, never from the
@@ -740,7 +743,7 @@ control-api. Codes owned by other modules are forwarded unchanged (for example
 | `cluster.transport.fallback` | QUIC unavailable; session continued on HTTP/2 (informational) |
 | `cluster.compression.invalid` | Decompressed size over cap, bad zstd frame, or window violation |
 | `cluster.reverse_rpc.denied` | RPC or CONNECT target not allowlisted |
-| `cluster.listen.collision` | Cluster listen bind:port collides with a DoH listener (`PUT /cluster/settings` → HTTP 409) |
+| `cluster.listen.collision` | Cluster listen bind:port collides with a **non-DoH** listener (`PUT /cluster/settings` → HTTP 409). Same bind:port as DoH is **colocation** (SNI + `/cluster/v1`), not an error. |
 | `cluster.reverse_rpc.failed` | Allowlisted RPC or CONNECT failed on the sub-node |
 | `cluster.config.apply` | Sub-node failed to apply a pushed snapshot; stays on the previous version |
 | `cluster.config.stale` | A connected node has not acknowledged a pushed snapshot within `config_apply_timeout` (heartbeat warning; the master also counts it in `cluster.degraded_nodes`) |
@@ -835,7 +838,8 @@ node_key = "data/cluster/node.key"   # prefer env / *_FILE in deployed configura
 | `node_id` | – | required for master/sub_node; DNS label 1–63 |
 | `master_url` | – | required for sub_node; `https://` only; must use the cluster port |
 | `cluster.listen.bind` | – | loopback/private/ULA; `0.0.0.0`/`::` rejected |
-| `cluster.listen.port` | 443 | 1–65535; master opens UDP+TCP when mode ≠ `h2_only` |
+| `cluster.listen.port` | 443 | 1–65535; master opens UDP+TCP when mode ≠ `h2_only`, or colocates on DoH when the address overlaps |
+| `cluster.listen.share_with_listener` | – | optional DoH listener id to force SNI/path colocation on that listener's port |
 | `cluster.transport.mode` | `auto` | `auto` \| `prefer_quic` \| `h2_only` |
 | `cluster.compression.enabled` | true | ignored for protocol 1 peers |
 | `cluster.compression.max_decompressed_bytes` | 16 MiB | 64 KiB–64 MiB |

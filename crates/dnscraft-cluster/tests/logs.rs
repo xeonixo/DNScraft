@@ -263,6 +263,7 @@ async fn start_master(name: &str, ingest: Arc<dyn LogIngest>) -> Master {
             listen: ListenConfig {
                 bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
                 port: 0,
+            share_with_listener: None,
             },
             server_name: "127.0.0.1".to_owned(),
             node_cert_ttl: NODE_CERT_TTL,
@@ -416,6 +417,74 @@ async fn lost_ack_replays_with_zero_duplicate_rows() {
     assert_eq!(ingest.inserted(), 4);
     assert_eq!(ingest.duplicates(), 4);
     assert_eq!(ingest.highest(), 4);
+
+    master.server.shutdown().await;
+}
+
+#[tokio::test]
+async fn zstd_log_batch_round_trips_and_shrinks_wire_size() {
+    let ingest = Arc::new(MockIngest::default());
+    let master = start_master("zstd-logs", Arc::clone(&ingest) as Arc<dyn LogIngest>).await;
+    let identity = enroll_node(&master, "node-a").await;
+    let client = Arc::new(
+        ClusterClient::new(&master.url, &identity, master.clock.clone())
+            .unwrap()
+            .with_compression(true, 3),
+    );
+
+    let mut records = Vec::new();
+    for seq in 1..=40 {
+        let id = format!("r{seq}");
+        records.push(LogRecord {
+            id: id.clone(),
+            record: json!({
+                "id": id,
+                "seq": seq,
+                "query_name": format!("host-{seq}.example.test."),
+                "decision": { "action": "allow", "reason": "default-profile-pass-through-verbose" },
+                "padding": "x".repeat(64),
+            }),
+        });
+    }
+    let batch = LogBatch {
+        protocol: dnscraft_cluster::PROTOCOL_VERSION,
+        node_id: "node-a".to_owned(),
+        first_seq: 1,
+        last_seq: 40,
+        records,
+    };
+    let plain = serde_json::to_vec(&batch).unwrap();
+    let envelope = dnscraft_cluster::ZstdEnvelope::compress(&plain, 3).unwrap();
+    let wire = serde_json::to_vec(&envelope).unwrap();
+    assert!(
+        wire.len() < plain.len() / 2,
+        "expected zstd wire {} < half of plain {}",
+        wire.len(),
+        plain.len()
+    );
+
+    assert_eq!(client.post_logs(&batch).await.unwrap(), 40);
+    assert_eq!(ingest.inserted(), 40);
+    assert_eq!(ingest.highest(), 40);
+
+    // Plaintext still accepted (protocol peers without compression).
+    let plain_client = Arc::new(
+        ClusterClient::new(&master.url, &identity, master.clock.clone())
+            .unwrap()
+            .with_compression(false, 1),
+    );
+    let next = LogBatch {
+        protocol: dnscraft_cluster::PROTOCOL_VERSION,
+        node_id: "node-a".to_owned(),
+        first_seq: 41,
+        last_seq: 41,
+        records: vec![LogRecord {
+            id: "r41".to_owned(),
+            record: json!({ "id": "r41", "seq": 41 }),
+        }],
+    };
+    assert_eq!(plain_client.post_logs(&next).await.unwrap(), 41);
+    assert_eq!(ingest.inserted(), 41);
 
     master.server.shutdown().await;
 }

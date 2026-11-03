@@ -56,6 +56,7 @@ use crate::ca::{ClusterCa, cert_fingerprint, node_id_from_der};
 use crate::config::{ListenConfig, QuotaConfig, TimingConfig};
 use crate::enroll::{PROTOCOL_VERSION, RenewRequest, enroll as run_enroll, renew as run_renew};
 use crate::error::ClusterError;
+use crate::compress::{CAP_COMPRESS_ZSTD, maybe_decompress_body};
 use crate::log::{LogAck, LogBatch, LogIngest};
 use crate::quota::QuotaLimiter;
 use crate::relay::{RuntimeCommand, WriteExecutor, WriteRelay};
@@ -368,6 +369,19 @@ impl ClusterBroadcast {
     }
 }
 
+/// Material for attaching the cluster control plane to a shared DoH `:443` listener.
+#[derive(Clone)]
+pub struct ClusterColocation {
+    /// SNI that selects the cluster server certificate.
+    pub cluster_sni: String,
+    /// Cluster CA PEM.
+    pub ca_cert_pem: String,
+    /// Cluster server certificate PEM.
+    pub server_cert_pem: String,
+    /// Cluster server private key PEM.
+    pub server_key_pem: String,
+}
+
 /// A running master cluster listener.
 ///
 /// The server owns its own master certificate (issued by the cluster CA) so a
@@ -376,6 +390,10 @@ pub struct ClusterServer {
     addr: SocketAddr,
     ca_cert_pem: String,
     server_cert_pem: String,
+    server_key_pem: String,
+    server_name: String,
+    colocated: bool,
+    state: Arc<ServerState>,
     config_sync: Arc<ConfigSync>,
     clock: Arc<dyn Clock>,
     config_apply_timeout: Duration,
@@ -464,6 +482,7 @@ impl ClusterServer {
             rpc_pending: Arc::clone(&rpc_pending),
         });
         let router = router(Arc::clone(&state));
+        let server_name = config.server_name.clone();
 
         let slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
         let node_slots: NodeSlots = Arc::new(Mutex::new(HashMap::new()));
@@ -488,7 +507,12 @@ impl ClusterServer {
                 }));
                 quic_endpoint = Some(endpoint);
             }
-            Err(ClusterError::TransportQuic { .. }) => {}
+            Err(ClusterError::TransportQuic { message }) => {
+                tracing::warn!(
+                    error = %message,
+                    "cluster QUIC listener failed to bind; Prefer-QUIC peers will fall back to HTTP/2"
+                );
+            }
             Err(error) => return Err(error),
         }
 
@@ -568,6 +592,10 @@ impl ClusterServer {
             addr,
             ca_cert_pem: state.ca.cert_pem().to_owned(),
             server_cert_pem,
+            server_key_pem,
+            server_name,
+            colocated: false,
+            state,
             config_sync,
             clock,
             config_apply_timeout,
@@ -580,6 +608,121 @@ impl ClusterServer {
             quic_handle,
             rpc_pending,
         })
+    }
+
+    /// Starts the cluster control plane **without** binding a socket, for
+    /// colocation on a shared DoH `:443` listener (SNI + `/cluster/v1` mux).
+    ///
+    /// Prefer-QUIC uses HTTP/2 on the shared TCP listener when UDP is owned by DoH-h3.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn start_colocated(
+        config: ClusterServerConfig,
+        ca: ClusterCa,
+        store: ClusterStore,
+        clock: Arc<dyn Clock>,
+        write_executor: Arc<dyn WriteExecutor>,
+        log_ingest: Arc<dyn LogIngest>,
+        auth_snapshot: Option<Arc<dyn AuthSnapshotSource>>,
+    ) -> Result<Self, ClusterError> {
+        if config.listen.bind.is_unspecified()
+            || !dnscraft_common::net::is_private(config.listen.bind)
+        {
+            return Err(ClusterError::RoleInvalid {
+                reason: "cluster.listen.bind must be a loopback or private/ULA address".to_owned(),
+            });
+        }
+        let addr = SocketAddr::new(config.listen.bind, config.listen.port);
+        let (server_cert_pem, server_key_pem) = issue_server_certificate(
+            &ca,
+            &config.server_name,
+            config.node_cert_ttl,
+            clock.as_ref(),
+        )?;
+        let (shutdown, shutdown_rx) = watch::channel(false);
+        let config_sync = ConfigSync::start(clock.clone(), shutdown_rx);
+        let config_apply_timeout = config.timing.config_apply_timeout;
+        let tls_signer: Arc<OnceLock<Arc<dyn TlsCsrSigner>>> = Arc::new(OnceLock::new());
+        let cloudflare_source: Arc<OnceLock<Arc<dyn CloudflareTokenSource>>> =
+            Arc::new(OnceLock::new());
+        let tls_source: Arc<OnceLock<Arc<dyn TlsCertificateSource>>> = Arc::new(OnceLock::new());
+        let rpc_pending: SharedRpcPending = Arc::new(RpcPending::new());
+        let state = Arc::new(ServerState {
+            ca,
+            store,
+            clock: Arc::clone(&clock),
+            node_cert_ttl: config.node_cert_ttl,
+            config_apply_timeout,
+            tls_signer: Arc::clone(&tls_signer),
+            cloudflare_source: Arc::clone(&cloudflare_source),
+            tls_source: Arc::clone(&tls_source),
+            config_sync: Arc::clone(&config_sync),
+            quotas: QuotaLimiter::new(config.quota),
+            write_executor,
+            log_ingest,
+            auth_snapshot,
+            rpc_pending: Arc::clone(&rpc_pending),
+        });
+        tracing::info!(
+            %addr,
+            sni = %config.server_name,
+            "cluster control plane colocated on shared DoH listener (TCP/HTTP/2); UDP/443 remains DoH-h3"
+        );
+        Ok(Self {
+            addr,
+            ca_cert_pem: state.ca.cert_pem().to_owned(),
+            server_cert_pem,
+            server_key_pem,
+            server_name: config.server_name,
+            colocated: true,
+            state,
+            config_sync,
+            clock,
+            config_apply_timeout,
+            tls_signer,
+            cloudflare_source,
+            tls_source,
+            shutdown,
+            handle: None,
+            quic_endpoint: None,
+            quic_handle: None,
+            rpc_pending,
+        })
+    }
+
+    /// PEM/SNI material for attaching to a DoH listener's [`ClusterSlot`].
+    pub fn colocation(&self) -> ClusterColocation {
+        ClusterColocation {
+            cluster_sni: self.server_name.clone(),
+            ca_cert_pem: self.ca_cert_pem.clone(),
+            server_cert_pem: self.server_cert_pem.clone(),
+            server_key_pem: self.server_key_pem.clone(),
+        }
+    }
+
+    /// Whether this server is attached to a shared DoH listener (no own bind).
+    pub fn is_colocated(&self) -> bool {
+        self.colocated
+    }
+
+    /// Serves one `/cluster/v1/*` request on a connection owned by the DoH listener.
+    pub async fn handle_colocated_request(
+        &self,
+        peer: SocketAddr,
+        peer_cert: Option<Vec<u8>>,
+        req: http::Request<Bytes>,
+    ) -> Response {
+        use tower_service::Service as _;
+
+        let peer_identity = peer_cert.as_deref().map(PeerIdentity::from_der);
+        let (parts, body) = req.into_parts();
+        let req = http::Request::from_parts(parts, Body::from(body));
+        let mut router = router(Arc::clone(&self.state))
+            .layer(Extension(peer_identity))
+            .layer(Extension(PeerSocketAddr(peer)));
+        match router.call(req).await {
+            Ok(response) => response,
+            Err(never) => match never {},
+        }
     }
 
     /// The bound listener address (useful when the configured port was `0`).
@@ -1036,7 +1179,11 @@ async fn stream(
         node_id: auth.0.clone(),
         last_applied_version: state.config_sync.current_version(),
         last_acked_log_seq: Some(master_highest_log_seq),
-        capabilities: Vec::new(),
+        capabilities: vec![
+            CAP_COMPRESS_ZSTD.to_owned(),
+            CAP_CLOUDFLARE_TOKEN.to_owned(),
+            crate::rpc::CAP_REVERSE_RPC.to_owned(),
+        ],
     }));
     // Reconcile auth on every (re)connection: the change watcher alone means a
     // node that was offline across a revocation would keep the stale snapshot.
@@ -1220,7 +1367,11 @@ async fn log_batch(
     {
         return error_response(&quota_exceeded(&auth.0, "log byte"));
     }
-    let batch: LogBatch = match serde_json::from_slice(&body) {
+    let plain = match maybe_decompress_body(&body) {
+        Ok(plain) => plain,
+        Err(error) => return error_response(&error),
+    };
+    let batch: LogBatch = match serde_json::from_slice(&plain) {
         Ok(batch) => batch,
         Err(_) => {
             return error_response(&ClusterError::LogStreamInvalid {

@@ -100,6 +100,7 @@ impl DohH3Harness {
             event_sink: None,
             alt_svc_port: Arc::clone(&alt_svc_port),
             web: Arc::default(),
+            cluster: std::sync::Arc::new(dnscraft_listeners::ClusterSlot::default()),
             bound: tcp_tx,
             shutdown: shutdown_rx.clone(),
             trusted_proxies: std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
@@ -118,7 +119,8 @@ impl DohH3Harness {
                 sni_gate: gate,
                 event_sink: None,
                 alt_svc_port: Arc::clone(&alt_svc_port),
-                bound: udp_tx,
+                cluster: std::sync::Arc::new(dnscraft_listeners::ClusterSlot::default()),
+            bound: udp_tx,
                 shutdown: shutdown_rx,
                 trusted_proxies: std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
             })));

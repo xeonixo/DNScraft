@@ -250,7 +250,7 @@ pub(crate) async fn start(
     let cluster_runtime = match cluster {
         Some(cluster) => {
             let (next, runtime) =
-                start_cluster(cluster, enrollment, state, engines, data_dir).await?;
+                start_cluster(cluster, enrollment, state, engines, data_dir, set).await?;
             state = next;
             Some(runtime)
         }
@@ -442,6 +442,7 @@ async fn start_cluster(
     mut state: AppState,
     engines: &Engines,
     data_dir: &Path,
+    set: &Arc<ListenerSet<PolicyEngine>>,
 ) -> Result<(AppState, ClusterRuntime), Error> {
     if cluster.role == Role::SubNode && cluster.offline_writes.enabled {
         let store = ClusterStore::open(
@@ -464,6 +465,37 @@ async fn start_cluster(
     options.tls_engine = engines.tls.clone();
     options.join_token = enrollment.join_token.clone();
     options.master_cert_pem = enrollment.master_cert_pem.clone();
+    if cluster.role == Role::Master
+        && let Some(listen) = cluster.listen.as_ref()
+    {
+        let share = listen
+            .share_with_listener
+            .as_deref()
+            .and_then(|id| set.doh_listener_by_id(id));
+        let covering = set.doh_listeners_for_colocation(listen.bind, listen.port);
+        if share.is_some() || !covering.is_empty() {
+            if let Some(shared) = share.as_ref()
+                && shared.address.port() != listen.port
+                && !covering.iter().any(|l| l.id == shared.id)
+            {
+                tracing::warn!(
+                    share_with = %shared.id.as_str(),
+                    cluster_port = listen.port,
+                    doh_port = shared.address.port(),
+                    "cluster.listen.share_with_listener points at a DoH listener on a different port; colocation requires the same port"
+                );
+            } else {
+                options.cluster_slot = Some(set.cluster_slot());
+                options.colocate_with_doh = true;
+                tracing::info!(
+                    bind = %listen.bind,
+                    port = listen.port,
+                    share_with = listen.share_with_listener.as_deref().unwrap_or("-"),
+                    "cluster control plane will colocate on DoH :443 (SNI + /cluster/v1)"
+                );
+            }
+        }
+    }
     let runtime = ClusterRuntime::start(cluster.clone(), &state, options)
         .await
         .map_err(|error| Error::startup("dnscraft.startup.cluster", format!("cluster: {error}")))?;

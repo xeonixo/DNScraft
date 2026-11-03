@@ -30,6 +30,9 @@ use crate::admission::{
 };
 use crate::bans::StrikeReason;
 use crate::clock::{Clock, add_duration, wait_until};
+use crate::cluster_slot::{
+    ClusterAttachment, ClusterSlot, MuxCertResolver, colocated_tcp_server_config,
+};
 use crate::config::{Exposure, Limits, ListenerConfig};
 use crate::core::{QueryMeta, error_event_from_wire, error_result_from_wire, handle_wire};
 use crate::doh_request::{
@@ -42,10 +45,11 @@ use crate::framing::MAX_MESSAGE_LEN;
 use crate::handler::QueryHandler;
 use crate::socket::bind_tcp;
 use crate::tls::{
-    ListenerCertResolver, SniGate, TlsStats, apply_tls_handshake_strike, is_handshake_timeout,
-    tcp_server_config, tls_acceptor, tls_handshake_timeout,
+    ALPN_H2, ALPN_HTTP_1_1, ListenerCertResolver, SniGate, TlsStats, apply_tls_handshake_strike,
+    is_handshake_timeout, tcp_server_config, tls_acceptor, tls_handshake_timeout,
 };
 use crate::web::{WebBody, WebSlot};
+use std::sync::OnceLock;
 
 /// Counters for one DoH listener.
 #[derive(Debug, Default)]
@@ -109,6 +113,8 @@ pub struct DohServeParams<H: ?Sized> {
     pub alt_svc_port: Arc<AtomicU16>,
     /// Serves non-DoH paths for private sources on a local listener (web UI / API); empty → `404`.
     pub web: Arc<WebSlot>,
+    /// Optional cluster control-plane colocation (`/cluster/v1` + cluster SNI).
+    pub cluster: Arc<ClusterSlot>,
     /// Reverse-proxy addresses whose `X-Forwarded-For` is honoured for DoH attribution.
     pub trusted_proxies: Arc<RwLock<Vec<IpAddr>>>,
     /// Bound address (port 0 friendly).
@@ -134,6 +140,10 @@ pub(crate) struct DohShared<H: ?Sized> {
     pub(crate) alt_svc_port: Arc<AtomicU16>,
     /// Web UI / API hand-off (HTTP/1.1 and HTTP/2 only).
     pub(crate) web: Arc<WebSlot>,
+    /// Optional cluster control-plane colocation.
+    pub(crate) cluster: Arc<ClusterSlot>,
+    /// Cached colocated TLS acceptor (built once after cluster attaches).
+    pub(crate) colocated_acceptor: OnceLock<TlsAcceptor>,
     /// Reverse-proxy addresses whose `X-Forwarded-For` is honoured for DoH attribution.
     pub(crate) trusted_proxies: Arc<RwLock<Vec<IpAddr>>>,
     /// Listener shutdown signal (graceful connection drain).
@@ -168,6 +178,7 @@ where
         event_sink,
         alt_svc_port,
         web,
+        cluster,
         trusted_proxies,
         bound,
         mut shutdown,
@@ -207,6 +218,8 @@ where
         event_sink,
         alt_svc_port,
         web,
+        cluster,
+        colocated_acceptor: OnceLock::new(),
         trusted_proxies,
         shutdown: shutdown.clone(),
     });
@@ -300,6 +313,7 @@ fn handle_accept<H>(
             return;
         }
 
+        let acceptor = colocated_or_doh_acceptor(&shared, &acceptor, &certs, &tls_stats);
         let tls = match tls_handshake_timeout(
             acceptor.accept(stream),
             shared.clock.as_ref(),
@@ -327,6 +341,13 @@ fn handle_accept<H>(
             }
         };
 
+        let peer_cert = tls
+            .get_ref()
+            .1
+            .peer_certificates()
+            .and_then(|certs| certs.first())
+            .map(|der| der.as_ref().to_vec());
+
         let io = TokioIo::new(tls);
         let idle_timeout = shared.limits.tcp_idle_timeout;
         let max_streams = shared.limits.max_queries_per_connection.max(1);
@@ -337,9 +358,10 @@ fn handle_accept<H>(
             let shared = Arc::clone(&svc_shared);
             let act = Arc::clone(&act);
             let clock = Arc::clone(&svc_shared.clock);
+            let peer_cert = peer_cert.clone();
             async move {
                 act.begin();
-                let resp = route(shared, peer, req).await;
+                let resp = route(shared, peer, peer_cert, req).await;
                 act.end(clock.as_ref());
                 Ok::<_, Infallible>(resp)
             }
@@ -490,16 +512,104 @@ pub(crate) fn release_per_source(per_source: &Mutex<HashMap<IpAddr, u32>>, sourc
     }
 }
 
-/// Sends a non-DoH path from a private source to the web handler (if any);
-/// everything else is DoH.
+/// Picks the colocated mTLS acceptor once the cluster slot is filled; otherwise DoH-only.
+fn colocated_or_doh_acceptor<H: ?Sized>(
+    shared: &DohShared<H>,
+    doh_acceptor: &TlsAcceptor,
+    certs: &Arc<CertResolver>,
+    tls_stats: &Arc<TlsStats>,
+) -> TlsAcceptor {
+    let Some(attachment) = shared.cluster.get() else {
+        return doh_acceptor.clone();
+    };
+    if let Some(existing) = shared.colocated_acceptor.get() {
+        return existing.clone();
+    }
+    match build_colocated_acceptor(attachment, certs, tls_stats, &shared.listener) {
+        Ok(built) => {
+            let _ = shared.colocated_acceptor.set(built.clone());
+            tracing::info!(
+                sni = %attachment.cluster_sni,
+                listener = %shared.listener.id,
+                "DoH listener colocating cluster control plane on shared :443"
+            );
+            built
+        }
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "cluster colocation TLS setup failed; serving DoH-only TLS"
+            );
+            doh_acceptor.clone()
+        }
+    }
+}
+
+fn build_colocated_acceptor(
+    attachment: &ClusterAttachment,
+    certs: &Arc<CertResolver>,
+    tls_stats: &Arc<TlsStats>,
+    listener: &ListenerConfig,
+) -> Result<TlsAcceptor, String> {
+    let doh: Arc<dyn rustls::server::ResolvesServerCert> =
+        ListenerCertResolver::local(Arc::clone(certs), Arc::clone(tls_stats));
+    let cluster_key = MuxCertResolver::certified_key_from_pem(
+        &attachment.server_cert_pem,
+        &attachment.server_key_pem,
+    )?;
+    let mux = MuxCertResolver::new(doh, attachment.cluster_sni.clone(), cluster_key);
+    let tls_policy = listener.tls_policy.clone().unwrap_or_default();
+    let mut alpn: Vec<&[u8]> = tls_policy.alpn.iter().map(String::as_bytes).collect();
+    if alpn.is_empty() {
+        alpn = vec![ALPN_H2, ALPN_HTTP_1_1];
+    }
+    // Ensure cluster HTTP/2 ALPN is present even if the DoH policy omits it.
+    if !alpn.iter().any(|proto| *proto == ALPN_H2) {
+        alpn.insert(0, ALPN_H2);
+    }
+    let config = colocated_tcp_server_config(mux, &attachment.ca_cert_pem, &alpn)?;
+    Ok(tls_acceptor(config))
+}
+
+/// Sends cluster / web / DoH paths to the matching handler.
 async fn route<H>(
     shared: Arc<DohShared<H>>,
     peer: SocketAddr,
+    peer_cert: Option<Vec<u8>>,
     req: Request<Incoming>,
 ) -> Response<WebBody>
 where
     H: QueryHandler,
 {
+    if let Some(cluster) = shared.cluster.get()
+        && ClusterAttachment::is_cluster_path(req.uri().path())
+    {
+        let (parts, incoming) = req.into_parts();
+        let collected = match incoming.collect().await {
+            Ok(collected) => collected.to_bytes(),
+            Err(error) => {
+                return Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(
+                        Full::new(Bytes::from(format!("body: {error}")))
+                            .map_err(|never| -> Box<dyn std::error::Error + Send + Sync> {
+                                match never {}
+                            })
+                            .boxed_unsync(),
+                    )
+                    .unwrap_or_else(|_| {
+                        Response::new(
+                            Full::new(Bytes::new())
+                                .map_err(|never| -> Box<dyn std::error::Error + Send + Sync> {
+                                    match never {}
+                                })
+                                .boxed_unsync(),
+                        )
+                    });
+            }
+        };
+        return (cluster.handler)(peer, peer_cert, Request::from_parts(parts, collected)).await;
+    }
     if let Some(web) = shared.web.get()
         && parse_doh_path(req.uri().path()) == DohPath::Other
         && web_allowed(&shared, peer.ip())

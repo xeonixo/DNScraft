@@ -84,6 +84,7 @@ async fn start_env() -> TestEnv {
             listen: ListenConfig {
                 bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
                 port: 0,
+            share_with_listener: None,
             },
             server_name: "127.0.0.1".to_owned(),
             node_cert_ttl: Duration::from_secs(86400),

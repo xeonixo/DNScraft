@@ -26,6 +26,7 @@ socket2 = { workspace = true }
 quinn-udp = { workspace = true }
 quinn = { workspace = true }
 rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
 tokio-rustls = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }

@@ -472,6 +472,7 @@ impl EncryptedSet {
             alt_svc_port: std::sync::Arc::new(std::sync::atomic::AtomicU16::new(0)),
             web: Arc::default(),
             trusted_proxies: Arc::new(std::sync::RwLock::new(Vec::new())),
+            cluster: std::sync::Arc::new(dnscraft_listeners::ClusterSlot::default()),
             bound: doh_tx,
             shutdown: doh_sd_rx,
         })));

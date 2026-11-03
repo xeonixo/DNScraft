@@ -296,7 +296,10 @@ pub(crate) async fn get_cluster_settings(
     Ok(success(live_transport_status(&state, &settings)))
 }
 
-/// Rejects a listen override that shares bind:port with a DoH listener.
+/// Validates a listen override against live DoH listeners.
+///
+/// Sharing bind:port with a DoH listener is **colocation** (SNI + `/cluster/v1`
+/// mux), not an error. A non-DoH listener on the same address remains a collision.
 fn check_doh_listen_collision(
     state: &AppState,
     listen: &ListenOverride,
@@ -310,17 +313,19 @@ fn check_doh_listen_collision(
         return Ok(());
     };
     for listener in provider.listeners_status().listeners {
-        if listener.protocol != Protocol::Doh {
+        let addr = listener.bound.unwrap_or(listener.configured_address);
+        if addr.ip() != ip || addr.port() != listen.port {
             continue;
         }
-        let addr = listener.bound.unwrap_or(listener.configured_address);
-        if addr.ip() == ip && addr.port() == listen.port {
-            return Err(ControlApiError::from(ClusterError::ListenCollision {
-                listener_id: listener.id.as_str().to_owned(),
-                bind: listen.bind.clone(),
-                port: listen.port,
-            }));
+        if listener.protocol == Protocol::Doh {
+            // Same socket as DoH → SNI colocation after restart.
+            continue;
         }
+        return Err(ControlApiError::from(ClusterError::ListenCollision {
+            listener_id: listener.id.as_str().to_owned(),
+            bind: listen.bind.clone(),
+            port: listen.port,
+        }));
     }
     Ok(())
 }

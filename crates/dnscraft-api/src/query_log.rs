@@ -862,9 +862,11 @@ impl QueryLog {
             .collect::<Result<Vec<_>, ControlApiError>>()?;
 
         let node_for_tx = node_id.clone();
+        let batch_len = rows.len() as u64;
         self.db
             .with_conn(move |conn| {
                 let tx = conn.transaction().map_err(db_err)?;
+                let mut duplicates = 0u64;
                 for (row, seq, device_id) in &rows {
                     let seq =
                         i64::try_from(*seq).map_err(|_| ControlApiError::QueryLogInvalid {
@@ -886,10 +888,12 @@ impl QueryLog {
                                 ),
                             });
                         }
+                        duplicates = duplicates.saturating_add(1);
                         continue;
                     }
-                    tx.execute(
-                        "INSERT INTO query_log (
+                    let inserted = tx
+                        .execute(
+                            "INSERT INTO query_log (
                              id, time, node_id, source_ip, query_name, listener_id,
                              protocol, source_ip_truncated, client_id, client_name,
                              query_type, query_class, view_id, profile_id, status,
@@ -898,33 +902,44 @@ impl QueryLog {
                              ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
                              ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20
                          ) ON CONFLICT DO NOTHING",
-                        params![
-                            row.id,
-                            row.time_us,
-                            node_for_tx,
-                            row.source_ip,
-                            row.query_name,
-                            row.listener_id,
-                            row.protocol,
-                            i64::from(row.source_ip_truncated),
-                            row.client_id,
-                            row.client_name,
-                            row.query_type,
-                            row.query_class,
-                            row.view_id,
-                            row.profile_id,
-                            row.status,
-                            row.answer_source,
-                            row.rcode,
-                            row.record.to_string(),
-                            seq,
-                            device_id,
-                        ],
-                    )
-                    .map_err(db_err)?;
+                            params![
+                                row.id,
+                                row.time_us,
+                                node_for_tx,
+                                row.source_ip,
+                                row.query_name,
+                                row.listener_id,
+                                row.protocol,
+                                i64::from(row.source_ip_truncated),
+                                row.client_id,
+                                row.client_name,
+                                row.query_type,
+                                row.query_class,
+                                row.view_id,
+                                row.profile_id,
+                                row.status,
+                                row.answer_source,
+                                row.rcode,
+                                row.record.to_string(),
+                                seq,
+                                device_id,
+                            ],
+                        )
+                        .map_err(db_err)?;
+                    if inserted == 0 {
+                        duplicates = duplicates.saturating_add(1);
+                    }
                 }
                 let highest = highest_contiguous_seq(&tx, &node_for_tx)?;
                 tx.commit().map_err(db_err)?;
+                if duplicates > 0 {
+                    tracing::debug!(
+                        node_id = %node_for_tx,
+                        duplicates,
+                        batch_len,
+                        "cluster log ingest skipped duplicate rows"
+                    );
+                }
                 Ok(u64::try_from(highest).unwrap_or_default())
             })
             .await

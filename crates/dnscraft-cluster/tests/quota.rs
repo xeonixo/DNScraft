@@ -130,6 +130,7 @@ async fn start_master(name: &str, quota: QuotaConfig) -> Master {
             listen: ListenConfig {
                 bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
                 port: 0,
+            share_with_listener: None,
             },
             server_name: "127.0.0.1".to_owned(),
             node_cert_ttl: NODE_CERT_TTL,
@@ -300,7 +301,9 @@ async fn relay_flood_is_rejected_per_node_and_refills_with_the_clock() {
 #[tokio::test]
 async fn log_byte_flood_is_rejected_and_refills_with_the_clock() {
     let payload = batch("node-a");
-    let bytes = serde_json::to_vec(&payload).unwrap().len() as u64;
+    let plain = serde_json::to_vec(&payload).unwrap();
+    let envelope = dnscraft_cluster::ZstdEnvelope::compress(&plain, 3).unwrap();
+    let bytes = serde_json::to_vec(&envelope).unwrap().len() as u64;
     let master = start_master(
         "log-flood",
         QuotaConfig {

@@ -495,9 +495,9 @@ async fn cluster_settings_round_trip_on_disk() {
 }
 
 #[tokio::test]
-async fn cluster_listen_colliding_with_doh_returns_409() {
+async fn cluster_listen_same_as_doh_is_colocation_not_409() {
     let dir = std::env::temp_dir().join(format!(
-        "dnscraft-api-cluster-collision-{}",
+        "dnscraft-api-cluster-colocation-{}",
         SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
@@ -547,6 +547,7 @@ async fn cluster_listen_colliding_with_doh_returns_409() {
         .with_cluster_status(status)
         .with_listeners_status(Arc::new(FixedListeners(listeners)));
 
+    // Same bind:port as DoH → colocation (accepted; restart to attach).
     let (status, body) = send(
         &h,
         "PUT",
@@ -555,10 +556,10 @@ async fn cluster_listen_colliding_with_doh_returns_409() {
         Some(json!({ "listen": { "bind": "127.0.0.1", "port": 443 } })),
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    assert_eq!(body["error"]["code"], "cluster.listen.collision");
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["restart_required"], true);
 
-    // Different port is fine and marks restart_required.
+    // Different port is also fine.
     let (status, body) = send(
         &h,
         "PUT",

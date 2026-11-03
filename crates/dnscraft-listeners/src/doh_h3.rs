@@ -9,14 +9,20 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use bytes::{Buf, Bytes};
 use dnscraft_tls::CertResolver;
 use http::header;
-use http::{Method, Request};
-use quinn::crypto::rustls::QuicServerConfig;
+use http::{Method, Request, StatusCode};
+use http_body_util::BodyExt as _;
+use quinn::crypto::rustls::{HandshakeData, QuicServerConfig};
 use quinn::{Endpoint, EndpointConfig, ServerConfig, TokioRuntime, VarInt};
 use rustls::ServerConfig as RustlsServerConfig;
+use rustls_pki_types::CertificateDer as CertDer;
+use std::sync::OnceLock;
 use tokio::sync::{Notify, Semaphore, oneshot, watch};
 
 use crate::admission::Admission;
 use crate::clock::{Clock, add_duration, wait_until};
+use crate::cluster_slot::{
+    ClusterAttachment, MuxCertResolver, colocated_quic_server_config,
+};
 use crate::config::{Limits, ListenerConfig};
 use crate::doh::{
     ConnActivity, DohShared, DohStats, effective_doh_source, needs_address_validation,
@@ -63,6 +69,8 @@ pub struct DohH3ServeParams<H: ?Sized> {
     pub alt_svc_port: Arc<AtomicU16>,
     /// Reverse-proxy addresses whose `X-Forwarded-For` is honoured for DoH attribution.
     pub trusted_proxies: Arc<std::sync::RwLock<Vec<IpAddr>>>,
+    /// Optional cluster attachment (SNI demux for DoH-h3 and Cluster-h3).
+    pub cluster: Arc<crate::cluster_slot::ClusterSlot>,
     /// Bound address (port 0 friendly).
     pub bound: oneshot::Sender<SocketAddr>,
     /// Stop accepting.
@@ -97,6 +105,7 @@ where
         event_sink,
         alt_svc_port,
         trusted_proxies,
+        cluster,
         bound,
         mut shutdown,
     } = params;
@@ -113,27 +122,7 @@ where
     let mut rustls_cfg: RustlsServerConfig = (*quic_server_config(resolver, &tls_policy)).clone();
     rustls_cfg.alpn_protocols = vec![ALPN_H3.to_vec()];
 
-    let quic_crypto =
-        QuicServerConfig::try_from(rustls_cfg).map_err(|e| ListenersError::TlsHandshake {
-            message: format!("QuicServerConfig: {e}"),
-        })?;
-    let mut server_config = ServerConfig::with_crypto(Arc::new(quic_crypto));
-
-    let mut transport = quinn::TransportConfig::default();
-    // Bidirectional: application DoH requests (capped like DoQ).
-    transport.max_concurrent_bidi_streams(VarInt::from_u32(
-        limits.max_quic_streams_per_connection.max(1),
-    ));
-    // HTTP/3 needs unidirectional control/QPACK streams (unlike DoQ).
-    transport.max_concurrent_uni_streams(VarInt::from_u32(3));
-    let idle = limits.tcp_idle_timeout;
-    let idle_timeout = idle.try_into().map_err(|_| {
-        ListenersError::config(format!(
-            "tcp_idle_timeout {idle:?} is not a valid QUIC IdleTimeout"
-        ))
-    })?;
-    transport.max_idle_timeout(Some(idle_timeout));
-    server_config.transport_config(Arc::new(transport));
+    let server_config = quinn_server_config(rustls_cfg, &limits)?;
 
     let endpoint = Endpoint::new(
         EndpointConfig::default(),
@@ -151,7 +140,7 @@ where
     let doh = Arc::new(DohShared {
         admission,
         listener,
-        limits,
+        limits: limits.clone(),
         handler,
         clock,
         stats,
@@ -162,6 +151,8 @@ where
         event_sink,
         alt_svc_port,
         web: Arc::default(),
+        cluster,
+        colocated_acceptor: OnceLock::new(),
         trusted_proxies,
         shutdown: shutdown.clone(),
     });
@@ -171,8 +162,10 @@ where
         certs,
         conn_cap,
     });
+    let colocated_quic = OnceLock::new();
 
     loop {
+        maybe_install_colocated_quic(&endpoint, &shared, &colocated_quic);
         tokio::select! {
             biased;
             _ = shutdown.changed() => {
@@ -192,6 +185,82 @@ where
             }
         }
     }
+}
+
+fn quinn_server_config(
+    rustls_cfg: RustlsServerConfig,
+    limits: &Limits,
+) -> Result<ServerConfig, ListenersError> {
+    let quic_crypto =
+        QuicServerConfig::try_from(rustls_cfg).map_err(|e| ListenersError::TlsHandshake {
+            message: format!("QuicServerConfig: {e}"),
+        })?;
+    let mut server_config = ServerConfig::with_crypto(Arc::new(quic_crypto));
+    let mut transport = quinn::TransportConfig::default();
+    transport.max_concurrent_bidi_streams(VarInt::from_u32(
+        limits.max_quic_streams_per_connection.max(1),
+    ));
+    transport.max_concurrent_uni_streams(VarInt::from_u32(3));
+    let idle = limits.tcp_idle_timeout;
+    let idle_timeout = idle.try_into().map_err(|_| {
+        ListenersError::config(format!(
+            "tcp_idle_timeout {idle:?} is not a valid QUIC IdleTimeout"
+        ))
+    })?;
+    transport.max_idle_timeout(Some(idle_timeout));
+    server_config.transport_config(Arc::new(transport));
+    Ok(server_config)
+}
+
+/// Switches the shared UDP/443 endpoint to muxed cluster+DoH TLS once attached.
+fn maybe_install_colocated_quic<H: ?Sized>(
+    endpoint: &Endpoint,
+    shared: &DohH3Shared<H>,
+    installed: &OnceLock<()>,
+) {
+    if installed.get().is_some() {
+        return;
+    }
+    let Some(attachment) = shared.doh.cluster.get() else {
+        return;
+    };
+    match build_colocated_quic_server_config(attachment, &shared.certs, &shared.tls_stats, &shared.doh.limits)
+    {
+        Ok(config) => {
+            endpoint.set_server_config(Some(config));
+            let _ = installed.set(());
+            tracing::info!(
+                sni = %attachment.cluster_sni,
+                listener = %shared.doh.listener.id,
+                "DoH-h3 endpoint colocating cluster control plane (SNI demux on UDP/443)"
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "cluster QUIC colocation TLS setup failed; UDP/443 stays DoH-only"
+            );
+            // Avoid retrying every accept with the same broken PEMs.
+            let _ = installed.set(());
+        }
+    }
+}
+
+fn build_colocated_quic_server_config(
+    attachment: &ClusterAttachment,
+    certs: &Arc<CertResolver>,
+    tls_stats: &Arc<TlsStats>,
+    limits: &Limits,
+) -> Result<ServerConfig, String> {
+    let doh: Arc<dyn rustls::server::ResolvesServerCert> =
+        ListenerCertResolver::local(Arc::clone(certs), Arc::clone(tls_stats));
+    let cluster_key = MuxCertResolver::certified_key_from_pem(
+        &attachment.server_cert_pem,
+        &attachment.server_key_pem,
+    )?;
+    let mux = MuxCertResolver::new(doh, attachment.cluster_sni.clone(), cluster_key);
+    let rustls_cfg = (*colocated_quic_server_config(mux, &attachment.ca_cert_pem)?).clone();
+    quinn_server_config(rustls_cfg, limits).map_err(|e| e.to_string())
 }
 
 fn handle_incoming<H>(shared: Arc<DohH3Shared<H>>, incoming: quinn::Incoming)
@@ -296,7 +365,27 @@ where
         };
 
         DohStats::bump(&shared.doh.stats.accepted);
-        serve_h3(Arc::clone(&shared), conn, peer).await;
+        let cluster_sni = shared
+            .doh
+            .cluster
+            .get()
+            .map(|attachment| attachment.cluster_sni.as_str());
+        let sni = conn
+            .handshake_data()
+            .and_then(|data| {
+                data.downcast_ref::<HandshakeData>()
+                    .map(|handshake| handshake.server_name.clone())
+            })
+            .flatten();
+        let is_cluster = cluster_sni.is_some_and(|name| {
+            sni.as_deref()
+                .is_some_and(|sni| sni.eq_ignore_ascii_case(name))
+        });
+        if is_cluster {
+            serve_cluster_h3(Arc::clone(&shared), conn, peer).await;
+        } else {
+            serve_h3(Arc::clone(&shared), conn, peer).await;
+        }
         release_per_source(&shared.doh.per_source, source);
         DohStats::bump(&shared.doh.stats.closed);
     });
@@ -313,6 +402,102 @@ fn strike_handshake<H: ?Sized>(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     apply_tls_handshake_strike(&mut adm, exposure, source, shared.doh.clock.now());
+}
+
+fn peer_cert_der(conn: &quinn::Connection) -> Option<Vec<u8>> {
+    let certs = conn.peer_identity()?.downcast::<Vec<CertDer>>().ok()?;
+    certs.first().map(|der| der.as_ref().to_vec())
+}
+
+/// Serves `/cluster/v1/*` over HTTP/3 on the shared DoH UDP endpoint (cluster SNI).
+async fn serve_cluster_h3<H>(shared: Arc<DohH3Shared<H>>, conn: quinn::Connection, peer: SocketAddr)
+where
+    H: QueryHandler + 'static,
+{
+    let Some(attachment) = shared.doh.cluster.get().cloned() else {
+        conn.close(VarInt::from_u32(0), b"no cluster");
+        return;
+    };
+    let peer_cert = peer_cert_der(&conn);
+    let mut h3_builder = h3::server::builder();
+    h3_builder.max_field_section_size(MAX_DOH_HEADER_LIST_SIZE);
+    let mut h3_conn = match h3_builder
+        .build(h3_quinn::Connection::new(conn.clone()))
+        .await
+    {
+        Ok(c) => c,
+        Err(_) => {
+            conn.close(VarInt::from_u32(0), b"h3");
+            return;
+        }
+    };
+
+    loop {
+        match h3_conn.accept().await {
+            Ok(Some(resolver)) => {
+                let attachment = attachment.clone();
+                let peer_cert = peer_cert.clone();
+                tokio::spawn(async move {
+                    let _ = dispatch_cluster_h3(resolver, attachment, peer, peer_cert).await;
+                });
+            }
+            Ok(None) => return,
+            Err(_) => return,
+        }
+    }
+}
+
+async fn dispatch_cluster_h3(
+    resolver: h3::server::RequestResolver<h3_quinn::Connection, Bytes>,
+    attachment: ClusterAttachment,
+    peer: SocketAddr,
+    peer_cert: Option<Vec<u8>>,
+) -> Result<(), ()> {
+    let (req, mut stream) = resolver.resolve_request().await.map_err(|_| ())?;
+    let (parts, ()) = req.into_parts();
+    if !ClusterAttachment::is_cluster_path(parts.uri.path()) {
+        let resp = http::Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(())
+            .map_err(|_| ())?;
+        stream.send_response(resp).await.map_err(|_| ())?;
+        stream.finish().await.map_err(|_| ())?;
+        return Ok(());
+    }
+
+    let mut body = Vec::new();
+    loop {
+        match stream.recv_data().await {
+            Ok(Some(mut chunk)) => {
+                body.extend_from_slice(chunk.chunk());
+                chunk.advance(chunk.remaining());
+            }
+            Ok(None) => break,
+            Err(_) => return Err(()),
+        }
+    }
+    let request = Request::from_parts(parts, Bytes::from(body));
+    let response = (attachment.handler)(peer, peer_cert, request).await;
+    let (parts, mut body) = response.into_parts();
+    let mut builder = http::Response::builder().status(parts.status);
+    for (name, value) in parts.headers.iter() {
+        builder = builder.header(name, value);
+    }
+    let resp = builder.body(()).map_err(|_| ())?;
+    stream.send_response(resp).await.map_err(|_| ())?;
+    loop {
+        match body.frame().await {
+            Some(Ok(frame)) => {
+                if let Ok(data) = frame.into_data() {
+                    stream.send_data(data).await.map_err(|_| ())?;
+                }
+            }
+            Some(Err(_)) => return Err(()),
+            None => break,
+        }
+    }
+    stream.finish().await.map_err(|_| ())?;
+    Ok(())
 }
 
 async fn serve_h3<H>(shared: Arc<DohH3Shared<H>>, conn: quinn::Connection, peer: SocketAddr)

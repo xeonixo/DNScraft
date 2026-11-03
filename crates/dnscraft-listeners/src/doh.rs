@@ -347,12 +347,12 @@ fn handle_accept<H>(
             .peer_certificates()
             .and_then(|certs| certs.first())
             .map(|der| der.as_ref().to_vec());
-        // Cluster streams are long-lived; axum returns the Response before the
-        // NDJSON body finishes, so ConnActivity looks idle and the DoH 10s timer
-        // tears the stream down. On a colocated listener, skip app-idle close
-        // for every connection (client cert may be absent on enroll; path-based
-        // detection is too late for the accept loop).
-        let skip_app_idle = shared.cluster.get().is_some() || peer_cert.is_some();
+        // Cluster mTLS streams are long-lived; axum returns the Response before
+        // the NDJSON body finishes, so ConnActivity looks idle and a graceful
+        // shutdown (GOAWAY) makes the client drop the stream. Skip app-idle
+        // only when a client certificate was presented — not merely because a
+        // cluster slot exists (that would disable idle for public DoH too).
+        let skip_app_idle = peer_cert.is_some();
 
         let io = TokioIo::new(tls);
         let idle_timeout = shared.limits.tcp_idle_timeout;

@@ -451,8 +451,17 @@ where
             Ok(Some(resolver)) => {
                 let attachment = attachment.clone();
                 let peer_cert = peer_cert.clone();
+                // Bound the request-body read only; the NDJSON response may sit quiet.
+                let body_timeout = shared.doh.limits.tcp_idle_timeout;
                 tokio::spawn(async move {
-                    let _ = dispatch_cluster_h3(resolver, attachment, peer, peer_cert).await;
+                    let _ = dispatch_cluster_h3(
+                        resolver,
+                        attachment,
+                        peer,
+                        peer_cert,
+                        body_timeout,
+                    )
+                    .await;
                 });
             }
             Ok(None) => return,
@@ -466,6 +475,7 @@ async fn dispatch_cluster_h3(
     attachment: ClusterAttachment,
     peer: SocketAddr,
     peer_cert: Option<Vec<u8>>,
+    body_timeout: Duration,
 ) -> Result<(), ()> {
     let (req, mut stream) = resolver.resolve_request().await.map_err(|_| ())?;
     let (parts, ()) = req.into_parts();
@@ -479,16 +489,29 @@ async fn dispatch_cluster_h3(
         return Ok(());
     }
 
+    // Cap stalled /cluster uploads; leave the response stream uncapped so Prefer-QUIC
+    // NDJSON can stay quiet between pushes (keep-alive holds the QUIC connection).
     let mut body = Vec::new();
-    loop {
-        match stream.recv_data().await {
-            Ok(Some(mut chunk)) => {
-                body.extend_from_slice(chunk.chunk());
-                chunk.advance(chunk.remaining());
+    let body_read = async {
+        loop {
+            match stream.recv_data().await {
+                Ok(Some(mut chunk)) => {
+                    // Cluster H3 currently carries stream hello / small POSTs only.
+                    const MAX_CLUSTER_H3_BODY: usize = 256 * 1024;
+                    if body.len().saturating_add(chunk.remaining()) > MAX_CLUSTER_H3_BODY {
+                        return Err(());
+                    }
+                    body.extend_from_slice(chunk.chunk());
+                    chunk.advance(chunk.remaining());
+                }
+                Ok(None) => return Ok(()),
+                Err(_) => return Err(()),
             }
-            Ok(None) => break,
-            Err(_) => return Err(()),
         }
+    };
+    match tokio::time::timeout(body_timeout, body_read).await {
+        Ok(Ok(())) => {}
+        _ => return Err(()),
     }
     let request = Request::from_parts(parts, Bytes::from(body));
     let response = (attachment.handler)(peer, peer_cert, request).await;

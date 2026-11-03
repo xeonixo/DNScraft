@@ -92,6 +92,15 @@ pub(crate) async fn bind_quic_endpoint(
     let mut transport = quinn::TransportConfig::default();
     transport.max_concurrent_bidi_streams(VarInt::from_u32(64));
     transport.max_concurrent_uni_streams(VarInt::from_u32(3));
+    // Heartbeats use a separate TCP client; keep the stream QUIC path alive
+    // without relying on application traffic.
+    transport.max_idle_timeout(Some(
+        Duration::from_secs(120)
+            .try_into()
+            .map_err(|_| ClusterError::TransportQuic {
+                message: "invalid cluster QUIC idle timeout".to_owned(),
+            })?,
+    ));
     server_config.transport_config(Arc::new(transport));
 
     Endpoint::new(
@@ -351,7 +360,20 @@ async fn open_h3_stream_inner(
             message: format!("QuicClientConfig: {error}"),
         }
     })?;
-    endpoint.set_default_client_config(ClientConfig::new(Arc::new(crypto)));
+    // Stream responses are quiet between pushes; heartbeats go over HTTP/2.
+    // Without keep-alive, a colocated DoH QUIC idle (historically 10s) drops us.
+    let mut transport = quinn::TransportConfig::default();
+    transport.keep_alive_interval(Some(Duration::from_secs(5)));
+    transport.max_idle_timeout(Some(
+        Duration::from_secs(120)
+            .try_into()
+            .map_err(|_| ClusterError::TransportQuic {
+                message: "invalid cluster QUIC client idle timeout".to_owned(),
+            })?,
+    ));
+    let mut client_config = ClientConfig::new(Arc::new(crypto));
+    client_config.transport_config(Arc::new(transport));
+    endpoint.set_default_client_config(client_config);
 
     let _server_name = server_name;
     let connecting = endpoint.connect(addr, &sni).map_err(|error| {

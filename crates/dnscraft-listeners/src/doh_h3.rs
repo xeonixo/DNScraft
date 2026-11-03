@@ -5,6 +5,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU16, Ordering};
+use std::time::Duration;
 
 use bytes::{Buf, Bytes};
 use dnscraft_tls::CertResolver;
@@ -187,9 +188,24 @@ where
     }
 }
 
+/// Transport idle for a DoH-only QUIC endpoint (`tcp_idle_timeout`).
 fn quinn_server_config(
     rustls_cfg: RustlsServerConfig,
     limits: &Limits,
+) -> Result<ServerConfig, ListenersError> {
+    quinn_server_config_with_idle(rustls_cfg, limits, limits.tcp_idle_timeout)
+}
+
+/// When cluster Prefer-QUIC shares UDP/443, heartbeats stay on TCP/HTTP/2, so the
+/// NDJSON stream itself is quiet. A transport idle equal to DoH's 10s app idle
+/// tears the stream down every heartbeat interval. Keep transport idle longer;
+/// DoH still closes via application idle in [`serve_h3`].
+const COLOCATED_QUIC_TRANSPORT_IDLE: Duration = Duration::from_secs(120);
+
+fn quinn_server_config_with_idle(
+    rustls_cfg: RustlsServerConfig,
+    limits: &Limits,
+    idle: Duration,
 ) -> Result<ServerConfig, ListenersError> {
     let quic_crypto =
         QuicServerConfig::try_from(rustls_cfg).map_err(|e| ListenersError::TlsHandshake {
@@ -201,10 +217,9 @@ fn quinn_server_config(
         limits.max_quic_streams_per_connection.max(1),
     ));
     transport.max_concurrent_uni_streams(VarInt::from_u32(3));
-    let idle = limits.tcp_idle_timeout;
     let idle_timeout = idle.try_into().map_err(|_| {
         ListenersError::config(format!(
-            "tcp_idle_timeout {idle:?} is not a valid QUIC IdleTimeout"
+            "QUIC transport idle {idle:?} is not a valid IdleTimeout"
         ))
     })?;
     transport.max_idle_timeout(Some(idle_timeout));
@@ -260,7 +275,8 @@ fn build_colocated_quic_server_config(
     )?;
     let mux = MuxCertResolver::new(doh, attachment.cluster_sni.clone(), cluster_key);
     let rustls_cfg = (*colocated_quic_server_config(mux, &attachment.ca_cert_pem)?).clone();
-    quinn_server_config(rustls_cfg, limits).map_err(|e| e.to_string())
+    quinn_server_config_with_idle(rustls_cfg, limits, COLOCATED_QUIC_TRANSPORT_IDLE)
+        .map_err(|e| e.to_string())
 }
 
 fn handle_incoming<H>(shared: Arc<DohH3Shared<H>>, incoming: quinn::Incoming)

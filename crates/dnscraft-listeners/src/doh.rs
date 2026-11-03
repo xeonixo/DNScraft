@@ -347,6 +347,11 @@ fn handle_accept<H>(
             .peer_certificates()
             .and_then(|certs| certs.first())
             .map(|der| der.as_ref().to_vec());
+        // Cluster mTLS streams are long-lived; axum returns the Response before the
+        // NDJSON body finishes, so ConnActivity would look idle and the DoH 10s
+        // timer would tear the stream down. Skip app-idle close when a client
+        // certificate was presented.
+        let skip_app_idle = peer_cert.is_some();
 
         let io = TokioIo::new(tls);
         let idle_timeout = shared.limits.tcp_idle_timeout;
@@ -373,7 +378,11 @@ fn handle_accept<H>(
         builder
             .http1()
             .timer(TokioTimer::new())
-            .header_read_timeout(Some(idle_timeout));
+            .header_read_timeout(if skip_app_idle {
+                None
+            } else {
+                Some(idle_timeout)
+            });
         builder
             .http2()
             .timer(TokioTimer::new())
@@ -402,7 +411,7 @@ fn handle_accept<H>(
                     }
                 }
                 () = activity.notified() => {}
-                () = wait_until(shared.clock.as_ref(), deadline, activity.wake()), if in_flight == 0 && !shutting_down => {
+                () = wait_until(shared.clock.as_ref(), deadline, activity.wake()), if in_flight == 0 && !shutting_down && !skip_app_idle => {
                     if activity.in_flight() == 0 && shared.clock.now() >= add_duration(activity.last_activity(), idle_timeout) {
                         shutting_down = true;
                         conn.as_mut().graceful_shutdown();

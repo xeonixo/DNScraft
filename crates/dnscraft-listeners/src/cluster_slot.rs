@@ -11,10 +11,22 @@ use rustls::server::{ClientHello, ResolvesServerCert, WebPkiClientVerifier};
 use rustls::sign::CertifiedKey;
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, OnceLock, RwLock};
 
 use crate::web::WebFuture;
+
+/// Whether a ClientHello should select the cluster certificate.
+///
+/// rustls exposes only **DNS** SNIs via [`ClientHello::server_name`]; an IP SNI
+/// (typical for `master_url = https://172.x.x.x`) becomes `None`. When the
+/// configured cluster SNI is itself an IP, treat a missing SNI as cluster.
+pub fn cluster_sni_selected(cluster_sni: &str, client_sni: Option<&str>) -> bool {
+    match client_sni {
+        Some(name) => name.eq_ignore_ascii_case(cluster_sni),
+        None => cluster_sni.parse::<IpAddr>().is_ok(),
+    }
+}
 
 /// Future returned by a [`ClusterHandler`].
 pub type ClusterFuture = WebFuture;
@@ -48,9 +60,9 @@ impl ClusterAttachment {
         path == "/cluster/v1" || path.starts_with("/cluster/v1/")
     }
 
-    /// Whether `sni` matches this attachment's cluster SNI (case-insensitive).
+    /// Whether `sni` selects this attachment (see [`cluster_sni_selected`]).
     pub fn matches_sni(&self, sni: Option<&str>) -> bool {
-        sni.is_some_and(|name| name.eq_ignore_ascii_case(&self.cluster_sni))
+        cluster_sni_selected(&self.cluster_sni, sni)
     }
 }
 
@@ -121,10 +133,7 @@ impl MuxCertResolver {
 
 impl ResolvesServerCert for MuxCertResolver {
     fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
-        if client_hello
-            .server_name()
-            .is_some_and(|name| name.eq_ignore_ascii_case(&self.cluster_sni))
-        {
+        if cluster_sni_selected(&self.cluster_sni, client_hello.server_name()) {
             return Some(Arc::clone(&self.cluster_key));
         }
         self.doh.resolve(client_hello)
@@ -233,5 +242,24 @@ impl ResolvesServerCert for ObservingCertResolver {
     fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
         self.observed.set(client_hello.server_name());
         self.inner.resolve(client_hello)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cluster_sni_selected;
+
+    #[test]
+    fn dns_sni_matches_case_insensitively() {
+        assert!(cluster_sni_selected("ns1.dns.example", Some("NS1.dns.example")));
+        assert!(!cluster_sni_selected("ns1.dns.example", Some("other.example")));
+        assert!(!cluster_sni_selected("ns1.dns.example", None));
+    }
+
+    #[test]
+    fn missing_sni_selects_cluster_when_sni_is_ip() {
+        assert!(cluster_sni_selected("172.20.10.20", None));
+        assert!(cluster_sni_selected("172.20.10.20", Some("172.20.10.20")));
+        assert!(!cluster_sni_selected("172.20.10.20", Some("dns.example")));
     }
 }

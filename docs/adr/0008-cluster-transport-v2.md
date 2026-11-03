@@ -47,6 +47,9 @@ access to a sub-node's loopback control-api for status and maintenance.
    DoH) plus path dispatch (`/cluster/v1/*` vs `/dns-query`). Path-only sharing without SNI
    separation is not sufficient: DoH uses `with_no_client_auth()`, cluster needs handshake
    mTLS. A single `quinn` endpoint on UDP/443 demuxes DoH-h3 and Cluster-h3 the same way.
+   **Note:** rustls only surfaces **DNS** SNIs to `ClientHello::server_name`; an IP SNI
+   (common when `master_url` is an address literal) appears as `None`. When the cluster
+   SNI is itself an IP, the mux therefore treats a missing SNI as cluster.
 4. **zstd compression (v2 only).** When both sides advertise `capabilities` including
    `compress=zstd`, request bodies for cluster log (and other large) `POST`s **must** be
    sent as a `ZstdEnvelope` (or negotiated Content-Encoding) and decompressed before

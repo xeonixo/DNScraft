@@ -21,7 +21,7 @@ use tokio::sync::{Notify, Semaphore, oneshot, watch};
 use crate::admission::Admission;
 use crate::clock::{Clock, add_duration, wait_until};
 use crate::cluster_slot::{
-    ClusterAttachment, MuxCertResolver, colocated_quic_server_config,
+    ClusterAttachment, MuxCertResolver, cluster_sni_selected, colocated_quic_server_config,
 };
 use crate::config::{Limits, ListenerConfig};
 use crate::doh::{
@@ -377,10 +377,8 @@ where
                     .map(|handshake| handshake.server_name.clone())
             })
             .flatten();
-        let is_cluster = cluster_sni.is_some_and(|name| {
-            sni.as_deref()
-                .is_some_and(|sni| sni.eq_ignore_ascii_case(name))
-        });
+        let is_cluster = cluster_sni
+            .is_some_and(|name| cluster_sni_selected(name, sni.as_deref()));
         if is_cluster {
             serve_cluster_h3(Arc::clone(&shared), conn, peer).await;
         } else {

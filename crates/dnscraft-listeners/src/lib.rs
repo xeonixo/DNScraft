@@ -55,7 +55,8 @@ pub use bans::StrikeReason;
 pub use clock::{Clock, ManualClock, SystemClock, add_duration, wait_until};
 pub use cluster_slot::{
     ClusterAttachment, ClusterHandler, ClusterSlot, MuxCertResolver, ObservedSni,
-    ObservingCertResolver, colocated_quic_server_config, colocated_tcp_server_config,
+    ObservingCertResolver, cluster_sni_selected, colocated_quic_server_config,
+    colocated_tcp_server_config,
 };
 pub use config::{
     DEFAULT_BAN_DURATION, DEFAULT_BAN_STRIKES, DEFAULT_BAN_WINDOW, DEFAULT_MAX_CONNECTIONS,

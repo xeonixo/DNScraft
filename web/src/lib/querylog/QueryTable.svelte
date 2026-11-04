@@ -12,6 +12,8 @@
 		dnssecLabel,
 		microsToMilliseconds,
 		provenanceLabel,
+		SLOW_US,
+		type Burst,
 		statusOf,
 		statusStyle,
 		stepDetail,
@@ -37,9 +39,11 @@
 		clientSearch?: (filter: { client_id: string } | { device_id: string }) => string;
 		/** Cluster display names keyed by node id. */
 		nodeNames?: Record<string, string>;
+		/** Rows that stand for several identical lookups, keyed by record id. */
+		bursts?: Map<string, Burst>;
 	}
 
-	let { rows, compact, technical, clientSearch, nodeNames = {} }: Props = $props();
+	let { rows, compact, technical, clientSearch, nodeNames = {}, bursts }: Props = $props();
 	const locale = getLocale();
 	const day = (iso: string) => formatDay(new Date(iso), locale);
 
@@ -88,6 +92,8 @@
 				{@const clientName = record.client?.display_name ?? record.client_id ?? record.source_ip}
 				{@const answers = technical ? answerSummary(answersOf(record)) : ''}
 				{@const trackers = trackersOf(record)}
+				{@const burst = bursts?.get(record.id)}
+				{@const totalUs = burst?.worstUs ?? record.timings.total_us}
 				{#if i === 0 || day(record.time) !== day(rows[i - 1].time)}
 					<tr class="day">
 						<th scope="colgroup" colspan={columnCount}>{day(record.time)}</th>
@@ -111,7 +117,12 @@
 							onblur={hideTip}
 						>
 							<Value value={unicode} mono />
-							<span class="qtype mono">{record.query.type}</span>
+							<span class="qtype mono">{burst ? burst.types.join(' ') : record.query.type}</span>
+							{#if burst}<span
+									class="burst"
+									title={m.querylog_burst_count({ count: String(burst.count) })}
+									>×{burst.count}</span
+								>{/if}
 						</a>
 						<a
 							class="stats"
@@ -163,8 +174,8 @@
 					</td>
 					{#if technical}
 						<td class="mono">{record.rcode}</td>
-						<td class="end mono">
-							{formatMilliseconds(microsToMilliseconds(record.timings.total_us), locale)}
+						<td class="end mono" class:slow={totalUs >= SLOW_US}>
+							{formatMilliseconds(microsToMilliseconds(totalUs), locale)}
 							<span class="count">{formatBytes(record.answer_size, locale)}</span>
 						</td>
 					{/if}
@@ -327,6 +338,27 @@
 		text-decoration: none;
 	}
 
+	.burst {
+		padding: 0 0.375rem;
+		border-radius: 999px;
+		background: var(--surface-2);
+		color: var(--label-2);
+		font-size: 0.75rem;
+	}
+	.slow {
+		color: var(--warning, var(--danger));
+		font-weight: 600;
+	}
+	/* The per-domain statistics link only appears on the row under the pointer. */
+	@media (hover: hover) {
+		.stats {
+			opacity: 0;
+		}
+		tr:hover .stats,
+		.stats:focus-visible {
+			opacity: 1;
+		}
+	}
 	.name:hover {
 		text-decoration: underline;
 	}

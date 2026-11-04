@@ -37,6 +37,12 @@ describe('unit formatting', () => {
 		expect(plain(formatMilliseconds(42.4, 'de'))).toBe('42 ms');
 	});
 
+	it('switches to seconds from one second', () => {
+		expect(plain(formatMilliseconds(999, 'de'))).toBe('999 ms');
+		expect(plain(formatMilliseconds(4125, 'de'))).toBe('4,1 s');
+		expect(plain(formatMilliseconds(2053, 'en'))).toBe('2.1 s');
+	});
+
 	it('scales bytes with decimal units', () => {
 		expect(plain(formatBytes(1_500_000, 'en'))).toBe('1.5 MB');
 		expect(plain(formatBytes(1_500_000, 'de'))).toBe('1,5 MB');

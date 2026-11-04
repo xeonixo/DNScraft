@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { DecisionStep, QueryRecord } from '$lib/api/query-log';
 import { m } from '$lib/paraglide/messages';
 import {
+	collapseBursts,
 	dnssecLabel,
 	statusOf,
 	stageLabel,
@@ -220,5 +221,50 @@ describe('trackersOf', () => {
 			],
 		} as unknown as QueryRecord;
 		expect(trackersOf(record).map((t) => t.name)).toEqual(['Ads', 'CDN', 'Misc']);
+	});
+});
+
+describe('collapseBursts', () => {
+	const row = (id: string, time: string, type: string, over: Partial<QueryRecord> = {}) =>
+		({
+			id,
+			time,
+			query: { name: 'owa.example', type, class: 'IN' },
+			source_ip: '10.0.0.1',
+			client_id: null,
+			device_id: null,
+			protocol: 'udp53',
+			node_id: 'n1',
+			rcode: 'NOERROR',
+			dnssec: null,
+			filter: null,
+			timings: { total_us: 1000 },
+			...over,
+		}) as unknown as QueryRecord;
+
+	it('folds A/AAAA/HTTPS of one lookup into the newest row and keeps the slowest time', () => {
+		const { rows, bursts } = collapseBursts([
+			row('a', '2026-11-04T08:52:06.900Z', 'A'),
+			row('b', '2026-11-04T08:52:06.500Z', 'AAAA', { timings: { total_us: 4_000_000 } } as never),
+			row('c', '2026-11-04T08:52:06.100Z', 'A'),
+			row('d', '2026-11-04T08:52:05.900Z', 'HTTPS'),
+		]);
+		expect(rows.map((r) => r.id)).toEqual(['a']);
+		expect(bursts.get('a')).toEqual({
+			count: 4,
+			types: ['A', 'AAAA', 'HTTPS'],
+			worstUs: 4_000_000,
+		});
+	});
+
+	it('keeps rows apart when the client, outcome or gap differ', () => {
+		const { rows, bursts } = collapseBursts([
+			row('a', '2026-11-04T08:52:10Z', 'A'),
+			row('b', '2026-11-04T08:52:09Z', 'A', { source_ip: '10.0.0.2' }),
+			row('c', '2026-11-04T08:52:08Z', 'A', { rcode: 'SERVFAIL' }),
+			row('d', '2026-11-04T08:52:01Z', 'A', { rcode: 'SERVFAIL' }),
+		]);
+		expect(rows.map((r) => r.id)).toEqual(['a', 'b', 'c', 'd']);
+		expect(bursts.size).toBe(0);
 	});
 });

@@ -334,3 +334,62 @@ export function decisiveIndex(steps: DecisionStep[]): number {
 	const blocking = steps.findIndex((step) => BLOCKING_VERDICTS.has(step.verdict));
 	return blocking >= 0 ? blocking : steps.length - 1;
 }
+
+/** Latency from which a lookup is shown as slow (a dead nameserver costs 2 s per timeout). */
+export const SLOW_US = 1_000_000;
+
+/** Repeats of one lookup folded into its newest row (A/AAAA/HTTPS asked together). */
+export interface Burst {
+	count: number;
+	/** Query types in the order first seen. */
+	types: string[];
+	/** Slowest member, so a hidden slow lookup still shows. */
+	worstUs: number;
+}
+
+/** Rows closer than this, for the same name, client and outcome, belong to one burst. */
+const BURST_GAP_MS = 2000;
+
+/**
+ * Folds consecutive rows (newest first) of one lookup into their first row: same name, client,
+ * protocol, node and outcome, each within two seconds of the previous. `bursts` has an entry only
+ * for rows that absorbed others.
+ */
+export function collapseBursts(records: QueryRecord[]): {
+	rows: QueryRecord[];
+	bursts: Map<string, Burst>;
+} {
+	const rows: QueryRecord[] = [];
+	const bursts = new Map<string, Burst>();
+	let head: QueryRecord | null = null;
+	let last = 0;
+	const keyOf = (r: QueryRecord) =>
+		[
+			r.query.name,
+			r.device_id ?? r.client_id ?? r.source_ip,
+			r.protocol,
+			r.node_id,
+			statusOf(r),
+			r.filter?.reason ?? '',
+		].join('|');
+	for (const record of records) {
+		const at = Date.parse(record.time);
+		if (head && keyOf(head) === keyOf(record) && Math.abs(last - at) <= BURST_GAP_MS) {
+			const burst = bursts.get(head.id) ?? {
+				count: 1,
+				types: [head.query.type],
+				worstUs: head.timings.total_us,
+			};
+			burst.count += 1;
+			if (!burst.types.includes(record.query.type)) burst.types.push(record.query.type);
+			burst.worstUs = Math.max(burst.worstUs, record.timings.total_us);
+			bursts.set(head.id, burst);
+			last = at;
+			continue;
+		}
+		rows.push(record);
+		head = record;
+		last = at;
+	}
+	return { rows, bursts };
+}

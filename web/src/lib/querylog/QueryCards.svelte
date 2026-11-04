@@ -10,7 +10,14 @@
 	import { formatDateTime, formatMilliseconds, formatTime } from '$lib/format';
 	import { getLocale } from '$lib/i18n/locale';
 	import TrackerBadge from './TrackerBadge.svelte';
-	import { answerSummary, microsToMilliseconds, statusOf, statusStyle, trackersOf } from './view';
+	import {
+		answerSummary,
+		microsToMilliseconds,
+		statusOf,
+		statusStyle,
+		trackersOf,
+		type Burst,
+	} from './view';
 	import { nodeLabel } from '$lib/cluster/nodes';
 	import { m } from '$lib/paraglide/messages';
 
@@ -20,9 +27,11 @@
 		technical?: boolean;
 		/** Cluster display names keyed by node id. */
 		nodeNames?: Record<string, string>;
+		/** Rows that stand for several identical lookups, keyed by record id. */
+		bursts?: Map<string, Burst>;
 	}
 
-	let { rows, technical = false, nodeNames = {} }: Props = $props();
+	let { rows, technical = false, nodeNames = {}, bursts }: Props = $props();
 	const locale = getLocale();
 </script>
 
@@ -32,6 +41,7 @@
 		{@const unicode = unicodeName(record.query.name)}
 		{@const answers = technical ? answerSummary(answersOf(record)) : ''}
 		{@const trackers = trackersOf(record)}
+		{@const burst = bursts?.get(record.id)}
 		{@const client = displayText(
 			record.client?.display_name ?? record.client_id ?? record.source_ip,
 			32,
@@ -43,10 +53,11 @@
 				<span class="meta">
 					<span class="client">{client}</span>
 					<span class="mono"
-						>{record.query.type} · {record.protocol}{#if record.node_id}
+						>{burst ? burst.types.join(' ') : record.query.type}{#if burst}
+							×{burst.count}{/if} · {record.protocol}{#if record.node_id}
 							· {nodeLabel(record.node_id, nodeNames)}{/if}{#if technical}
 							· {record.rcode} · {formatMilliseconds(
-								microsToMilliseconds(record.timings.total_us),
+								microsToMilliseconds(burst?.worstUs ?? record.timings.total_us),
 								locale,
 							)}{/if}</span
 					>

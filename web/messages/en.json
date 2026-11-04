@@ -1731,5 +1731,6 @@
 	"list_show_more": "Show more ({count} more)",
 	"test_query_type_mx": "MX",
 	"test_query_type_txt": "TXT",
-	"test_query_type_srv": "SRV"
+	"test_query_type_srv": "SRV",
+	"querylog_burst_count": "{count} identical lookups combined"
 }

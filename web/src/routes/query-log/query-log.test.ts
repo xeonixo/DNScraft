@@ -685,7 +685,10 @@ describe('resolved answers in the rows', () => {
 		localStorage.setItem(TECHNICAL_KEY, 'on');
 		serve({
 			'/api/v1/query-log': () =>
-				pageOf([record('a', { ...allowed, answers: threeA }), record('b', allowed)]),
+				pageOf([
+					record('a', { ...allowed, answers: threeA }),
+					record('b', { ...allowed, query: { name: 'other.example.com', type: 'A', class: 'IN' } }),
+				]),
 		});
 		const { container } = render(Page);
 

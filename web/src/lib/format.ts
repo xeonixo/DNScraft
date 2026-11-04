@@ -14,6 +14,10 @@ export function formatPercent(ratio: number, locale: string, digits = 1): string
 }
 
 export function formatMilliseconds(ms: number, locale: string): string {
+	if (ms >= 1000) {
+		// Intl abbreviates seconds as "Sek." in German; "s" matches the "ms" next to it.
+		return `${new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(ms / 1000)}\u00a0s`;
+	}
 	return new Intl.NumberFormat(locale, {
 		style: 'unit',
 		unit: 'millisecond',

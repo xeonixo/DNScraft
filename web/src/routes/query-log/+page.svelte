@@ -20,6 +20,7 @@
 	import FilterForm from '$lib/querylog/FilterForm.svelte';
 	import QueryCards from '$lib/querylog/QueryCards.svelte';
 	import QueryTable from '$lib/querylog/QueryTable.svelte';
+	import { collapseBursts } from '$lib/querylog/view';
 	import {
 		DEFAULT_PERIOD,
 		INVALID_CODE,
@@ -463,15 +464,18 @@
 			<GroupedRow label={m.querylog_empty()} />
 		</GroupedList>
 	{:else if wide}
+		{@const folded = collapseBursts(loaded.queries)}
 		<QueryTable
-			rows={loaded.queries}
+			rows={folded.rows}
+			bursts={folded.bursts}
 			compact={density === 'compact'}
 			{technical}
 			{nodeNames}
 			clientSearch={(filter) => toSearchParams({ ...draft, ...filter, offset: '' }).toString()}
 		/>
 	{:else}
-		<QueryCards rows={loaded.queries} {technical} {nodeNames} />
+		{@const folded = collapseBursts(loaded.queries)}
+		<QueryCards rows={folded.rows} bursts={folded.bursts} {technical} {nodeNames} />
 	{/if}
 	{#if loaded.has_more}
 		<div class="sentinel" bind:this={sentinel} aria-hidden="true"></div>

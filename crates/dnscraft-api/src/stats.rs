@@ -354,68 +354,80 @@ impl QueryLog {
         let recent_us = now
             .saturating_sub(ROLLUP_RECOMPUTE_DAYS * SECONDS_PER_DAY)
             .saturating_mul(1_000_000);
-        self.db()
-            .with_conn(move |conn| {
-                let tx = conn.transaction().map_err(db_err)?;
-                let seeded: bool = tx
+        // The scans run on a reader (seconds on a large log); only the small
+        // aggregate is written, so the writer is held for milliseconds.
+        type Bucket = (i64, String, String, String, String, i64);
+        let (hourly, daily) = self
+            .db()
+            .with_read_conn(move |conn| {
+                let seeded: bool = conn
                     .query_row("SELECT EXISTS(SELECT 1 FROM stats_daily)", [], |row| {
                         row.get(0)
                     })
                     .map_err(db_err)?;
                 let since_us = if seeded { recent_us } else { 0 };
-                // Rollup tables keep string labels so older buckets stay comparable.
-                tx.execute(
-                    "INSERT INTO stats_hourly (
-                         hour, node_id, profile_id, protocol, answer_source, query_count
-                     )
-                     SELECT time / 3600000000, node_id, profile_id,
-                            CASE protocol
-                                WHEN 1 THEN 'udp53' WHEN 2 THEN 'tcp53' WHEN 3 THEN 'dot'
-                                WHEN 4 THEN 'doh' WHEN 5 THEN 'doq'
-                                ELSE CAST(protocol AS TEXT)
-                            END,
-                            CASE answer_source
-                                WHEN 1 THEN 'resolver' WHEN 2 THEN 'synth_any'
-                                WHEN 3 THEN 'resolve_error' WHEN 4 THEN 'local_view'
-                                WHEN 5 THEN 'local_client' WHEN 6 THEN 'bypass'
-                                WHEN 7 THEN 'filter_block' WHEN 8 THEN 'listener_ddr'
-                                ELSE CAST(answer_source AS TEXT)
-                            END,
-                            COUNT(*)
-                     FROM query_log
-                     WHERE time >= ?1
-                     GROUP BY 1, 2, 3, 4, 5
-                     ON CONFLICT(hour, node_id, profile_id, protocol, answer_source)
-                     DO UPDATE SET query_count = MAX(query_count, excluded.query_count)",
-                    params![since_us],
-                )
-                .map_err(db_err)?;
-                tx.execute(
-                    "INSERT INTO stats_daily (
-                         day, node_id, profile_id, protocol, answer_source, query_count
-                     )
-                     SELECT time / 86400000000, node_id, profile_id,
-                            CASE protocol
-                                WHEN 1 THEN 'udp53' WHEN 2 THEN 'tcp53' WHEN 3 THEN 'dot'
-                                WHEN 4 THEN 'doh' WHEN 5 THEN 'doq'
-                                ELSE CAST(protocol AS TEXT)
-                            END,
-                            CASE answer_source
-                                WHEN 1 THEN 'resolver' WHEN 2 THEN 'synth_any'
-                                WHEN 3 THEN 'resolve_error' WHEN 4 THEN 'local_view'
-                                WHEN 5 THEN 'local_client' WHEN 6 THEN 'bypass'
-                                WHEN 7 THEN 'filter_block' WHEN 8 THEN 'listener_ddr'
-                                ELSE CAST(answer_source AS TEXT)
-                            END,
-                            COUNT(*)
-                     FROM query_log
-                     WHERE time >= ?1
-                     GROUP BY 1, 2, 3, 4, 5
-                     ON CONFLICT(day, node_id, profile_id, protocol, answer_source)
-                     DO UPDATE SET query_count = MAX(query_count, excluded.query_count)",
-                    params![since_us],
-                )
-                .map_err(db_err)?;
+                let scan = |divisor: i64| -> Result<Vec<Bucket>, ControlApiError> {
+                    // Rollup tables keep string labels so older buckets stay comparable.
+                    let mut stmt = conn
+                        .prepare(
+                            "SELECT time / ?2, node_id, profile_id,
+                                    CASE protocol
+                                        WHEN 1 THEN 'udp53' WHEN 2 THEN 'tcp53' WHEN 3 THEN 'dot'
+                                        WHEN 4 THEN 'doh' WHEN 5 THEN 'doq'
+                                        ELSE CAST(protocol AS TEXT)
+                                    END,
+                                    CASE answer_source
+                                        WHEN 1 THEN 'resolver' WHEN 2 THEN 'synth_any'
+                                        WHEN 3 THEN 'resolve_error' WHEN 4 THEN 'local_view'
+                                        WHEN 5 THEN 'local_client' WHEN 6 THEN 'bypass'
+                                        WHEN 7 THEN 'filter_block' WHEN 8 THEN 'listener_ddr'
+                                        ELSE CAST(answer_source AS TEXT)
+                                    END,
+                                    COUNT(*)
+                             FROM query_log
+                             WHERE time >= ?1
+                             GROUP BY 1, 2, 3, 4, 5",
+                        )
+                        .map_err(db_err)?;
+                    let rows = stmt
+                        .query_map(params![since_us, divisor], |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                                row.get(5)?,
+                            ))
+                        })
+                        .map_err(db_err)?;
+                    rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+                };
+                Ok((scan(MICROS_PER_HOUR)?, scan(MICROS_PER_HOUR * 24)?))
+            })
+            .await?;
+        self.db()
+            .with_conn(move |conn| {
+                let tx = conn.transaction().map_err(db_err)?;
+                for (table, bucket, rows) in [
+                    ("stats_hourly", "hour", &hourly),
+                    ("stats_daily", "day", &daily),
+                ] {
+                    let mut stmt = tx
+                        .prepare(&format!(
+                            "INSERT INTO {table} (
+                                 {bucket}, node_id, profile_id, protocol, answer_source,
+                                 query_count
+                             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                             ON CONFLICT({bucket}, node_id, profile_id, protocol, answer_source)
+                             DO UPDATE SET query_count = MAX(query_count, excluded.query_count)"
+                        ))
+                        .map_err(db_err)?;
+                    for (b, node, profile, protocol, source, count) in rows {
+                        stmt.execute(params![b, node, profile, protocol, source, count])
+                            .map_err(db_err)?;
+                    }
+                }
                 tx.execute(
                     "DELETE FROM stats_hourly WHERE hour < ?1",
                     params![hour_cutoff],

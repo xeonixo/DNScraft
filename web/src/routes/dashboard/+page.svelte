@@ -317,7 +317,7 @@
 	{@const shown = displayText(row.domain)}
 	<GroupedRow
 		label={shown.text}
-		link={resolve('/dashboard/domains/[name]', { name: row.domain })}
+		link={row.domain ? resolve('/dashboard/domains/[name]', { name: row.domain }) : undefined}
 		mono
 		truncate
 		share={view.shareOf(row.queries, maxDomainQueries)}
@@ -333,7 +333,7 @@
 	{@const shown = displayText(row.domain)}
 	<GroupedRow
 		label={shown.text}
-		link={resolve('/dashboard/domains/[name]', { name: row.domain })}
+		link={row.domain ? resolve('/dashboard/domains/[name]', { name: row.domain }) : undefined}
 		mono
 		truncate
 		share={view.shareOf(row.blocked, maxBlocked)}

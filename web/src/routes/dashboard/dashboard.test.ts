@@ -243,6 +243,22 @@ describe('dashboard tiles and panels', () => {
 		expect(container.querySelector('script')).toBeNull();
 	});
 
+	it('keeps rendering when the log holds a root query with an empty name', async () => {
+		serve({
+			'GET /api/v1/stats/top_domains': () =>
+				ok({
+					domains: [
+						{ domain: 'www.example.com', queries: 500, blocked: 0 },
+						{ domain: '', queries: 90, blocked: 90 },
+					],
+				}),
+		});
+		render(Page);
+
+		expect(await screen.findByText('www.example.com')).toBeInTheDocument();
+		expect(screen.getByText(m.dashboard_section_upstreams())).toBeInTheDocument();
+	});
+
 	it('shows the unavailable state for a 404 and keeps the other panels', async () => {
 		serve({
 			'GET /api/v1/stats/overview': () => fail(404, 'control_api.not_found'),

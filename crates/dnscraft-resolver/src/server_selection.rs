@@ -13,8 +13,12 @@ use crate::health::{self, Rings, Sample, Target, UpstreamHealth};
 
 /// Smoothing: `srtt = KEEP * old + (1 - KEEP) * sample`.
 const KEEP: f64 = 0.7;
-/// Penalty floor in ms, so that doubling a tiny srtt still matters.
-const PENALTY_FLOOR_MS: f64 = 50.0;
+/// Penalty floor in ms, so that doubling a tiny srtt still matters. A failed
+/// server must rank behind any healthy one (tens of ms) at once: with a small
+/// floor a dead nameserver was tried first again and cost a full timeout per
+/// query. ponytail: no time decay, a recovered server is only re-tried through
+/// exploration; add expiry if that proves too slow.
+const PENALTY_FLOOR_MS: f64 = 500.0;
 /// Upper bound of any srtt in ms.
 const SRTT_CAP_MS: f64 = 8000.0;
 /// Unknown servers start with a random srtt in this range (ms); small, so
@@ -271,5 +275,17 @@ mod tests {
             .collect();
         let _ = stats.order(&many);
         assert!(stats.tracked_servers() <= MAX_TRACKED_SERVERS);
+    }
+
+    #[test]
+    fn a_failed_server_ranks_behind_healthy_ones_at_once() {
+        let stats = ServerStats::default().with_exploration(0.0);
+        let (dead, ok1, ok2) = (addr(1), addr(2), addr(3));
+        stats.record_success(ok1, Duration::from_millis(400));
+        stats.record_success(ok2, Duration::from_millis(500));
+        stats.record_failure(dead);
+        for _ in 0..50 {
+            assert_eq!(stats.order(&[dead, ok1, ok2]).last(), Some(&dead));
+        }
     }
 }

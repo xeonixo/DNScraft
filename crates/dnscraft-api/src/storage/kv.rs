@@ -36,7 +36,7 @@ impl Db {
     /// Reads a key from the `kv` table.
     pub async fn kv_get(&self, key: &str) -> Result<Option<String>, ControlApiError> {
         let key = key.to_owned();
-        self.with_conn(move |conn| kv_get(conn, &key)).await
+        self.with_read_conn(move |conn| kv_get(conn, &key)).await
     }
 
     /// Writes (or replaces) a key in the `kv` table.

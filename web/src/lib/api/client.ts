@@ -144,8 +144,18 @@ export async function request<T>(
 	}
 }
 
-export const get = <T>(path: string, options?: RequestOptions): Promise<T> =>
-	request<T>('GET', path, options);
+const inflightGets = new Map<string, Promise<unknown>>();
+
+/** Concurrent option-less GETs of one path (sidebar + page) share a single request. */
+export const get = <T>(path: string, options?: RequestOptions): Promise<T> => {
+	if (options) return request<T>('GET', path, options);
+	let pending = inflightGets.get(path) as Promise<T> | undefined;
+	if (!pending) {
+		pending = request<T>('GET', path).finally(() => inflightGets.delete(path));
+		inflightGets.set(path, pending);
+	}
+	return pending;
+};
 export const post = <T>(path: string, options?: RequestOptions): Promise<T> =>
 	request<T>('POST', path, options);
 export const put = <T>(path: string, options?: RequestOptions): Promise<T> =>

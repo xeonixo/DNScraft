@@ -1245,7 +1245,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: 1rem;
-		max-width: 60rem;
 	}
 	.page-head {
 		display: flex;

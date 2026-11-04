@@ -201,7 +201,7 @@ describe('names sheet Antwort then Abweichungen', () => {
 		const user = userEvent.setup();
 		render(NamesPage);
 		await user.click(
-			await screen.findByRole('button', { name: (n) => /^A\s+192\.0\.2\.50/.test(n) }),
+			await screen.findByRole('button', { name: (n) => /\sA\s+192\.0\.2\.50/.test(n) }),
 		);
 		const dialog = await screen.findByRole('dialog');
 		const add = within(dialog).getAllByRole('button', { name: m.names_value_add() })[0];
@@ -221,7 +221,7 @@ describe('names sheet Antwort then Abweichungen', () => {
 		const user = userEvent.setup();
 		render(NamesPage);
 		await user.click(
-			await screen.findByRole('button', { name: (n) => /^A\s+192\.0\.2\.50/.test(n) }),
+			await screen.findByRole('button', { name: (n) => /\sA\s+192\.0\.2\.50/.test(n) }),
 		);
 		const dialog = await screen.findByRole('dialog');
 		expect(within(dialog).getByText(m.names_public_internal())).toBeInTheDocument();

@@ -25,8 +25,7 @@
 			? m.names_overrides_badge_one({ count: '1' })
 			: m.names_overrides_badge_other({ count: String(overrideCount) })}{/if}
 	{#if local.comment}
-		· <span class="comment" title={local.comment}>{displayText(local.comment, 40).text}</span
-		>{/if}
+		· <span class="comment" title={local.comment}>{displayText(local.comment, 40).text}</span>{/if}
 	{#if (local.tags ?? []).length > 0}
 		· {#each local.tags ?? [] as tag (tag)}<span class="tag-pill">{tag}</span>{/each}{/if}
 	{#each answers as answer (answer.view)}
@@ -39,6 +38,8 @@
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
+		justify-content: flex-end;
+		max-width: 18rem;
 		gap: 0.25rem 0.35rem;
 		color: var(--label-3);
 		font-size: 0.75rem;
@@ -50,7 +51,7 @@
 		display: inline-block;
 		padding: 0.05rem 0.35rem;
 		border-radius: 0.25rem;
-		background: var(--fill-tertiary, rgba(127, 127, 127, 0.15));
+		background: color-mix(in srgb, var(--label) 12%, transparent);
 		font-size: 0.75rem;
 		color: var(--label-2);
 	}

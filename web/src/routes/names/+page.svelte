@@ -202,7 +202,10 @@
 			chip.count += 1;
 			byName.set(row.zone, chip);
 		}
-		return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+		// Cloudflare zones first, local zones next, reverse-DNS (.arpa) last: they are rarely the goal.
+		const rank = (chip: { name: string; attached: boolean }) =>
+			chip.attached ? 0 : chip.name.endsWith('.arpa') ? 2 : 1;
+		return [...byName.values()].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
 	});
 
 	const activeZone = $derived(zoneChips.some((chip) => chip.name === zoneKey) ? zoneKey : '');
@@ -231,8 +234,10 @@
 			group.records.push(row);
 			byOwner.set(owner, group);
 		}
+		// Service names such as _dmarc or _acme-challenge sort after the ordinary hostnames.
+		const service = (name: string) => (name.startsWith('_') ? 1 : 0);
 		return [...byOwner.entries()]
-			.sort(([a], [b]) => a.localeCompare(b))
+			.sort(([a], [b]) => service(a) - service(b) || a.localeCompare(b))
 			.map(([, group]) => ({
 				name: group.name,
 				records: group.records.sort((a, b) => a.type.localeCompare(b.type)),
@@ -896,15 +901,34 @@
 	{:else if result.kind === 'error'}
 		<ResultNotice {result} onretry={() => void load()} />
 	{:else}
-		<label class="sr-only" for="names-search">{m.names_search_label()}</label>
-		<input
-			id="names-search"
-			class="search mono"
-			type="search"
-			bind:value={query}
-			placeholder={m.names_search_placeholder()}
-			autocomplete="off"
-		/>
+		<div class="toolbar">
+			<label class="sr-only" for="names-search">{m.names_search_label()}</label>
+			<input
+				id="names-search"
+				class="search mono"
+				type="search"
+				bind:value={query}
+				placeholder={m.names_search_placeholder()}
+				autocomplete="off"
+			/>
+			{#if zoneChips.length > 0}
+				<select
+					class="zone-select"
+					aria-label={m.names_zones_filter()}
+					value={activeZone}
+					onchange={(event) => setZone(event.currentTarget.value)}
+				>
+					<option value="">{m.names_zone_all()} · {allRows.length}</option>
+					{#each zoneChips as chip (chip.name)}
+						<option value={chip.name}
+							>{displayText(chip.name, 80).text} · {chip.attached
+								? m.names_zone_cloudflare()
+								: m.names_zone_local()} · {chip.count}</option
+						>
+					{/each}
+				</select>
+			{/if}
+		</div>
 
 		<NamesFilters
 			types={availableTypes}
@@ -915,33 +939,6 @@
 			bind:publicOnly
 		/>
 
-		{#if zoneChips.length > 0}
-			<div class="zone-chips" role="group" aria-label={m.names_zones_filter()}>
-				<button
-					type="button"
-					class="zone-chip"
-					aria-pressed={activeZone === ''}
-					onclick={() => setZone('')}
-				>
-					<span>{m.names_zone_all()}</span>
-					<span class="chip-count">{allRows.length}</span>
-				</button>
-				{#each zoneChips as chip (chip.name)}
-					<button
-						type="button"
-						class="zone-chip"
-						aria-pressed={activeZone === chip.name}
-						onclick={() => setZone(chip.name)}
-					>
-						<span class="mono">{displayText(chip.name, 80).text}</span>
-						<span class="zone-kind" class:cf={chip.attached}
-							>{chip.attached ? m.names_zone_cloudflare() : m.names_zone_local()}</span
-						>
-						<span class="chip-count">{chip.count}</span>
-					</button>
-				{/each}
-			</div>
-		{/if}
 		{#if cloudflareLoading}
 			<p class="hint muted" role="status">{m.names_cf_loading()}</p>
 		{/if}
@@ -953,7 +950,8 @@
 				<p>{query.trim() ? m.names_search_empty() : m.state_empty()}</p>
 			</section>
 		{:else}
-			{#snippet rowBody(row: NameRow)}
+			{#snippet rowBody(row: NameRow, name: string, repeated: boolean)}
+				<span class="rec-name mono" class:rec-name-repeat={repeated}>{name}</span>
 				<span class="type">{row.type}</span>
 				<span class="rdata mono" title={row.rdata}>{row.rdata}</span>
 				{#if row.local}
@@ -963,10 +961,8 @@
 						showPublicBadge={hasPublic(row.local)}
 					/>
 				{:else}
-					<span class="meta">
-						{m.names_public_only()} · {m.names_ttl_short({
-							ttl: ttlFieldFor(row.ttl),
-						})}{#if row.cf?.proxied}
+					<span class="meta" title={m.names_ttl_short({ ttl: ttlFieldFor(row.ttl) })}>
+						{m.names_public_only()}{#if row.cf?.proxied}
 							· {m.names_public_proxied()}{/if}
 					</span>
 				{/if}
@@ -976,31 +972,27 @@
 					</span>
 				{/if}
 			{/snippet}
-			{#each shownGroups as group (group.name)}
-				<section class="owner">
-					<header class="owner-head">
-						<span class="owner-name mono">{domainLabel(group.name)}</span>
-						<span class="owner-meta"
-							>{group.total === 1
-								? m.names_record_count_one({ count: '1' })
-								: m.names_record_count_other({ count: String(group.total) })}</span
-						>
-					</header>
-					<GroupedList>
-						{#each group.records as row (row.key)}
-							{#if canOpen(row)}
-								<button type="button" class="rec-row" onclick={() => openRow(row)}>
-									{@render rowBody(row)}
-								</button>
-							{:else}
-								<div class="rec-row rec-row-static">
-									{@render rowBody(row)}
-								</div>
-							{/if}
-						{/each}
-					</GroupedList>
-				</section>
-			{/each}
+			<GroupedList>
+				{#each shownGroups as group (group.name)}
+					{#each group.records as row, index (row.key)}
+						{@const name = domainLabel(group.name)}
+						{#if canOpen(row)}
+							<button
+								type="button"
+								class="rec-row"
+								class:rec-first={index === 0}
+								onclick={() => openRow(row)}
+							>
+								{@render rowBody(row, name, index > 0)}
+							</button>
+						{:else}
+							<div class="rec-row rec-row-static" class:rec-first={index === 0}>
+								{@render rowBody(row, name, index > 0)}
+							</div>
+						{/if}
+					{/each}
+				{/each}
+			</GroupedList>
 			{#if totalNameRows > namesLimit}
 				<Button variant="secondary" onclick={() => (namesLimit += NAMES_PAGE)}>
 					{m.list_show_more({ count: totalNameRows - namesLimit })}
@@ -1253,7 +1245,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: 1rem;
-		max-width: 44rem;
+		max-width: 60rem;
 	}
 	.page-head {
 		display: flex;
@@ -1319,8 +1311,25 @@
 		margin: 0;
 		color: var(--label-2);
 	}
+	.toolbar {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+	}
+	.zone-select {
+		flex: 0 1 18rem;
+		min-height: 2.75rem;
+		padding: 0.5rem 0.75rem;
+		border: 1px solid var(--separator);
+		border-radius: var(--r-ctl);
+		background: var(--surface);
+		color: var(--label);
+		font: inherit;
+		text-overflow: ellipsis;
+	}
 	.search {
-		width: 100%;
+		flex: 1 1 14rem;
+		width: auto;
 		min-height: 2.75rem;
 		padding: 0.5rem 0.75rem;
 		border: 1px solid var(--separator);
@@ -1337,31 +1346,9 @@
 		overflow: hidden;
 		overflow-wrap: anywhere;
 	}
-	.owner {
-		display: flex;
-		flex-direction: column;
-		gap: 0.375rem;
-	}
-	.owner-head {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: baseline;
-		justify-content: space-between;
-		gap: 0.5rem;
-		padding: 0 0.25rem;
-	}
-	.owner-name {
-		font-size: 0.9375rem;
-		font-weight: 600;
-		overflow-wrap: anywhere;
-	}
-	.owner-meta {
-		font-size: 0.75rem;
-		color: var(--label-3);
-	}
 	.rec-row {
 		display: grid;
-		grid-template-columns: 3.5rem minmax(0, 1fr) auto auto;
+		grid-template-columns: minmax(0, 14rem) 3.25rem minmax(9rem, 1fr) minmax(0, auto) auto;
 		align-items: center;
 		gap: 0.5rem 0.75rem;
 		width: 100%;
@@ -1375,43 +1362,34 @@
 		text-align: start;
 		cursor: pointer;
 	}
-	.zone-chips {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.375rem;
-	}
-	.zone-chip {
-		display: inline-flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: 0.375rem;
-		min-height: 2.25rem;
-		padding: 0.25rem 0.75rem;
-		border: 1px solid var(--separator);
-		border-radius: var(--r-ctl);
-		background: var(--surface);
-		color: var(--label);
-		font: inherit;
-		font-size: 0.8125rem;
-		cursor: pointer;
-	}
-	.zone-chip[aria-pressed='true'] {
-		border-color: var(--accent);
-		background: var(--surface-2);
-		color: var(--accent);
+	.rec-name {
 		font-weight: 600;
+		font-size: 0.875rem;
+		overflow-wrap: anywhere;
+		align-self: start;
 	}
-	.zone-kind {
-		font-size: 0.6875rem;
-		color: var(--label-3);
+	/* The owner name is shown once per group; repeats stay in the DOM for screen readers. */
+	.rec-name-repeat {
+		color: transparent;
+		user-select: none;
 	}
-	.zone-kind.cf {
-		color: var(--accent);
+	.rec-row:not(.rec-first) {
+		border-top-style: dotted;
 	}
-	.chip-count {
-		font-size: 0.75rem;
-		color: var(--label-3);
-		font-variant-numeric: tabular-nums;
+	@media (max-width: 40rem) {
+		.rec-row {
+			grid-template-columns: 3.25rem minmax(0, 1fr) auto auto;
+		}
+		.rec-name {
+			grid-column: 1 / -1;
+		}
+		.rec-name-repeat {
+			position: absolute;
+			width: 1px;
+			height: 1px;
+			overflow: hidden;
+			clip-path: inset(50%);
+		}
 	}
 	.rec-row-static,
 	.rec-row.rec-row-static:hover {

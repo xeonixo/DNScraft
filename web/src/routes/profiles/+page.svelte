@@ -13,6 +13,7 @@
 	import {
 		deleteProfile,
 		listProfiles,
+		listViews,
 		loadForwardZones,
 		ID_PATTERN,
 		parseForwardZones,
@@ -20,6 +21,7 @@
 		saveProfile,
 		withSafeSearch,
 		type PolicyProfile,
+		type PolicyView,
 	} from '$lib/api/policy';
 	import { patchConfigSection } from '$lib/settings/config-patch';
 	import { listFilterSets, type FilterSet } from '$lib/api/filtering';
@@ -39,6 +41,7 @@
 	let formId = $state('');
 	let submitted = $state(false);
 	let deleteTarget = $state<PolicyProfile | null>(null);
+	let views = $state<PolicyView[]>([]);
 	let formFilterSet = $state('default');
 	let formSafeSearch = $state(false);
 	let formRebind = $state(true);
@@ -48,9 +51,7 @@
 	let formRebindExceptions = $state('');
 	let formForwardZonesAll = $state(true);
 	let formForwardZoneIds = $state<string[]>([]);
-	let formSchedules = $state<
-		{ id: string; filter_set: string; start: string; end: string }[]
-	>([]);
+	let formSchedules = $state<{ id: string; filter_set: string; start: string; end: string }[]>([]);
 	let forwardZoneOptions = $state<{ id: string; zone: string }[]>([]);
 	let policyBaseline = $state<Record<string, unknown>>({});
 	let policyExpert = $state(false);
@@ -63,7 +64,9 @@
 
 	const rows = $derived(result.kind === 'ok' ? result.data : []);
 
-	function scheduleRowsFrom(raw: unknown): { id: string; filter_set: string; start: string; end: string }[] {
+	function scheduleRowsFrom(
+		raw: unknown,
+	): { id: string; filter_set: string; start: string; end: string }[] {
 		if (!Array.isArray(raw)) return [];
 		const out: { id: string; filter_set: string; start: string; end: string }[] = [];
 		for (const row of raw) {
@@ -146,13 +149,25 @@
 	}
 
 	async function load(): Promise<void> {
-		result = await settle(listProfiles());
+		const [profiles, viewResult] = await Promise.all([settle(listProfiles()), settle(listViews())]);
+		result = profiles;
+		if (viewResult.kind === 'ok') views = viewResult.data;
 		const setResult = await settle(listFilterSets());
 		if (setResult.kind === 'ok') sets = setResult.data;
 		const fz = await settle(loadForwardZones());
 		if (fz.kind === 'ok') {
 			forwardZoneOptions = fz.data.zones.map((z) => ({ id: z.id, zone: z.zone }));
 		}
+	}
+
+	/** Why a profile cannot be deleted (default, or still used by a Netzbereich), or null. */
+	function deleteBlockReason(profile: PolicyProfile): string | null {
+		if (profile.id === 'default') return m.profiles_delete_blocked_default();
+		const used = views.filter((view) => view.profile === profile.id);
+		if (used.length === 0) return null;
+		return m.profiles_delete_blocked_in_use({
+			zones: used.map((view) => displayText(view.id, 60).text).join(', '),
+		});
 	}
 
 	function summary(profile: PolicyProfile): string {
@@ -298,11 +313,18 @@
 			<GroupedRow label={profile.id} detail={summary(profile)}>
 				{#snippet trailing()}
 					{#if isAdmin}
+						{@const blocked = deleteBlockReason(profile)}
 						<div class="actions">
 							<Button onclick={() => openEdit(profile)}>{m.action_edit()}</Button>
-							<Button variant="danger" disabled={busy} onclick={() => (deleteTarget = profile)}>
+							<button
+								type="button"
+								class="danger-text"
+								disabled={busy || blocked !== null}
+								title={blocked ?? undefined}
+								onclick={() => (deleteTarget = profile)}
+							>
 								{m.action_delete()}
-							</Button>
+							</button>
 						</div>
 					{/if}
 				{/snippet}
@@ -315,11 +337,18 @@
 		{/if}
 	</GroupedList>
 	{#if isAdmin}
-		<button type="button" class="expert-toggle page-expert" onclick={() => (policyExpert = !policyExpert)}>
+		<button
+			type="button"
+			class="expert-toggle page-expert"
+			onclick={() => (policyExpert = !policyExpert)}
+		>
 			{policyExpert ? m.profiles_policy_basic() : m.profiles_policy_advanced()}
 		</button>
 		{#if policyExpert}
-			{#if policyFailure}<ErrorNotice code={policyFailure.code} params={policyFailure.params} />{/if}
+			{#if policyFailure}<ErrorNotice
+					code={policyFailure.code}
+					params={policyFailure.params}
+				/>{/if}
 			<GroupedList header={m.profiles_policy_globals_section()}>
 				<div class="policy-form">
 					<div class="switch-row">
@@ -327,7 +356,10 @@
 							>{m.profiles_default_rebind_label()}<small>{m.profiles_default_rebind_hint()}</small
 							></span
 						>
-						<Switch bind:checked={formDefaultRebind} aria-label={m.profiles_default_rebind_label()} />
+						<Switch
+							bind:checked={formDefaultRebind}
+							aria-label={m.profiles_default_rebind_label()}
+						/>
 					</div>
 					<label class="field-block" for="policy-ptr">
 						<span class="field-label">{m.profiles_ptr_prefixes_label()}</span>
@@ -336,8 +368,7 @@
 							class="field area mono"
 							rows="2"
 							bind:value={formPtrPrefixes}
-							spellcheck="false"
-						></textarea>
+							spellcheck="false"></textarea>
 					</label>
 					<label class="field-block" for="policy-nxdomain">
 						<span class="field-label">{m.profiles_local_nxdomain_label()}</span>
@@ -346,8 +377,7 @@
 							class="field area mono"
 							rows="2"
 							bind:value={formLocalNxdomain}
-							spellcheck="false"
-						></textarea>
+							spellcheck="false"></textarea>
 					</label>
 					<label class="field-block" for="policy-rebind-fz">
 						<span class="field-label">{m.profiles_rebind_check_fz_label()}</span>
@@ -356,12 +386,15 @@
 							class="field area mono"
 							rows="2"
 							bind:value={formRebindCheckFz}
-							spellcheck="false"
-						></textarea>
+							spellcheck="false"></textarea>
 						<span class="hint">{m.profiles_rebind_check_fz_hint()}</span>
 					</label>
 					<div class="sheet-actions">
-						<Button variant="primary" disabled={policyBusy} onclick={() => void savePolicyGlobals()}>
+						<Button
+							variant="primary"
+							disabled={policyBusy}
+							onclick={() => void savePolicyGlobals()}
+						>
 							{m.action_save()}
 						</Button>
 					</div>
@@ -441,14 +474,15 @@
 				>
 				<Switch bind:checked={formIcloud} aria-label={m.profiles_icloud_label()} />
 			</div>
-			<label class="field-label" for="profile-rebind-ex">{m.profiles_rebind_exceptions_label()}</label>
+			<label class="field-label" for="profile-rebind-ex"
+				>{m.profiles_rebind_exceptions_label()}</label
+			>
 			<textarea
 				id="profile-rebind-ex"
 				class="field area mono"
 				rows="2"
 				bind:value={formRebindExceptions}
-				spellcheck="false"
-			></textarea>
+				spellcheck="false"></textarea>
 			<p class="hint">{m.profiles_rebind_exceptions_hint()}</p>
 			<p class="field-label">{m.profiles_forward_zones_label()}</p>
 			<label class="entry-pick">
@@ -495,7 +529,11 @@
 							<option value={set.id}>{set.name || set.id}</option>
 						{/each}
 					</select>
-					<input class="field mono" placeholder={m.profiles_schedule_start()} bind:value={row.start} />
+					<input
+						class="field mono"
+						placeholder={m.profiles_schedule_start()}
+						bind:value={row.start}
+					/>
 					<input class="field mono" placeholder={m.profiles_schedule_end()} bind:value={row.end} />
 					<Button
 						variant="secondary"
@@ -552,6 +590,21 @@
 	.actions {
 		display: flex;
 		gap: 0.375rem;
+	}
+	.danger-text {
+		min-height: var(--control-h);
+		padding: 0 0.5rem;
+		border: none;
+		background: transparent;
+		font: inherit;
+		font-size: 0.875rem;
+		font-weight: 500;
+		color: var(--danger);
+		cursor: pointer;
+	}
+	.danger-text:disabled {
+		opacity: 0.4;
+		cursor: not-allowed;
 	}
 	.field-label {
 		display: block;

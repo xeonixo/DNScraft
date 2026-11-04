@@ -25,6 +25,16 @@ const KNOWN_ROUTES = new Set<string>([
 	'/settings/config',
 ]);
 
+/** Known ACME error codes from `tls.engine.error`, with a human sentence each. */
+const TLS_ENGINE_CODES = new Map<string, () => string>([
+	['tls.acme.rate_limited', () => m.alert_tls_acme_rate_limited()],
+	['tls.acme.account', () => m.alert_tls_acme_account()],
+	['tls.acme.challenge', () => m.alert_tls_acme_challenge()],
+	['tls.acme.order', () => m.alert_tls_acme_order()],
+	['tls.acme.order_pending', () => m.alert_tls_acme_order_pending()],
+	['tls.acme.propagation', () => m.alert_tls_acme_propagation()],
+]);
+
 export type AlertModule = (typeof MODULE_ORDER)[number] | string;
 
 export interface AlertGroup {
@@ -79,8 +89,11 @@ export function alertTitle(item: AlertItem): string {
 			return m.alert_tls_bootstrap_self_signed();
 		case 'tls.store.corrupt':
 			return m.alert_tls_store_corrupt();
-		case 'tls.engine.error':
-			return m.alert_tls_engine_error({ code: paramString(params, 'code') ?? '—' });
+		case 'tls.engine.error': {
+			const code = paramString(params, 'code');
+			const known = code === undefined ? undefined : TLS_ENGINE_CODES.get(code);
+			return known ? known() : m.alert_tls_engine_error({ code: code ?? '—' });
+		}
 		case 'tls.dns.conflict':
 			return m.alert_tls_dns_conflict({
 				count: String(paramNumber(params, 'count') ?? 0),
@@ -128,6 +141,13 @@ export function alertTitle(item: AlertItem): string {
 		default:
 			return id;
 	}
+}
+
+/** Raw code to show as small secondary text, only when alertTitle has a human sentence for it. */
+export function alertCodeHint(item: AlertItem): string | undefined {
+	if (item.id !== 'tls.engine.error') return undefined;
+	const code = paramString(item.params, 'code');
+	return code !== undefined && TLS_ENGINE_CODES.has(code) ? code : undefined;
 }
 
 export function alertSeverityLabel(severity: string): string {

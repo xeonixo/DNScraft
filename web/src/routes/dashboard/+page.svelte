@@ -196,10 +196,15 @@
 		overview.kind === 'ok' ? view.answerSourceRows(overview.data.by_answer_source) : [],
 	);
 
-	const topDomainRows = $derived(domains.kind === 'ok' ? domains.data.slice(0, TOP_LIMIT) : []);
+	/** Each top list shows TOP_LIMIT rows; the rest of the fetched window sits behind "Show more". */
+	const topDomainRows = $derived(domains.kind === 'ok' ? domains.data : []);
 	const blockedDomains = $derived(
-		domains.kind === 'ok' ? view.topBlockedDomains(domains.data, TOP_LIMIT) : [],
+		domains.kind === 'ok' ? view.topBlockedDomains(domains.data, DOMAIN_FETCH_LIMIT) : [],
 	);
+	const topDomainHead = $derived(topDomainRows.slice(0, TOP_LIMIT));
+	const topDomainRest = $derived(topDomainRows.slice(TOP_LIMIT));
+	const blockedHead = $derived(blockedDomains.slice(0, TOP_LIMIT));
+	const blockedRest = $derived(blockedDomains.slice(TOP_LIMIT));
 	const clientRows = $derived(clients.kind === 'ok' ? clients.data : []);
 
 	/** Largest value in each list, so the proportional bars share one scale per list. */
@@ -226,10 +231,13 @@
 	const healthIcon = $derived(
 		problems.length > 0 ? 'alert-triangle' : healthKnown ? 'check-circle' : 'help-circle',
 	);
+	/** With active alerts the alert card is the status, so "All OK" is not shown beside it. */
+	const showHealth = $derived(problems.length > 0 || alertCount === 0);
 
 	const upstreamSplit = $derived(
 		view.splitUpstreams(upstreams.kind === 'ok' ? upstreams.data.items : []),
 	);
+	const affectedUpstreams = $derived(view.splitUnmeasured(upstreamSplit.affected));
 	const upstreamsFooter = $derived(
 		upstreams.kind === 'ok'
 			? m.dashboard_upstreams_footer({
@@ -240,6 +248,10 @@
 
 	function upstreamDetails(item: Upstream): string[] {
 		const lines = [item.protocol.toUpperCase()];
+		// The zone tells apart upstreams that share a name and protocol; the root zone is the default.
+		if (item.zone && item.zone !== '.') {
+			lines.push(m.dashboard_upstream_zone({ zone: item.zone }));
+		}
 		lines.push(
 			item.rtt_ms
 				? m.dashboard_upstream_rtt({
@@ -301,6 +313,39 @@
 	/>
 {/snippet}
 
+{#snippet topDomainRow(row: TopDomain)}
+	{@const shown = displayText(row.domain)}
+	<GroupedRow
+		label={shown.text}
+		link={resolve('/dashboard/domains/[name]', { name: row.domain })}
+		mono
+		truncate
+		share={view.shareOf(row.queries, maxDomainQueries)}
+		detail={m.dashboard_count_blocked({ count: formatNumber(row.blocked, locale) })}
+	>
+		{#snippet trailing()}
+			<span class="num">{formatNumber(row.queries, locale)}</span>
+		{/snippet}
+	</GroupedRow>
+{/snippet}
+
+{#snippet blockedDomainRow(row: TopDomain)}
+	{@const shown = displayText(row.domain)}
+	<GroupedRow
+		label={shown.text}
+		link={resolve('/dashboard/domains/[name]', { name: row.domain })}
+		mono
+		truncate
+		share={view.shareOf(row.blocked, maxBlocked)}
+		shareTone="danger"
+		detail={m.dashboard_count_queries({ count: formatNumber(row.queries, locale) })}
+	>
+		{#snippet trailing()}
+			<span class="num">{formatNumber(row.blocked, locale)}</span>
+		{/snippet}
+	</GroupedRow>
+{/snippet}
+
 <div class="dash">
 	{#if paused && pausedUntil}
 		<Banner title={m.dashboard_paused_title()}>
@@ -336,13 +381,15 @@
 		</Banner>
 	{/if}
 	{#if alertCount > 0}
-		<Banner
-			title={alertCount === 1
-				? m.alerts_banner_one()
-				: m.alerts_banner_many({ count: formatNumber(alertCount, locale) })}
-		>
-			<p><a href={resolve('/alerts')}>{m.alerts_banner_open()}</a></p>
-		</Banner>
+		<section class="alerts" role="status">
+			<span class="symbol"><Icon name="alert-triangle" size="1.125rem" strokeWidth={1.7} /></span>
+			<p class="alerts-title">
+				{alertCount === 1
+					? m.alerts_banner_one()
+					: m.alerts_banner_many({ count: formatNumber(alertCount, locale) })}
+			</p>
+			<a href={resolve('/alerts')}>{m.alerts_banner_open()}</a>
+		</section>
 	{/if}
 
 	<header class="page-head">
@@ -367,69 +414,40 @@
 		/>
 	</header>
 
-	<section class="health {healthTone}" aria-labelledby={healthId}>
-		<span class="symbol"><Icon name={healthIcon} size="1.125rem" strokeWidth={1.7} /></span>
-		<h2 class="health-title" id={healthId}>
-			{#if problems.length === 0}
-				{healthKnown ? m.dashboard_health_ok() : m.status_unknown()}
-			{:else if problems.length === 1}
-				{m.dashboard_health_one()}
-			{:else}
-				{m.dashboard_health_many({ count: formatNumber(problems.length, locale) })}
+	{#if showHealth}
+		<section class="health {healthTone}" aria-labelledby={healthId}>
+			<span class="symbol"><Icon name={healthIcon} size="1.125rem" strokeWidth={1.7} /></span>
+			<h2 class="health-title" id={healthId}>
+				{#if problems.length === 0}
+					{healthKnown ? m.dashboard_health_ok() : m.status_unknown()}
+				{:else if problems.length === 1}
+					{m.dashboard_health_one()}
+				{:else}
+					{m.dashboard_health_many({ count: formatNumber(problems.length, locale) })}
+				{/if}
+			</h2>
+			{#if problems.length > 0}
+				<ul class="problems">
+					{#each problems as problem, index (index)}
+						<li>
+							{problem.label}: {problem.verdict}{#if problem.detail}<span class="detail">
+									· {problem.detail}</span
+								>{/if}
+						</li>
+					{/each}
+				</ul>
 			{/if}
-		</h2>
-		{#if problems.length > 0}
-			<ul class="problems">
-				{#each problems as problem, index (index)}
-					<li>
-						{problem.label}: {problem.verdict}{#if problem.detail}<span class="detail">
-								· {problem.detail}</span
-							>{/if}
-					</li>
-				{/each}
-			</ul>
-		{/if}
-		{#if upstreams.kind === 'ok' && upstreamSplit.healthy.length > 0 && upstreamSplit.affected.length === 0}
-			<p class="summary">
-				{m.dashboard_upstreams_healthy({
-					count: formatNumber(upstreamSplit.healthy.length, locale),
-				})}
-			</p>
-		{/if}
-	</section>
+			{#if upstreams.kind === 'ok' && upstreamSplit.healthy.length > 0 && upstreamSplit.affected.length === 0}
+				<p class="summary">
+					{m.dashboard_upstreams_healthy({
+						count: formatNumber(upstreamSplit.healthy.length, locale),
+					})}
+				</p>
+			{/if}
+		</section>
+	{/if}
 	{#if status.kind !== 'ok'}
 		<ResultNotice result={status} onretry={() => poller.refresh()} />
-	{/if}
-
-	{#if status.kind === 'ok' && status.data.cluster}
-		{@const cluster = status.data.cluster}
-		<GroupedList header={m.dashboard_cluster_header()}>
-			<GroupedRow label={m.dashboard_cluster_role()} detail={nodeRoleLabel(cluster.role)} />
-			<GroupedRow label={m.dashboard_cluster_lag()}>
-				{#snippet trailing()}
-					<span class="num">{m.sidebar_node_lag({ lag: formatNumber(cluster.lag, locale) })}</span>
-				{/snippet}
-			</GroupedRow>
-			<GroupedRow label={m.dashboard_cluster_degraded()}>
-				{#snippet trailing()}
-					<span class="num">{formatNumber(cluster.degraded_nodes, locale)}</span>
-				{/snippet}
-			</GroupedRow>
-			{#each clusterRows as { node, lag } (node.node_id)}
-				<GroupedRow
-					label={displayText(node.node_id).text}
-					mono
-					truncate
-					detail={`${nodeRoleLabel(node.role)} · ${nodeStatusLabel(node, lag, locale)}`}
-					href="/cluster"
-				>
-					{#snippet leading()}
-						{@render nodeIcon(node, lag)}
-					{/snippet}
-				</GroupedRow>
-			{/each}
-			<GroupedRow label={m.dashboard_cluster_open()} href="/cluster" />
-		</GroupedList>
 	{/if}
 
 	<div class="tiles">
@@ -492,9 +510,16 @@
 		<div class="cell">
 			{#if upstreams.kind === 'ok' && upstreamSplit.affected.length > 0}
 				<GroupedList header={m.dashboard_section_upstreams()} footer={upstreamsFooter}>
-					{#each upstreamSplit.affected as item, index (index)}
+					{#each affectedUpstreams.shown as item, index (index)}
 						{@render upstreamRow(item)}
 					{/each}
+					{#if affectedUpstreams.unmeasured > 0}
+						<GroupedRow
+							label={m.dashboard_upstreams_unmeasured({
+								count: formatNumber(affectedUpstreams.unmeasured, locale),
+							})}
+						/>
+					{/if}
 					{#if upstreamSplit.healthy.length > 0}
 						<details class="disclosure fold">
 							<summary>
@@ -528,46 +553,41 @@
 		{#if domains.kind === 'ok'}
 			<div class="cell">
 				<GroupedList header={m.dashboard_section_top_domains()}>
-					{#each topDomainRows as row, index (index)}
-						{@const shown = displayText(row.domain)}
-						<GroupedRow
-							label={shown.text}
-							link={resolve('/dashboard/domains/[name]', { name: row.domain })}
-							mono
-							truncate
-							share={view.shareOf(row.queries, maxDomainQueries)}
-							detail={m.dashboard_count_blocked({ count: formatNumber(row.blocked, locale) })}
-						>
-							{#snippet trailing()}
-								<span class="num">{formatNumber(row.queries, locale)}</span>
-							{/snippet}
-						</GroupedRow>
+					{#each topDomainHead as row, index (index)}
+						{@render topDomainRow(row)}
 					{:else}
 						<GroupedRow label={m.dashboard_empty_period()} />
 					{/each}
+					{#if topDomainRest.length > 0}
+						<details class="disclosure fold">
+							<summary>{m.dashboard_show_more()}</summary>
+							<div class="rows">
+								{#each topDomainRest as row, index (index)}
+									{@render topDomainRow(row)}
+								{/each}
+							</div>
+						</details>
+					{/if}
 				</GroupedList>
 			</div>
 
 			<div class="cell">
 				<GroupedList header={m.dashboard_section_top_blocked()}>
-					{#each blockedDomains as row, index (index)}
-						{@const shown = displayText(row.domain)}
-						<GroupedRow
-							label={shown.text}
-							link={resolve('/dashboard/domains/[name]', { name: row.domain })}
-							mono
-							truncate
-							share={view.shareOf(row.blocked, maxBlocked)}
-							shareTone="danger"
-							detail={m.dashboard_count_queries({ count: formatNumber(row.queries, locale) })}
-						>
-							{#snippet trailing()}
-								<span class="num">{formatNumber(row.blocked, locale)}</span>
-							{/snippet}
-						</GroupedRow>
+					{#each blockedHead as row, index (index)}
+						{@render blockedDomainRow(row)}
 					{:else}
 						<GroupedRow label={m.dashboard_nothing_blocked()} />
 					{/each}
+					{#if blockedRest.length > 0}
+						<details class="disclosure fold">
+							<summary>{m.dashboard_show_more()}</summary>
+							<div class="rows">
+								{#each blockedRest as row, index (index)}
+									{@render blockedDomainRow(row)}
+								{/each}
+							</div>
+						</details>
+					{/if}
 				</GroupedList>
 			</div>
 		{:else}
@@ -631,6 +651,37 @@
 		</div>
 	</div>
 
+	{#if status.kind === 'ok' && status.data.cluster}
+		{@const cluster = status.data.cluster}
+		<GroupedList header={m.dashboard_cluster_header()}>
+			<GroupedRow label={m.dashboard_cluster_role()} detail={nodeRoleLabel(cluster.role)} />
+			<GroupedRow label={m.dashboard_cluster_lag()}>
+				{#snippet trailing()}
+					<span class="num">{m.sidebar_node_lag({ lag: formatNumber(cluster.lag, locale) })}</span>
+				{/snippet}
+			</GroupedRow>
+			<GroupedRow label={m.dashboard_cluster_degraded()}>
+				{#snippet trailing()}
+					<span class="num">{formatNumber(cluster.degraded_nodes, locale)}</span>
+				{/snippet}
+			</GroupedRow>
+			{#each clusterRows as { node, lag } (node.node_id)}
+				<GroupedRow
+					label={displayText(node.node_id).text}
+					mono
+					truncate
+					detail={`${nodeRoleLabel(node.role)} · ${nodeStatusLabel(node, lag, locale)}`}
+					href="/cluster"
+				>
+					{#snippet leading()}
+						{@render nodeIcon(node, lag)}
+					{/snippet}
+				</GroupedRow>
+			{/each}
+			<GroupedRow label={m.dashboard_cluster_open()} href="/cluster" />
+		</GroupedList>
+	{/if}
+
 	{#if status.kind === 'ok'}
 		<p class="version">{m.dashboard_version({ version: status.data.version })}</p>
 	{/if}
@@ -670,6 +721,32 @@
 	.pause-label {
 		font-size: 0.875rem;
 		font-weight: 600;
+	}
+
+	/* One row: the warning symbol, the count and the link to the alerts screen. */
+	.alerts {
+		display: flex;
+		align-items: center;
+		gap: 0.625rem;
+		padding: 0.5rem 1rem;
+		background: var(--surface);
+		border: 1px solid var(--separator);
+		border-radius: var(--r-card);
+	}
+
+	.alerts .symbol {
+		color: var(--warn);
+	}
+
+	.alerts-title {
+		flex: 1 1 auto;
+		min-width: 0;
+		margin: 0;
+		font-weight: 600;
+	}
+
+	.alerts a {
+		flex: 0 0 auto;
 	}
 
 	.health {

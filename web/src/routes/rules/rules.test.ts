@@ -259,6 +259,45 @@ describe('Regeln page: list', () => {
 		expect(screen.queryByRole('button', { name: /tracker\.example/ })).toBeNull();
 	});
 
+	it('renders the first 50 rules and shows the rest on request', async () => {
+		const user = userEvent.setup();
+		const lines = Array.from(
+			{ length: 60 },
+			(_, i) => `||host${String(i).padStart(2, '0')}.example^`,
+		).join('\n');
+		serve({
+			'GET /api/v1/filter-sets': () =>
+				ok({
+					filter_sets: [
+						{
+							id: 'default',
+							name: 'Standard',
+							lists: [],
+							custom_rules: lines,
+							services: [],
+							block_mode: 'refused',
+						},
+					],
+				}),
+			'GET /api/v1/filtering/mcp-rules': (_init, url) =>
+				ok({
+					filter_set_id: 'default',
+					kind: new URL(String(url), 'http://localhost').searchParams.get('kind') ?? 'rules',
+					rules: [],
+					temporary_allows: [],
+					pauses: [],
+					has_more: false,
+					next_offset: null,
+				}),
+		});
+		render(RulesPage);
+		await screen.findByRole('button', { name: /^host00\.example/ });
+		expect(document.querySelectorAll('.rule-row')).toHaveLength(50);
+
+		await user.click(screen.getByRole('button', { name: m.list_show_more({ count: 10 }) }));
+		expect(document.querySelectorAll('.rule-row')).toHaveLength(60);
+	});
+
 	it('shows the empty state with an add button when no set has rules', async () => {
 		serve({
 			'GET /api/v1/filter-sets': () =>

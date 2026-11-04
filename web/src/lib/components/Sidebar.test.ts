@@ -59,19 +59,19 @@ describe('Sidebar', () => {
 		expect(container.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
 	});
 
-	it('renders the Einstellungen item and the Hilfe link outside the sections', () => {
+	it('renders the Einstellungen item outside the sections and no Hilfe link', () => {
 		const { container } = render(Sidebar, { props: { currentPath: '/settings' } });
 		expect(container.querySelector('.nav-settings a')).toHaveAttribute('href', '/settings');
 		expect(container.querySelector('.nav-settings a')).toHaveAttribute('aria-current', 'page');
-		expect(container.querySelector('.sidebar-foot a')).toHaveAttribute('href', '/feedback');
+		expect(container.querySelector('.sidebar-foot a')).toBeNull();
+		expect(container.querySelector('a[href="/feedback"]')).toBeNull();
 	});
 
 	it('shows viewer section items to a viewer', () => {
 		const { container } = render(Sidebar, { props: { currentPath: '/dashboard' } });
 		const links = container.querySelectorAll('nav a.nav-item');
 		const expected = navSections.reduce(
-			(count, section) =>
-				count + section.items.filter((item) => item.minRole === 'viewer').length,
+			(count, section) => count + section.items.filter((item) => item.minRole === 'viewer').length,
 			0,
 		);
 		// The viewer sections plus the Einstellungen item.

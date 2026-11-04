@@ -334,13 +334,14 @@
 							{#if isAdmin}
 								<div class="row-actions">
 									<Button onclick={() => openEdit(listener)}>{m.action_edit()}</Button>
-									<Button
-										variant="danger"
+									<button
+										type="button"
+										class="danger-text"
 										disabled={busy}
 										onclick={() => (deleteTarget = listener)}
 									>
 										{m.action_delete()}
-									</Button>
+									</button>
 								</div>
 							{/if}
 						{/snippet}
@@ -450,7 +451,10 @@
 {#if deleteTarget && isAdmin}
 	<ConfirmSheet
 		title={m.listeners_delete_title()}
-		body={m.listeners_delete_body({ id: displayText(deleteTarget.id).text })}
+		body={m.listeners_delete_body_dns({
+			id: displayText(deleteTarget.id).text,
+			address: displayText(deleteTarget.address, 80).text,
+		})}
 		{busy}
 		{failure}
 		oncancel={() => (deleteTarget = null)}
@@ -504,6 +508,23 @@
 		flex-wrap: wrap;
 		gap: 0.375rem;
 		justify-content: flex-end;
+	}
+
+	.danger-text {
+		min-height: var(--control-h);
+		padding: 0 0.5rem;
+		border: none;
+		background: transparent;
+		font: inherit;
+		font-size: 0.875rem;
+		font-weight: 500;
+		color: var(--danger);
+		cursor: pointer;
+	}
+
+	.danger-text:disabled {
+		opacity: 0.4;
+		cursor: not-allowed;
 	}
 
 	.state,

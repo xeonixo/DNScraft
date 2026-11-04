@@ -5,7 +5,7 @@
 	import GroupedList from '$lib/components/GroupedList.svelte';
 	import GroupedRow from '$lib/components/GroupedRow.svelte';
 	import Segmented from '$lib/components/Segmented.svelte';
-	import Sheet from '$lib/components/Sheet.svelte';
+	import ConfirmSheet from '$lib/components/ConfirmSheet.svelte';
 	import UnavailableNotice from '$lib/components/UnavailableNotice.svelte';
 	import {
 		listSessions,
@@ -62,7 +62,9 @@
 	}
 
 	function rowDetail(session: AuthSession): string {
-		const parts: string[] = [];
+		const parts: string[] = [
+			m.settings_sessions_short_id({ id: displayText(session.id.slice(0, 8)).text }),
+		];
 		if (showActor) {
 			parts.push(displayText(session.actor_id).text);
 			if (session.role) parts.push(roleLabel(session.role));
@@ -146,7 +148,7 @@
 					{#if session.current}
 						<span class="badge">{m.settings_sessions_current()}</span>
 					{:else}
-						<Button variant="danger" onclick={() => askRevoke(session)}>
+						<Button class="quiet-danger" onclick={() => askRevoke(session)}>
 							{m.settings_sessions_revoke()}
 						</Button>
 					{/if}
@@ -164,29 +166,18 @@
 {/if}
 
 {#if revokeTarget}
-	<Sheet
-		open={true}
+	<ConfirmSheet
 		title={m.settings_sessions_revoke_title()}
-		onclose={() => (revokeTarget = null)}
-	>
-		<p class="body">
-			{m.settings_sessions_revoke_body({
-				client: clientLabel(revokeTarget),
-				ip: displayText(revokeTarget.ip ?? '—').text,
-			})}
-		</p>
-		{#if failure}
-			<div class="notice">
-				<ErrorNotice code={failure.code} params={failure.params} />
-			</div>
-		{/if}
-		<div class="actions">
-			<Button onclick={() => (revokeTarget = null)}>{m.action_cancel()}</Button>
-			<Button variant="danger" disabled={busy} onclick={() => void confirmRevoke()}>
-				{m.settings_sessions_revoke()}
-			</Button>
-		</div>
-	</Sheet>
+		body={m.settings_sessions_revoke_body({
+			client: clientLabel(revokeTarget),
+			ip: displayText(revokeTarget.ip ?? '—').text,
+		})}
+		confirmLabel={m.settings_sessions_revoke()}
+		{busy}
+		{failure}
+		onconfirm={() => void confirmRevoke()}
+		oncancel={() => (revokeTarget = null)}
+	/>
 {/if}
 
 <style>
@@ -215,21 +206,10 @@
 		margin-top: 0.75rem;
 	}
 
-	.notice {
-		margin: 0.75rem 0;
-	}
-
-	.actions {
-		display: flex;
-		flex-wrap: wrap;
-		justify-content: flex-end;
-		gap: 0.5rem;
-		margin-top: 1rem;
-	}
-
-	.body {
-		margin: 0;
-		color: var(--label-2);
-		overflow-wrap: anywhere;
+	/* Revoke is a quiet destructive action: red text, no fill. The solid style lives in ConfirmSheet. */
+	:global(button.btn.quiet-danger) {
+		background: transparent;
+		border-color: transparent;
+		color: var(--danger);
 	}
 </style>

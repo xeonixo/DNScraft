@@ -239,6 +239,23 @@
 			}));
 	});
 
+	/** Rows rendered before "Mehr anzeigen"; the search and filters run over all rows. */
+	const NAMES_PAGE = 50;
+	let namesLimit = $state(NAMES_PAGE);
+	const totalNameRows = $derived(groups.reduce((sum, group) => sum + group.records.length, 0));
+	/** The owner groups cut to `namesLimit` rows in total; `total` keeps the owner's full count. */
+	const shownGroups = $derived.by(() => {
+		let budget = namesLimit;
+		const out: { name: string; total: number; records: NameRow[] }[] = [];
+		for (const group of groups) {
+			if (budget <= 0) break;
+			const records = group.records.slice(0, budget);
+			budget -= records.length;
+			out.push({ name: group.name, total: group.records.length, records });
+		}
+		return out;
+	});
+
 	const publicTypeSupported = $derived(
 		(PUBLIC_RECORD_TYPES as readonly string[]).includes(formType.trim().toUpperCase()),
 	);
@@ -755,9 +772,10 @@
 			const fallback = Object.values(overrides).find(
 				(value) => isOverrideData(value) && !isAddressesOverride(value),
 			);
-			values = fallback && (typeof fallback === 'string' || Array.isArray(fallback))
-				? rdataTexts(fallback)
-				: [];
+			values =
+				fallback && (typeof fallback === 'string' || Array.isArray(fallback))
+					? rdataTexts(fallback)
+					: [];
 		}
 		if (values.length === 0 || values.some((value) => validateRdata(value, true))) return;
 		const rdata = rdataWire(values);
@@ -831,9 +849,7 @@
 	);
 	const availableTags = $derived(
 		[
-			...new SvelteSet(
-				rows.flatMap((record) => record.tags ?? []).map((tag) => tag.toLowerCase()),
-			),
+			...new SvelteSet(rows.flatMap((record) => record.tags ?? []).map((tag) => tag.toLowerCase())),
 		].sort((a, b) => a.localeCompare(b)),
 	);
 
@@ -939,7 +955,7 @@
 		{:else}
 			{#snippet rowBody(row: NameRow)}
 				<span class="type">{row.type}</span>
-				<span class="rdata mono">{row.rdata}</span>
+				<span class="rdata mono" title={row.rdata}>{row.rdata}</span>
 				{#if row.local}
 					<NameRowMeta
 						local={row.local}
@@ -960,14 +976,14 @@
 					</span>
 				{/if}
 			{/snippet}
-			{#each groups as group (group.name)}
+			{#each shownGroups as group (group.name)}
 				<section class="owner">
 					<header class="owner-head">
 						<span class="owner-name mono">{domainLabel(group.name)}</span>
 						<span class="owner-meta"
-							>{group.records.length === 1
+							>{group.total === 1
 								? m.names_record_count_one({ count: '1' })
-								: m.names_record_count_other({ count: String(group.records.length) })}</span
+								: m.names_record_count_other({ count: String(group.total) })}</span
 						>
 					</header>
 					<GroupedList>
@@ -985,6 +1001,11 @@
 					</GroupedList>
 				</section>
 			{/each}
+			{#if totalNameRows > namesLimit}
+				<Button variant="secondary" onclick={() => (namesLimit += NAMES_PAGE)}>
+					{m.list_show_more({ count: totalNameRows - namesLimit })}
+				</Button>
+			{/if}
 		{/if}
 		<p class="footnote">{m.names_footnote()}</p>
 	{/if}
@@ -1094,9 +1115,7 @@
 				{#each formValues as row, i (row.key)}
 					<div class="value-row">
 						<label class="sr-only" for="rec-rdata-{row.key}"
-							>{i === 0
-								? m.names_field_rdata()
-								: m.names_value_extra({ n: String(i + 1) })}</label
+							>{i === 0 ? m.names_field_rdata() : m.names_value_extra({ n: String(i + 1) })}</label
 						>
 						<input
 							id="rec-rdata-{row.key}"
@@ -1118,7 +1137,8 @@
 					</div>
 				{/each}
 				{#if isAdmin}
-					<button type="button" class="text-action" onclick={addValue}>{m.names_value_add()}</button>
+					<button type="button" class="text-action" onclick={addValue}>{m.names_value_add()}</button
+					>
 				{/if}
 				{#if formType === 'CNAME'}
 					<p class="hint muted">{m.names_cname_rotate()}</p>
@@ -1307,6 +1327,15 @@
 		border-radius: var(--r-ctl);
 		background: var(--surface);
 		font: inherit;
+	}
+	/* Long TXT and values stay on three lines; the full text is in the title tooltip. */
+	.rdata {
+		display: -webkit-box;
+		-webkit-line-clamp: 3;
+		line-clamp: 3;
+		-webkit-box-orient: vertical;
+		overflow: hidden;
+		overflow-wrap: anywhere;
 	}
 	.owner {
 		display: flex;

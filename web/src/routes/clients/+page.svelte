@@ -67,6 +67,13 @@
 		};
 	});
 
+	/** Rows rendered per list before "Mehr anzeigen"; search runs over all rows. */
+	const CLIENTS_PAGE = 50;
+	let syncedLimit = $state(CLIENTS_PAGE);
+	let manualLimit = $state(CLIENTS_PAGE);
+	const shownSynced = $derived(filtered.synced.slice(0, syncedLimit));
+	const shownManual = $derived(filtered.manual.slice(0, manualLimit));
+
 	async function load(): Promise<void> {
 		result = await settle(listClients());
 	}
@@ -172,7 +179,7 @@
 
 	<div class="section-head">{m.clients_section_synced()}</div>
 	<GroupedList>
-		{#each filtered.synced as client (client.id)}
+		{#each shownSynced as client (client.id)}
 			<GroupedRow
 				label={displayText(client.name).text}
 				detail="{client.source} · {client.ips.join(' · ')}"
@@ -188,9 +195,15 @@
 		{/each}
 	</GroupedList>
 
+	{#if filtered.synced.length > shownSynced.length}
+		<Button variant="secondary" onclick={() => (syncedLimit += CLIENTS_PAGE)}>
+			{m.list_show_more({ count: filtered.synced.length - shownSynced.length })}
+		</Button>
+	{/if}
+
 	<div class="section-head">{m.clients_section_manual()}</div>
 	<GroupedList>
-		{#each filtered.manual as entry (entry.name)}
+		{#each shownManual as entry (entry.name)}
 			<GroupedRow
 				label={displayText(entry.name).text}
 				detail={entry.identity ?? entry.ip ?? entry.cidr ?? ''}
@@ -208,6 +221,11 @@
 			<GroupedRow label={search.trim() ? m.clients_nothing_found() : m.clients_empty()} />
 		{/each}
 	</GroupedList>
+	{#if filtered.manual.length > shownManual.length}
+		<Button variant="secondary" onclick={() => (manualLimit += CLIENTS_PAGE)}>
+			{m.list_show_more({ count: filtered.manual.length - shownManual.length })}
+		</Button>
+	{/if}
 	<p class="footnote">{m.clients_footnote()}</p>
 	{#if isAdmin}
 		<p class="footnote">

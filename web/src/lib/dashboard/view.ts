@@ -124,6 +124,12 @@ export function answerSourceRows(
 		.map(([source, count]) => ({ source, count, share: total > 0 ? count / total : 0 }));
 }
 
+/** Upstreams with no verdict and no measurement yet: they are counted, not listed row by row. */
+export function splitUnmeasured(items: Upstream[]): { shown: Upstream[]; unmeasured: number } {
+	const shown = items.filter((item) => !(item.state === 'unknown' && item.rtt_ms === null));
+	return { shown, unmeasured: items.length - shown.length };
+}
+
 /** Upstreams in order: `healthy` are up; `affected` are anything else and go in front of the owner. */
 export function splitUpstreams(items: Upstream[]): { healthy: Upstream[]; affected: Upstream[] } {
 	return {

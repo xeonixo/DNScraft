@@ -254,89 +254,99 @@
 </script>
 
 <section class="channels" aria-labelledby="alerts-channels-heading">
-	<h2 id="alerts-channels-heading" class="section-head">{m.alerts_section_channels()}</h2>
-	<p class="lead">{m.alerts_channels_lead()}</p>
+	<details class="disclosure" open={channels.length > 0}>
+		<summary>
+			<h2 id="alerts-channels-heading" class="section-head">{m.alerts_section_channels()}</h2>
+		</summary>
+		<div class="disclosure-body">
+			<p class="lead">{m.alerts_channels_lead()}</p>
 
-	{#if result.kind === 'loading'}
-		<GroupedList>
-			<GroupedRow label={m.state_loading()} />
-		</GroupedList>
-	{:else if result.kind === 'error'}
-		<ErrorNotice code={result.code} params={result.params} />
-	{:else}
-		{#if !isAdmin}
-			<p class="note">{m.alerts_channels_viewer()}</p>
-		{/if}
-
-		{#if isAdmin}
-			<label class="hosts">
-				<span class="hosts-label">{m.alerts_channels_allowed_hosts()}</span>
-				<textarea
-					class="field"
-					rows="3"
-					bind:value={allowedHosts}
-					spellcheck="false"
-					aria-describedby="alerts-hosts-hint"
-				></textarea>
-				<span id="alerts-hosts-hint" class="hint">{m.alerts_channels_allowed_hosts_hint()}</span>
-			</label>
-			<label class="switch-row hosts-switch">
-				<span>{m.alerts_channels_allow_private()}</span>
-				<Switch
-					bind:checked={allowPrivateDestinations}
-					aria-label={m.alerts_channels_allow_private()}
-				/>
-			</label>
-			<p class="hint">{m.alerts_channels_allow_private_hint()}</p>
-			<p class="actions">
-				<Button variant="primary" disabled={busy} onclick={() => void saveNotificationSettings()}>
-					{m.alerts_channels_save_settings()}
-				</Button>
-			</p>
-		{/if}
-
-		<GroupedList>
-			{#each channels as channel (channel.id)}
-				<GroupedRow
-					label={channel.id}
-					detail={channel.host
-						? m.alerts_channels_host({ host: channel.host })
-						: m.alerts_channels_url_set()}
-					mono
-				>
-					{#snippet trailing()}
-						<span class="row-actions">
-							{#if isAdmin}
-								<Button variant="secondary" onclick={() => openEdit(channel)}
-									>{m.alerts_channels_edit()}</Button
-								>
-								<Button
-									variant="secondary"
-									disabled={testBusy}
-									onclick={() => void sendTest(channel.id)}>{m.alerts_channels_test()}</Button
-								>
-								<Button
-									variant="secondary"
-									disabled={busy}
-									onclick={() => void removeChannel(channel.id)}
-									>{m.alerts_channels_delete()}</Button
-								>
-							{/if}
-						</span>
-					{/snippet}
-				</GroupedRow>
+			{#if result.kind === 'loading'}
+				<GroupedList>
+					<GroupedRow label={m.state_loading()} />
+				</GroupedList>
+			{:else if result.kind === 'error'}
+				<ErrorNotice code={result.code} params={result.params} />
 			{:else}
-				<GroupedRow label={m.alerts_channels_empty()} />
-			{/each}
-		</GroupedList>
+				{#if !isAdmin}
+					<p class="note">{m.alerts_channels_viewer()}</p>
+				{/if}
 
-		{#if isAdmin}
-			<p class="actions">
-				<Button variant="primary" onclick={openCreate}>{m.alerts_channels_add()}</Button>
-			</p>
-		{/if}
-		{#if failure}<ErrorNotice code={failure.code} params={failure.params} />{/if}
-	{/if}
+				{#if isAdmin}
+					<label class="hosts">
+						<span class="hosts-label">{m.alerts_channels_allowed_hosts()}</span>
+						<textarea
+							class="field"
+							rows="3"
+							bind:value={allowedHosts}
+							spellcheck="false"
+							aria-describedby="alerts-hosts-hint"></textarea>
+						<span id="alerts-hosts-hint" class="hint">{m.alerts_channels_allowed_hosts_hint()}</span
+						>
+					</label>
+					<label class="switch-row hosts-switch">
+						<span>{m.alerts_channels_allow_private()}</span>
+						<Switch
+							bind:checked={allowPrivateDestinations}
+							aria-label={m.alerts_channels_allow_private()}
+						/>
+					</label>
+					<p class="hint">{m.alerts_channels_allow_private_hint()}</p>
+					<p class="actions">
+						<Button
+							variant="primary"
+							disabled={busy}
+							onclick={() => void saveNotificationSettings()}
+						>
+							{m.alerts_channels_save_settings()}
+						</Button>
+					</p>
+				{/if}
+
+				<GroupedList>
+					{#each channels as channel (channel.id)}
+						<GroupedRow
+							label={channel.id}
+							detail={channel.host
+								? m.alerts_channels_host({ host: channel.host })
+								: m.alerts_channels_url_set()}
+							mono
+						>
+							{#snippet trailing()}
+								<span class="row-actions">
+									{#if isAdmin}
+										<Button variant="secondary" onclick={() => openEdit(channel)}
+											>{m.alerts_channels_edit()}</Button
+										>
+										<Button
+											variant="secondary"
+											disabled={testBusy}
+											onclick={() => void sendTest(channel.id)}>{m.alerts_channels_test()}</Button
+										>
+										<Button
+											variant="secondary"
+											disabled={busy}
+											onclick={() => void removeChannel(channel.id)}
+											>{m.alerts_channels_delete()}</Button
+										>
+									{/if}
+								</span>
+							{/snippet}
+						</GroupedRow>
+					{:else}
+						<GroupedRow label={m.alerts_channels_empty()} />
+					{/each}
+				</GroupedList>
+
+				{#if isAdmin}
+					<p class="actions">
+						<Button variant="primary" onclick={openCreate}>{m.alerts_channels_add()}</Button>
+					</p>
+				{/if}
+				{#if failure}<ErrorNotice code={failure.code} params={failure.params} />{/if}
+			{/if}
+		</div>
+	</details>
 </section>
 
 {#if draft}
@@ -424,6 +434,16 @@
 		display: grid;
 		gap: 0.75rem;
 		margin-top: 1.5rem;
+	}
+
+	.disclosure > summary {
+		cursor: pointer;
+	}
+
+	.disclosure-body {
+		display: grid;
+		gap: 0.75rem;
+		margin-top: 0.75rem;
 	}
 
 	.section-head {

@@ -4,7 +4,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { m } from '$lib/paraglide/messages';
-import { navFeedback, navSections, navSettings, type NavSection, type Role } from '$lib/nav';
+import { navSections, navSettings, type NavSection, type Role } from '$lib/nav';
 import { paletteEntries, type PaletteSource } from '$lib/palette/entries';
 import CommandPalette from './CommandPalette.svelte';
 
@@ -22,7 +22,6 @@ const source: PaletteSource = {
 		},
 	] satisfies NavSection[],
 	settingsTabs: [],
-	feedback: null,
 };
 
 let fetchMock: ReturnType<typeof vi.fn<typeof fetch>>;
@@ -73,11 +72,7 @@ describe('Command palette', () => {
 		expect(screen.queryByRole('option', { name: 'Dashboard' })).not.toBeInTheDocument();
 		expect(screen.getByText(m.palette_empty())).toBeInTheDocument();
 
-		const adminPaths = [
-			...navSections.flatMap((section) => section.items),
-			navSettings,
-			navFeedback,
-		]
+		const adminPaths = [...navSections.flatMap((section) => section.items), navSettings]
 			.filter((item) => item.minRole === 'admin')
 			.map((item) => item.path);
 		const shown = paletteEntries('viewer', '').map((entry) => entry.href);

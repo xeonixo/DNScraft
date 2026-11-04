@@ -28,6 +28,18 @@ const nodes = [
 		local: true,
 		connected: true,
 	},
+	{
+		node_id: 'dns1',
+		display_name: 'elmo',
+		role: 'sub_node',
+		fingerprint: 'bb'.repeat(32),
+		joined_at: '2026-01-02T00:00:00Z',
+		last_seen: '2026-11-02T12:00:00Z',
+		applied_config_version: 3,
+		revoked: false,
+		local: false,
+		connected: true,
+	},
 ];
 
 const baseSettings = {
@@ -105,9 +117,7 @@ describe('cluster settings UI', () => {
 			screen.getByText(m.cluster_settings_transport_live({ transport: 'HTTP/2' })),
 		).toBeInTheDocument();
 		expect(
-			screen.getByText(
-				m.cluster_settings_transport_fallback({ reason: 'quic_unavailable' }),
-			),
+			screen.getByText(m.cluster_settings_transport_fallback({ reason: 'quic_unavailable' })),
 		).toBeInTheDocument();
 
 		const segmented = screen.getByRole('radiogroup', {
@@ -130,11 +140,40 @@ describe('cluster settings UI', () => {
 		});
 	});
 
+	it('titles a node by its display name and labels the node id as secondary text', async () => {
+		renderPage();
+
+		const row = (await screen.findByText('elmo')).closest('.row');
+		if (!(row instanceof HTMLElement)) throw new Error('no node row');
+		expect(within(row).getByText(/ID dns1/)).toBeInTheDocument();
+		expect(screen.queryByText('dns1')).toBeNull();
+	});
+
+	it('revokes a node only after a confirmation that names it', async () => {
+		const user = userEvent.setup();
+		renderPage();
+
+		const row = (await screen.findByText('elmo')).closest('.row');
+		if (!(row instanceof HTMLElement)) throw new Error('no node row');
+		const revoke = within(row).getByRole('button', { name: m.cluster_revoke() });
+		expect(revoke).toHaveClass('quiet-danger');
+		expect(revoke).not.toHaveClass('danger');
+
+		await user.click(revoke);
+		const dialog = await screen.findByRole('dialog', { name: m.cluster_revoke_title() });
+		expect(within(dialog).getByText(/dns1/)).toBeInTheDocument();
+		const deletes = () =>
+			fetchMock.mock.calls.filter(([, init]) => (init?.method ?? '').toUpperCase() === 'DELETE');
+		expect(deletes()).toEqual([]);
+
+		await user.click(within(dialog).getByRole('button', { name: m.action_cancel() }));
+		expect(screen.queryByRole('dialog')).toBeNull();
+		expect(deletes()).toEqual([]);
+	});
+
 	it('shows the restart banner when restart_required is set', async () => {
 		settingsBody = { ...baseSettings, restart_required: true };
 		renderPage();
-		expect(
-			await screen.findByText(m.cluster_settings_restart_required()),
-		).toBeInTheDocument();
+		expect(await screen.findByText(m.cluster_settings_restart_required())).toBeInTheDocument();
 	});
 });

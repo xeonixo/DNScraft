@@ -77,6 +77,10 @@
 	const visible = $derived(
 		model ? filterEntries(model.entries, { query, action: actionFilter, setId: setFilter }) : [],
 	);
+	/** Rows rendered before "Mehr anzeigen"; search and filters run over all rules. */
+	const RULES_PAGE = 50;
+	let rulesLimit = $state(RULES_PAGE);
+	const shownEntries = $derived(visible.slice(0, rulesLimit));
 
 	/** Success line above the list (saved, removed, resumed). */
 	let notice = $state<string | null>(null);
@@ -567,7 +571,7 @@
 					<p class="state">{m.rules_none_match()}</p>
 				{:else}
 					<ul class="rule-list">
-						{#each visible as entry (entry.key)}
+						{#each shownEntries as entry (entry.key)}
 							<li>
 								{#if isAdmin}
 									<button type="button" class="rule-row" onclick={() => openDetails(entry)}>
@@ -581,6 +585,11 @@
 							</li>
 						{/each}
 					</ul>
+					{#if visible.length > shownEntries.length}
+						<Button variant="secondary" onclick={() => (rulesLimit += RULES_PAGE)}>
+							{m.list_show_more({ count: visible.length - shownEntries.length })}
+						</Button>
+					{/if}
 				{/if}
 			{/if}
 		</section>

@@ -5,6 +5,7 @@ import {
 	healthProblems,
 	resultText,
 	shareOf,
+	splitUnmeasured,
 	splitUpstreams,
 	tlsVerdict,
 	topBlockedDomains,
@@ -103,6 +104,21 @@ describe('splitUpstreams', () => {
 	it('reports no affected upstreams when all are up, and none for an empty list', () => {
 		expect(splitUpstreams([{ name: 'a', state: 'up' }] as never).affected).toEqual([]);
 		expect(splitUpstreams([])).toEqual({ healthy: [], affected: [] });
+	});
+});
+
+describe('splitUnmeasured', () => {
+	it('counts unknown upstreams without a measurement instead of listing them', () => {
+		const item = (name: string, state: string, rtt: object | null) =>
+			({ name, state, rtt_ms: rtt }) as never;
+		const { shown, unmeasured } = splitUnmeasured([
+			item('a', 'unknown', null),
+			item('b', 'unknown', null),
+			item('c', 'degraded', null),
+			item('d', 'unknown', { p50: 1, p95: 2 }),
+		]);
+		expect(shown.map((row) => row.name)).toEqual(['c', 'd']);
+		expect(unmeasured).toBe(2);
 	});
 });
 

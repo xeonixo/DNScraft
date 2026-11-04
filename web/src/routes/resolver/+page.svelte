@@ -190,93 +190,99 @@
 			</label>
 			<div class="switch-row">
 				<span>{m.resolver_prefetch()}</span>
-				<Switch bind:checked={formPrefetch} disabled={!isAdmin} aria-label={m.resolver_prefetch()} />
+				<Switch
+					bind:checked={formPrefetch}
+					disabled={!isAdmin}
+					aria-label={m.resolver_prefetch()}
+				/>
 			</div>
 		</div>
 	</GroupedList>
 
-	<div class="section-head">{m.resolver_section_limits()}</div>
-	<GroupedList>
-		<div class="form-grid">
-			<label class="field-block" for="res-query-timeout">
-				<span class="field-label">{m.resolver_query_timeout()}</span>
-				<input
-					id="res-query-timeout"
-					class="field mono"
-					bind:value={formQueryTimeout}
-					disabled={!isAdmin}
-				/>
-			</label>
-			<label class="field-block" for="res-deadline">
-				<span class="field-label">{m.resolver_resolve_deadline()}</span>
-				<input
-					id="res-deadline"
-					class="field mono"
-					bind:value={formResolveDeadline}
-					disabled={!isAdmin}
-				/>
-			</label>
-			<label class="field-block" for="res-referral">
-				<span class="field-label">{m.resolver_max_referral_depth()}</span>
-				<input
-					id="res-referral"
-					class="field mono"
-					bind:value={formMaxReferralDepth}
-					disabled={!isAdmin}
-					inputmode="numeric"
-				/>
-			</label>
-			<label class="field-block" for="res-max-queries">
-				<span class="field-label">{m.resolver_max_queries_per_resolve()}</span>
-				<input
-					id="res-max-queries"
-					class="field mono"
-					bind:value={formMaxQueriesPerResolve}
-					disabled={!isAdmin}
-					inputmode="numeric"
-				/>
-			</label>
-			<label class="field-block" for="res-nested">
-				<span class="field-label">{m.resolver_max_nested_depth()}</span>
-				<input
-					id="res-nested"
-					class="field mono"
-					bind:value={formMaxNestedDepth}
-					disabled={!isAdmin}
-					inputmode="numeric"
-				/>
-			</label>
-			<label class="field-block" for="res-cname">
-				<span class="field-label">{m.resolver_max_cname_chain()}</span>
-				<input
-					id="res-cname"
-					class="field mono"
-					bind:value={formMaxCnameChain}
-					disabled={!isAdmin}
-					inputmode="numeric"
-				/>
-			</label>
-			<label class="field-block" for="res-concurrent">
-				<span class="field-label">{m.resolver_max_concurrent_resolutions()}</span>
-				<input
-					id="res-concurrent"
-					class="field mono"
-					bind:value={formMaxConcurrent}
-					disabled={!isAdmin}
-					inputmode="numeric"
-				/>
-			</label>
-			<label class="field-block" for="res-reprime">
-				<span class="field-label">{m.resolver_root_reprime_interval()}</span>
-				<input
-					id="res-reprime"
-					class="field mono"
-					bind:value={formRootReprime}
-					disabled={!isAdmin}
-				/>
-			</label>
-		</div>
-	</GroupedList>
+	<details class="fold">
+		<summary class="section-head">{m.resolver_section_limits()}</summary>
+		<GroupedList>
+			<div class="form-grid">
+				<label class="field-block" for="res-query-timeout">
+					<span class="field-label">{m.resolver_query_timeout()}</span>
+					<input
+						id="res-query-timeout"
+						class="field mono"
+						bind:value={formQueryTimeout}
+						disabled={!isAdmin}
+					/>
+				</label>
+				<label class="field-block" for="res-deadline">
+					<span class="field-label">{m.resolver_resolve_deadline()}</span>
+					<input
+						id="res-deadline"
+						class="field mono"
+						bind:value={formResolveDeadline}
+						disabled={!isAdmin}
+					/>
+				</label>
+				<label class="field-block" for="res-referral">
+					<span class="field-label">{m.resolver_max_referral_depth()}</span>
+					<input
+						id="res-referral"
+						class="field mono"
+						bind:value={formMaxReferralDepth}
+						disabled={!isAdmin}
+						inputmode="numeric"
+					/>
+				</label>
+				<label class="field-block" for="res-max-queries">
+					<span class="field-label">{m.resolver_max_queries_per_resolve()}</span>
+					<input
+						id="res-max-queries"
+						class="field mono"
+						bind:value={formMaxQueriesPerResolve}
+						disabled={!isAdmin}
+						inputmode="numeric"
+					/>
+				</label>
+				<label class="field-block" for="res-nested">
+					<span class="field-label">{m.resolver_max_nested_depth()}</span>
+					<input
+						id="res-nested"
+						class="field mono"
+						bind:value={formMaxNestedDepth}
+						disabled={!isAdmin}
+						inputmode="numeric"
+					/>
+				</label>
+				<label class="field-block" for="res-cname">
+					<span class="field-label">{m.resolver_max_cname_chain()}</span>
+					<input
+						id="res-cname"
+						class="field mono"
+						bind:value={formMaxCnameChain}
+						disabled={!isAdmin}
+						inputmode="numeric"
+					/>
+				</label>
+				<label class="field-block" for="res-concurrent">
+					<span class="field-label">{m.resolver_max_concurrent_resolutions()}</span>
+					<input
+						id="res-concurrent"
+						class="field mono"
+						bind:value={formMaxConcurrent}
+						disabled={!isAdmin}
+						inputmode="numeric"
+					/>
+				</label>
+				<label class="field-block" for="res-reprime">
+					<span class="field-label">{m.resolver_root_reprime_interval()}</span>
+					<input
+						id="res-reprime"
+						class="field mono"
+						bind:value={formRootReprime}
+						disabled={!isAdmin}
+					/>
+				</label>
+			</div>
+		</GroupedList>
+	</details>
 
 	<div class="section-head">{m.resolver_section_network()}</div>
 	<GroupedList>
@@ -321,21 +327,22 @@
 		</div>
 	</GroupedList>
 
-	<div class="section-head">{m.resolver_section_dnssec()}</div>
-	<GroupedList>
-		<label class="field-block area-block" for="res-nta">
-			<span class="field-label">{m.resolver_negative_trust_anchors()}</span>
-			<textarea
-				id="res-nta"
-				class="field area mono"
-				rows="4"
-				bind:value={formNegativeTa}
-				disabled={!isAdmin}
-				spellcheck="false"
-			></textarea>
-			<span class="hint">{m.resolver_negative_trust_anchors_hint()}</span>
-		</label>
-	</GroupedList>
+	<details class="fold">
+		<summary class="section-head">{m.resolver_section_dnssec()}</summary>
+		<GroupedList>
+			<label class="field-block area-block" for="res-nta">
+				<span class="field-label">{m.resolver_negative_trust_anchors()}</span>
+				<textarea
+					id="res-nta"
+					class="field area mono"
+					rows="4"
+					bind:value={formNegativeTa}
+					disabled={!isAdmin}
+					spellcheck="false"></textarea>
+				<span class="hint">{m.resolver_negative_trust_anchors_hint()}</span>
+			</label>
+		</GroupedList>
+	</details>
 
 	{#if isAdmin}
 		<button type="button" class="expert-toggle" onclick={() => (expert = !expert)}>
@@ -348,7 +355,9 @@
 
 	{#if isAdmin}
 		<div class="save-row">
-			<Button variant="primary" disabled={busy} onclick={() => void save()}>{m.action_save()}</Button>
+			<Button variant="primary" disabled={busy} onclick={() => void save()}
+				>{m.action_save()}</Button
+			>
 		</div>
 	{/if}
 
@@ -372,6 +381,30 @@
 	}
 	.state {
 		color: var(--label-2);
+	}
+	/* Advanced groups start folded; the summary keeps the section-head look. */
+	.fold {
+		margin-top: 1rem;
+	}
+	.fold > summary {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		min-height: 2.75rem;
+		margin: 0 0 0.5rem;
+		cursor: pointer;
+		list-style: none;
+	}
+	.fold > summary::-webkit-details-marker {
+		display: none;
+	}
+	.fold > summary::before {
+		content: '▸';
+		color: var(--label-3);
+		transition: transform var(--duration-fast, 0.15s) var(--ease, ease);
+	}
+	.fold[open] > summary::before {
+		transform: rotate(90deg);
 	}
 	.footnote,
 	.hint {

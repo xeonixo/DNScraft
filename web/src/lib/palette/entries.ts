@@ -7,7 +7,6 @@ import type { FilterKey } from '$lib/querylog/filters';
 import { listHref } from '$lib/querylog/saved';
 import {
 	isVisible,
-	navFeedback,
 	navSections,
 	routeHref,
 	settingsTabs,
@@ -30,7 +29,6 @@ export interface PaletteEntry {
 export interface PaletteSource {
 	sections: NavSection[];
 	settingsTabs: { path: StaticRouteId; label: () => string }[];
-	feedback: NavItem | null;
 }
 
 /** Query-log search parameter. `satisfies` keeps this tied to the filter draft. */
@@ -39,7 +37,7 @@ const DOMAIN_FILTER = 'domain_substr' satisfies FilterKey;
 const LABEL = /^[\p{L}\p{N}_](?:[\p{L}\p{N}_-]{0,61}[\p{L}\p{N}_])?$/u;
 
 function defaultSource(): PaletteSource {
-	return { sections: navSections, settingsTabs, feedback: navFeedback };
+	return { sections: navSections, settingsTabs };
 }
 
 /**
@@ -91,7 +89,6 @@ export function paletteEntries(
 			`${settingsLabel} › ${tab.label()}`,
 		);
 	}
-	if (source.feedback) push(source.feedback);
 
 	const domain = domainText(query);
 	if (domain === null) return navigation;

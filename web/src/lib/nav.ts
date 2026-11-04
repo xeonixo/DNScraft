@@ -102,14 +102,11 @@ export const settingsTabs: { path: StaticRouteId; label: () => string }[] = [
 	{ path: '/settings/api', label: () => m.settings_tab_api_explorer() },
 ];
 
-/** Hilfe & Feedback is a link in the sidebar foot, not a section item. */
-export const navFeedback = item('/feedback', () => m.nav_help_feedback(), 'message-square');
-
-const routed: NavItem[] = [
-	...navSections.flatMap((section) => section.items),
-	navSettings,
-	navFeedback,
-];
+/**
+ * /feedback stays routable but is not in navigation (it is a placeholder). Not listed here, so
+ * it has no sidebar, palette or title entry.
+ */
+const routed: NavItem[] = [...navSections.flatMap((section) => section.items), navSettings];
 
 /** The nav entry for a route, used for the toolbar title, document title and placeholder icon. */
 export function navItemForPath(pathname: string): NavItem | undefined {

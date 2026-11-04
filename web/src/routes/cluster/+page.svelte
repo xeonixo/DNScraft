@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import Button from '$lib/components/Button.svelte';
+	import ConfirmSheet from '$lib/components/ConfirmSheet.svelte';
 	import ErrorNotice from '$lib/components/ErrorNotice.svelte';
 	import GroupedList from '$lib/components/GroupedList.svelte';
 	import GroupedRow from '$lib/components/GroupedRow.svelte';
@@ -267,7 +268,7 @@
 
 <p class="lead">{m.cluster_lead()}</p>
 
-{#if failure && !editTarget}
+{#if failure && !editTarget && !revokeTarget}
 	<div class="notice">
 		<ErrorNotice code={failure.code} params={failure.params} />
 	</div>
@@ -368,7 +369,9 @@
 		{#each nodeRows as { node, lag } (node.node_id)}
 			<GroupedRow
 				label={displayText(node.display_name || node.node_id).text}
-				detail={(node.display_name ? `${displayText(node.node_id).text} · ` : '') +
+				detail={(node.display_name
+					? `${m.cluster_node_id_label({ id: displayText(node.node_id).text })} · `
+					: '') +
 					(node.revoked
 						? `${nodeRoleLabel(node.role)} · ${m.cluster_revoked()}`
 						: `${nodeRoleLabel(node.role)} · ${nodeStatusLabel(node, lag, locale)} · ${nodeMeta(node)}`)}
@@ -387,7 +390,7 @@
 						}}>{m.cluster_detail()}</Button
 					>
 					{#if isAdmin && !node.revoked && node.role !== 'master' && node.local !== true}
-						<Button variant="danger" disabled={busy} onclick={() => (revokeTarget = node)}>
+						<Button class="quiet-danger" disabled={busy} onclick={() => (revokeTarget = node)}>
 							{m.cluster_revoke()}
 						</Button>
 					{/if}
@@ -585,15 +588,15 @@
 {/if}
 
 {#if revokeTarget}
-	<Sheet open={true} title={m.cluster_revoke_title()} onclose={() => (revokeTarget = null)}>
-		<p class="hint">{m.cluster_revoke_body({ id: displayText(revokeTarget.node_id).text })}</p>
-		<div class="actions">
-			<Button onclick={() => (revokeTarget = null)}>{m.action_cancel()}</Button>
-			<Button variant="danger" disabled={busy} onclick={confirmRevoke}>
-				{m.cluster_revoke_confirm()}
-			</Button>
-		</div>
-	</Sheet>
+	<ConfirmSheet
+		title={m.cluster_revoke_title()}
+		body={m.cluster_revoke_body({ id: displayText(revokeTarget.node_id).text })}
+		confirmLabel={m.cluster_revoke_confirm()}
+		{busy}
+		{failure}
+		onconfirm={() => void confirmRevoke()}
+		oncancel={() => (revokeTarget = null)}
+	/>
 {/if}
 
 <style>
@@ -652,6 +655,13 @@
 		background: color-mix(in srgb, var(--warn) 12%, transparent);
 		color: var(--label-1);
 		font-size: 0.875rem;
+	}
+
+	/* Revoke is a quiet destructive action: red text, no fill. The solid style lives in ConfirmSheet. */
+	:global(button.btn.quiet-danger) {
+		background: transparent;
+		border-color: transparent;
+		color: var(--danger);
 	}
 
 	.hint + .field-label {

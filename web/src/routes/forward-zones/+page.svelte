@@ -137,9 +137,14 @@
 					{#if isAdmin}
 						<div class="actions">
 							<Button onclick={() => openEdit(zone)}>{m.action_edit()}</Button>
-							<Button variant="danger" disabled={busy} onclick={() => (deleteTarget = zone)}>
+							<button
+								type="button"
+								class="danger-text"
+								disabled={busy}
+								onclick={() => (deleteTarget = zone)}
+							>
 								{m.action_delete()}
-							</Button>
+							</button>
 						</div>
 					{/if}
 				{/snippet}
@@ -239,6 +244,21 @@
 	.actions {
 		display: flex;
 		gap: 0.375rem;
+	}
+	.danger-text {
+		min-height: var(--control-h);
+		padding: 0 0.5rem;
+		border: none;
+		background: transparent;
+		font: inherit;
+		font-size: 0.875rem;
+		font-weight: 500;
+		color: var(--danger);
+		cursor: pointer;
+	}
+	.danger-text:disabled {
+		opacity: 0.4;
+		cursor: not-allowed;
 	}
 	.field-label {
 		display: block;

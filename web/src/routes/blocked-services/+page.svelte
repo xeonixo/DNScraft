@@ -40,7 +40,19 @@
 	let toggling = $state<string | null>(null);
 
 	const page = $derived(result.kind === 'ok' ? result.data : null);
+	let query = $state('');
 	const groups = $derived(page?.catalog.available ? groupServices(page.catalog.items) : []);
+	/** Groups with the services whose name contains the search text (case-insensitive). */
+	const shownGroups = $derived.by(() => {
+		const needle = query.trim().toLowerCase();
+		if (needle === '') return groups;
+		return groups
+			.map((group) => ({
+				...group,
+				items: group.items.filter((item) => (item.name || item.id).toLowerCase().includes(needle)),
+			}))
+			.filter((group) => group.items.length > 0);
+	});
 	const updated = $derived(page?.catalog.available ? updatedLine(page.catalog) : null);
 
 	/** Keeps catalog order: first occurrence of a group_id opens the group. */
@@ -165,8 +177,19 @@
 				<GroupedRow label={m.blocked_services_empty()} />
 			</GroupedList>
 		{:else}
+			<input
+				class="search"
+				type="search"
+				bind:value={query}
+				aria-label={m.blocked_services_search()}
+				placeholder={m.blocked_services_search()}
+				autocomplete="off"
+			/>
+			{#if shownGroups.length === 0}
+				<p class="state">{m.blocked_services_search_empty()}</p>
+			{/if}
 			<div class="groups">
-				{#each groups as group (group.id)}
+				{#each shownGroups as group (group.id)}
 					<GroupedList header={displayText(group.name).text}>
 						{#each group.items as service (service.id)}
 							{@const name = displayText(service.name || service.id).text}
@@ -179,7 +202,7 @@
 											{#each page.sets as set (set.id)}
 												{@const setName = displayText(set.name || set.id).text}
 												<span class="toggle">
-													<span class="set-name">{setName}</span>
+													<span class="set-name" title={setName}>{setName}</span>
 													<Switch
 														checked={service.enabled[set.id] === true}
 														disabled={!isAdmin || toggling === `${service.id}:${set.id}`}
@@ -231,11 +254,22 @@
 		gap: var(--space-4);
 	}
 
+	.search {
+		width: 100%;
+		min-height: 2.75rem;
+		padding: 0.5rem 0.75rem;
+		border: 1px solid var(--separator);
+		border-radius: var(--r-ctl);
+		background: var(--surface);
+		font: inherit;
+		box-sizing: border-box;
+	}
+
 	.toggles {
 		display: flex;
-		flex-direction: column;
-		align-items: flex-end;
-		gap: 0.125rem;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+		gap: 0.375rem 1rem;
 	}
 
 	.toggle {
@@ -246,10 +280,11 @@
 	}
 
 	.set-name {
-		max-width: 10rem;
+		max-width: 12rem;
 		overflow: hidden;
-		font-size: 0.8125rem;
-		color: var(--label-2);
+		font-size: 0.9375rem;
+		font-weight: 500;
+		color: var(--label);
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}

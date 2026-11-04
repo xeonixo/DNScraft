@@ -55,8 +55,40 @@ describe('/alerts', () => {
 		mockApi({ active_count: 0, items: [] });
 		render(Page);
 		await waitFor(() => {
-			expect(screen.getByText(m.alerts_empty_title())).toBeInTheDocument();
+			expect(screen.getByText(m.alerts_none_title())).toBeInTheDocument();
 		});
+	});
+
+	it('shows a human sentence for known ACME codes with the raw code as detail', async () => {
+		mockApi({
+			active_count: 1,
+			items: [
+				{
+					id: 'tls.engine.error',
+					severity: 'warning',
+					module: 'tls',
+					params: { code: 'tls.acme.rate_limited' },
+					target_route: '/tls',
+				},
+			],
+		});
+		render(Page);
+		await waitFor(() => {
+			expect(screen.getByText(m.alert_tls_acme_rate_limited())).toBeInTheDocument();
+		});
+		expect(screen.getByText(/tls\.acme\.rate_limited/)).toBeInTheDocument();
+	});
+
+	it('keeps the channels disclosure closed when no channels exist', async () => {
+		mockApi({ active_count: 0, items: [] });
+		render(Page);
+		await waitFor(() => {
+			expect(screen.getByText(m.alerts_none_title())).toBeInTheDocument();
+		});
+		const disclosure = document.querySelector('details.disclosure') as HTMLDetailsElement;
+		expect(disclosure).not.toBeNull();
+		expect(disclosure.open).toBe(false);
+		expect(screen.getByText(m.alerts_section_channels())).toBeInTheDocument();
 	});
 
 	it('lists active alerts by module', async () => {

@@ -151,6 +151,26 @@ describe('names sheet Antwort then Abweichungen', () => {
 		).toBeGreaterThan(0);
 	});
 
+	it('renders the first 50 rows and shows the rest on request', async () => {
+		const user = userEvent.setup();
+		const records = Array.from({ length: 60 }, (_, i) => ({
+			name: `host${String(i).padStart(2, '0')}.lan.`,
+			type: 'A',
+			ttl: 60,
+			rdata: `192.0.2.${i}`,
+			overrides: {},
+		}));
+		serve({ 'GET /api/v1/policy/records': () => ok({ records }) });
+		render(NamesPage);
+		// 60 local names plus the Cloudflare-only nas.example.test row (loads after the local rows).
+		const more = await screen.findByRole('button', { name: m.list_show_more({ count: 11 }) });
+		expect(document.querySelectorAll('.rec-row')).toHaveLength(50);
+
+		await user.click(more);
+		expect(document.querySelectorAll('.rec-row')).toHaveLength(61);
+		expect(screen.queryByRole('button', { name: /\(\d+ (more|weitere)\)/ })).toBeNull();
+	});
+
 	it('links to TLS when the Cloudflare token is missing', async () => {
 		handlers['GET /api/v1/domain-zones'] = () =>
 			ok({

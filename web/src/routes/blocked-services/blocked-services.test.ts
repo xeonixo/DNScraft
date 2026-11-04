@@ -203,6 +203,26 @@ describe('blocked-services page', () => {
 		expect(screen.queryByRole('switch')).toBeNull();
 	});
 
+	it('filters services by name and keeps only the matching categories', async () => {
+		const user = userEvent.setup();
+		render(BlockedServicesPage);
+		await screen.findByRole('region', { name: 'Video' });
+		const search = screen.getByRole('searchbox', { name: m.blocked_services_search() });
+
+		await user.type(search, 'NETF');
+		expect(screen.getByText('Netflix')).toBeInTheDocument();
+		expect(screen.queryByText('YouTube')).toBeNull();
+		expect(screen.queryByRole('region', { name: 'Social' })).toBeNull();
+
+		await user.clear(search);
+		await user.type(search, 'zzz');
+		expect(screen.getByText(m.blocked_services_search_empty())).toBeInTheDocument();
+		expect(screen.queryByRole('switch')).toBeNull();
+
+		await user.clear(search);
+		expect(screen.getByRole('region', { name: 'Social' })).toBeInTheDocument();
+	});
+
 	it('explains an empty catalog', async () => {
 		serve({
 			'GET /api/v1/filtering/services': () =>

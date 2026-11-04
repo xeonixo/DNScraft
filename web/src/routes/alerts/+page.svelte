@@ -1,7 +1,13 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import ChannelsPanel from '$lib/alerts/ChannelsPanel.svelte';
-	import { alertHref, alertSeverityLabel, alertTitle, groupAlerts } from '$lib/alerts/view';
+	import {
+		alertCodeHint,
+		alertHref,
+		alertSeverityLabel,
+		alertTitle,
+		groupAlerts,
+	} from '$lib/alerts/view';
 	import { getAlerts, type AlertsData } from '$lib/api/alerts';
 	import { settle, type Result } from '$lib/api/result';
 	import { auth } from '$lib/auth/state.svelte';
@@ -50,9 +56,11 @@
 		<ErrorNotice code={result.code} params={result.params} />
 	{:else if empty}
 		<GroupedList>
-			<GroupedRow label={m.alerts_empty_title()} detail={m.alerts_empty_body()}>
+			<GroupedRow label={m.alerts_none_title()} detail={m.alerts_empty_body()}>
 				{#snippet leading()}
-					<span class="symbol ok"><Icon name="check-circle" size="1.125rem" strokeWidth={1.7} /></span>
+					<span class="symbol ok"
+						><Icon name="check-circle" size="1.125rem" strokeWidth={1.7} /></span
+					>
 				{/snippet}
 			</GroupedRow>
 		</GroupedList>
@@ -63,9 +71,12 @@
 				<GroupedList>
 					{#each group.items as item (item.id + JSON.stringify(item.params))}
 						{@const href = alertHref(item.target_route)}
+						{@const code = alertCodeHint(item)}
 						<GroupedRow
 							label={alertTitle(item)}
-							detail={alertSeverityLabel(item.severity)}
+							detail={code
+								? `${alertSeverityLabel(item.severity)} · ${code}`
+								: alertSeverityLabel(item.severity)}
 							{href}
 						>
 							{#snippet leading()}

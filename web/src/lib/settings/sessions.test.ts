@@ -130,6 +130,20 @@ describe('active sessions', () => {
 		expect(live.message).toBe(m.settings_sessions_revoked());
 	});
 
+	it('titles a row with the client label and shows only a short session id', async () => {
+		const hex = `6d2491ca66${'f'.repeat(54)}`;
+		serve([session({ id: hex, client_label: 'Chrome on macOS' })]);
+		render(SessionsPanel, { props: { isAdmin: true } });
+
+		await screen.findByText('Chrome on macOS');
+		const row = rowOf('Chrome on macOS');
+		expect(row.textContent).toContain('ID 6d2491ca');
+		expect(document.body.textContent).not.toContain(hex);
+		const revoke = within(row).getByRole('button', { name: m.settings_sessions_revoke() });
+		expect(revoke).toHaveClass('quiet-danger');
+		expect(revoke).not.toHaveClass('danger');
+	});
+
 	it('lists only the viewer’s own sessions and hides the actor', async () => {
 		setPrincipal({ role: 'viewer', actorId: 'carol', actorType: 'user', csrfToken: 'tok' });
 		serve([session({ actor_id: 'carol', role: 'viewer', client_label: 'Safari on macOS' })]);

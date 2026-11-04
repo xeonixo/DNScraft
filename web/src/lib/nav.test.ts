@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isActivePath, navItemForPath, settingsTabs } from './nav';
+import { isActivePath, navItemForPath, navSections, settingsTabs } from './nav';
 
 describe('Einstellungen routes', () => {
 	it.each(['/settings', '/settings/config', '/settings/mcp', '/settings/api'])(
@@ -16,6 +16,13 @@ describe('Einstellungen routes', () => {
 			'/settings/mcp',
 			'/settings/api',
 		]);
+	});
+
+	it('does not list the placeholder /feedback route in navigation', () => {
+		expect(navItemForPath('/feedback')).toBeUndefined();
+		expect(navSections.flatMap((section) => section.items).map((item) => item.path)).not.toContain(
+			'/feedback',
+		);
 	});
 
 	it('keeps the parent item active for sub-paths and only for them', () => {

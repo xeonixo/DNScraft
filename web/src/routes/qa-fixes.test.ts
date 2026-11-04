@@ -179,7 +179,11 @@ describe('delete confirmation', () => {
 		render(ListenersPage);
 		await user.click(await screen.findByRole('button', { name: m.action_delete() }));
 		const dialog = await screen.findByRole('dialog');
-		expect(within(dialog).getByText(m.listeners_delete_body({ id: 'dot-1' }))).toBeInTheDocument();
+		expect(
+			within(dialog).getByText(
+				m.listeners_delete_body_dns({ id: 'dot-1', address: '0.0.0.0:853' }),
+			),
+		).toBeInTheDocument();
 		expect(calls('DELETE', '/api/v1/listeners')).toHaveLength(0);
 		await user.click(within(dialog).getByRole('button', { name: m.action_delete() }));
 		await waitFor(() => expect(calls('DELETE', '/api/v1/listeners')).toHaveLength(1));

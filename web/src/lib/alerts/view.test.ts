@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import { m } from '$lib/paraglide/messages';
-import { alertHref, alertTitle, groupAlerts } from './view';
+import { alertCodeHint, alertHref, alertTitle, groupAlerts } from './view';
 
 describe('alertTitle', () => {
 	it('translates known ids with params', () => {
@@ -26,6 +26,30 @@ describe('alertTitle', () => {
 				target_route: '/dashboard',
 			}),
 		).toBe('future.unknown');
+	});
+
+	it('explains known ACME codes in a sentence', () => {
+		const item = {
+			id: 'tls.engine.error',
+			severity: 'warning',
+			module: 'tls',
+			params: { code: 'tls.acme.rate_limited' },
+			target_route: '/tls',
+		};
+		expect(alertTitle(item)).toBe(m.alert_tls_acme_rate_limited());
+		expect(alertCodeHint(item)).toBe('tls.acme.rate_limited');
+	});
+
+	it('keeps the raw code for unknown engine errors', () => {
+		const item = {
+			id: 'tls.engine.error',
+			severity: 'warning',
+			module: 'tls',
+			params: { code: 'tls.acme.something_new' },
+			target_route: '/tls',
+		};
+		expect(alertTitle(item)).toBe(m.alert_tls_engine_error({ code: 'tls.acme.something_new' }));
+		expect(alertCodeHint(item)).toBeUndefined();
 	});
 });
 

@@ -9,7 +9,6 @@
 	import {
 		isActivePath,
 		isVisible,
-		navFeedback,
 		navSections,
 		navSettings,
 		type NavItem,
@@ -163,9 +162,6 @@
 		{#if softwareVersion}
 			<p class="version">{m.sidebar_version({ version: softwareVersion })}</p>
 		{/if}
-		<a class="foot-link" href={resolve(navFeedback.path as '/')} onclick={() => onnavigate?.()}>
-			{navFeedback.label()}
-		</a>
 	</div>
 </aside>
 
@@ -341,17 +337,5 @@
 
 	.node-dot.unknown {
 		background: var(--track-off);
-	}
-
-	.foot-link {
-		display: flex;
-		align-items: center;
-		min-height: 2.75rem;
-		color: var(--accent);
-		text-decoration: none;
-	}
-
-	.foot-link:hover {
-		text-decoration: underline;
 	}
 </style>

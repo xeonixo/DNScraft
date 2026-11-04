@@ -37,6 +37,9 @@
 		{ value: 'A', label: m.test_query_type_a() },
 		{ value: 'AAAA', label: m.test_query_type_aaaa() },
 		{ value: 'CNAME', label: m.test_query_type_cname() },
+		{ value: 'MX', label: m.test_query_type_mx() },
+		{ value: 'TXT', label: m.test_query_type_txt() },
+		{ value: 'SRV', label: m.test_query_type_srv() },
 	]);
 	const protocolOptions = $derived([
 		{ value: 'udp53', label: m.test_query_protocol_udp53() },
@@ -66,7 +69,9 @@
 			mode: typeof row.block_mode === 'string' ? row.block_mode : null,
 		};
 	});
-	const blocked = $derived(Boolean(filterHit && (filterHit.rule || filterHit.list || filterHit.mode)));
+	const blocked = $derived(
+		Boolean(filterHit && (filterHit.rule || filterHit.list || filterHit.mode)),
+	);
 
 	function dash(value: unknown): string {
 		if (value == null || value === '') return '—';
@@ -155,7 +160,9 @@
 		</div>
 		<div class="field field-span">
 			<span class="field-label" id="tq-type-label">{m.test_query_type()}</span>
-			<Segmented options={qtypeOptions} bind:value={qtype} label={m.test_query_type()} />
+			<div class="qtype">
+				<Segmented options={qtypeOptions} bind:value={qtype} label={m.test_query_type()} />
+			</div>
 		</div>
 		<div class="field field-span">
 			<label class="field-label" for="tq-proto">{m.test_query_protocol()}</label>
@@ -298,6 +305,31 @@
 		max-width: 40rem;
 		color: var(--label-2);
 		line-height: 1.45;
+	}
+
+	/* Query types: each option is its own bordered button, the selected one is filled. */
+	.qtype :global(.segmented) {
+		flex-wrap: wrap;
+		gap: 0.375rem;
+		padding: 0;
+		background: transparent;
+		border: 0;
+	}
+
+	.qtype :global(.segment) {
+		min-width: 3rem;
+		border: 1px solid var(--separator);
+		background: var(--surface);
+		color: var(--label);
+		font-family: var(--font-mono);
+	}
+
+	.qtype :global(.segment:hover:not([aria-checked='true'])) {
+		background: var(--accent-fill);
+	}
+
+	.qtype :global(.segment[aria-checked='true']) {
+		border-color: var(--label);
 	}
 
 	.composer {

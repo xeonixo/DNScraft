@@ -346,6 +346,7 @@ fn apply_pragmas(conn: &mut Connection, wal: bool) -> Result<(), ControlApiError
         "PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;
          PRAGMA busy_timeout = 5000;
+         PRAGMA journal_size_limit = 67108864;
          PRAGMA foreign_keys = ON;"
     } else {
         "PRAGMA synchronous = NORMAL;

@@ -66,7 +66,10 @@
 			m.settings_sessions_short_id({ id: displayText(session.id.slice(0, 8)).text }),
 		];
 		if (showActor) {
-			parts.push(displayText(session.actor_id).text);
+			// Federated actors are 64-char hashes; keep named accounts (break-glass) whole.
+			const actor =
+				session.actor_id.length > 24 ? `${session.actor_id.slice(0, 8)}…` : session.actor_id;
+			parts.push(displayText(actor).text);
 			if (session.role) parts.push(roleLabel(session.role));
 		}
 		parts.push(session.ip ? displayText(session.ip).text : '—');

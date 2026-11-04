@@ -559,14 +559,13 @@ impl QueryLog {
                 );
                 let tx = conn.transaction().map_err(db_err)?;
                 // Retention is an indexed range delete; running it with each batch
-                // keeps the window bounded without an extra timer task.
+                // keeps the window bounded without an extra timer task. Driven from
+                // `query_log(time)`: an EXISTS probe per detail row scanned the whole
+                // detail table (11 s on 190k rows) while holding the writer lock.
                 tx.execute(
                     "DELETE FROM query_log_detail
-                     WHERE EXISTS (
-                         SELECT 1 FROM query_log q
-                         WHERE q.node_id = query_log_detail.node_id
-                           AND q.id = query_log_detail.id
-                           AND q.time < ?1
+                     WHERE (node_id, id) IN (
+                         SELECT node_id, id FROM query_log WHERE time < ?1
                      )",
                     params![cutoff],
                 )
@@ -663,11 +662,8 @@ impl QueryLog {
             .with_conn(move |conn| {
                 conn.execute(
                     "DELETE FROM query_log_detail
-                     WHERE EXISTS (
-                         SELECT 1 FROM query_log q
-                         WHERE q.node_id = query_log_detail.node_id
-                           AND q.id = query_log_detail.id
-                           AND q.time < ?1
+                     WHERE (node_id, id) IN (
+                         SELECT node_id, id FROM query_log WHERE time < ?1
                      )",
                     params![cutoff],
                 )

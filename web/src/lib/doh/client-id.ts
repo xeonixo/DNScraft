@@ -95,7 +95,8 @@ interface NameRecord {
 	name: string;
 	type: string;
 	rdata: RdataValue;
-	overrides: Record<string, RdataValue>;
+	/** Only override keys matter for the home-view check. */
+	overrides: Record<string, unknown>;
 }
 
 const normName = (name: string): string => name.trim().replace(/\.$/, '').toLowerCase();

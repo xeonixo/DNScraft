@@ -299,12 +299,13 @@
 	</p>
 
 	{#if clusterSettings}
+		{@const settings = clusterSettings}
 		{#if settingsFailure}
 			<div class="notice">
 				<ErrorNotice code={settingsFailure.code} params={settingsFailure.params} />
 			</div>
 		{/if}
-		{#if clusterSettings.restart_required}
+		{#if settings.restart_required}
 			<p class="restart-banner" role="status">{m.cluster_settings_restart_required()}</p>
 		{/if}
 		<GroupedList header={m.cluster_settings_transport_group()}>
@@ -312,7 +313,7 @@
 				{#snippet trailing()}
 					<Segmented
 						options={transportModeOptions}
-						value={clusterSettings.transport.mode}
+						value={settings.transport.mode}
 						label={m.cluster_settings_transport_mode()}
 						onchange={(mode) => {
 							if (isAdmin && !settingsBusy) void saveTransportMode(mode as ClusterTransportMode);
@@ -320,14 +321,14 @@
 					/>
 				{/snippet}
 			</GroupedRow>
-			{#if clusterSettings.status?.active}
+			{#if settings.status?.active}
 				<GroupedRow
 					label={m.cluster_settings_transport_live({
-						transport: liveTransportLabel(clusterSettings.status.active),
+						transport: liveTransportLabel(settings.status.active),
 					})}
-					detail={clusterSettings.status.fallback_reason
+					detail={settings.status.fallback_reason
 						? m.cluster_settings_transport_fallback({
-								reason: clusterSettings.status.fallback_reason,
+								reason: settings.status.fallback_reason,
 							})
 						: undefined}
 				/>
@@ -340,7 +341,7 @@
 			>
 				{#snippet trailing()}
 					<Switch
-						checked={clusterSettings.compression.enabled}
+						checked={settings.compression.enabled}
 						disabled={!isAdmin || settingsBusy}
 						aria-label={m.cluster_settings_compression_enabled()}
 						onchange={(event) => void saveCompressionEnabled(event.currentTarget.checked)}
@@ -355,7 +356,7 @@
 			>
 				{#snippet trailing()}
 					<Switch
-						checked={clusterSettings.reverse_rpc.enabled}
+						checked={settings.reverse_rpc.enabled}
 						disabled={!isAdmin || settingsBusy}
 						aria-label={m.cluster_settings_reverse_enabled()}
 						onchange={(event) => void saveReverseEnabled(event.currentTarget.checked)}
@@ -435,80 +436,81 @@
 {/if}
 
 {#if detail}
-	{@const detailNodeId = detail.node_id}
+	{@const node = detail}
+	{@const detailNodeId = node.node_id}
 	{@const detailLag = nodeRows.find((row) => row.node.node_id === detailNodeId)?.lag ?? 0}
-	{@const connectionLabel = detail.local
+	{@const connectionLabel = node.local
 		? m.cluster_connection_local()
-		: detail.connected
+		: node.connected
 			? m.cluster_connection_connected()
 			: m.cluster_connection_offline()}
 	{@const transportLabel =
-		detail.transport === 'quic'
+		node.transport === 'quic'
 			? m.cluster_transport_quic()
-			: detail.transport === 'h2' || detail.transport === 'mtls'
+			: node.transport === 'h2' || node.transport === 'mtls'
 				? m.cluster_transport_h2()
 				: m.cluster_value_unknown()}
 	<Sheet open={true} title={m.cluster_detail_title()} onclose={() => (detail = null)}>
 		<GroupedList>
 			<GroupedRow
 				label={m.cluster_field_node_id()}
-				detail={displayText(detail.node_id).text}
+				detail={displayText(node.node_id).text}
 				detailMono
 			/>
 			<GroupedRow
 				label={m.cluster_field_display_name()}
-				detail={detail.display_name || m.cluster_value_unknown()}
+				detail={node.display_name || m.cluster_value_unknown()}
 			/>
 			<GroupedRow
 				label={m.cluster_field_hostname()}
-				detail={detail.hostname || m.cluster_value_unknown()}
+				detail={node.hostname || m.cluster_value_unknown()}
 				detailMono
 			/>
-			<GroupedRow label={m.cluster_field_role()} detail={nodeRoleLabel(detail.role)} />
+			<GroupedRow label={m.cluster_field_role()} detail={nodeRoleLabel(node.role)} />
 			<GroupedRow
 				label={m.cluster_field_status()}
-				detail={nodeStatusLabel(detail, detailLag, locale)}
+				detail={nodeStatusLabel(node, detailLag, locale)}
 			/>
 			<GroupedRow label={m.cluster_field_connection()} detail={connectionLabel} />
 			<GroupedRow
 				label={m.cluster_field_remote_addr()}
-				detail={detail.remote_addr || m.cluster_value_unknown()}
+				detail={node.remote_addr || m.cluster_value_unknown()}
 				detailMono
 			/>
 			<GroupedRow label={m.cluster_field_transport()} detail={transportLabel} />
 			<GroupedRow
 				label={m.cluster_field_fingerprint()}
-				detail={detail.fingerprint
-					? formatFingerprint(detail.fingerprint)
+				detail={node.fingerprint
+					? formatFingerprint(node.fingerprint)
 					: m.cluster_value_unknown()}
 				detailMono
 			/>
 			<GroupedRow
 				label={m.cluster_field_joined()}
-				detail={detail.joined_at
-					? formatDateTime(new Date(detail.joined_at), locale)
+				detail={node.joined_at
+					? formatDateTime(new Date(node.joined_at), locale)
 					: m.cluster_value_unknown()}
 				detailMono
 			/>
 			<GroupedRow
 				label={m.cluster_field_last_seen()}
-				detail={detail.last_seen
-					? formatDateTime(new Date(detail.last_seen), locale)
+				detail={node.last_seen
+					? formatDateTime(new Date(node.last_seen), locale)
 					: m.cluster_never_seen()}
 				detailMono
 			/>
 			<GroupedRow
 				label={m.cluster_field_software_version()}
-				detail={detail.software_version ? `v${detail.software_version}` : m.cluster_value_unknown()}
+				detail={node.software_version ? `v${node.software_version}` : m.cluster_value_unknown()}
 				detailMono
 			/>
 			<GroupedRow
 				label={m.cluster_field_applied_version()}
-				detail={String(detail.applied_config_version ?? '—')}
+				detail={String(node.applied_config_version ?? '—')}
 				detailMono
 			/>
 		</GroupedList>
-		{#if !detail.revoked}
+		{#if !node.revoked}
 			<NodeHubPanel nodeId={detailNodeId} {isAdmin} />
 		{/if}
 		{#if rpcResult}
@@ -516,24 +518,24 @@
 			<pre class="mono rpc-result">{rpcResult}</pre>
 		{/if}
 		<div class="actions">
-			{#if isAdmin && detail.connected && detail.local !== true && detail.role !== 'master'}
-				<Button disabled={rpcBusy} onclick={() => void runNodeStatusRpc(detail)}>
+			{#if isAdmin && node.connected && node.local !== true && node.role !== 'master'}
+				<Button disabled={rpcBusy} onclick={() => void runNodeStatusRpc(node)}>
 					{m.cluster_rpc_status()}
 				</Button>
 			{/if}
-			{#if isAdmin && !detail.revoked}
+			{#if isAdmin && !node.revoked}
 				<Button
 					onclick={() => {
-						if (detail) openEdit(detail);
+						openEdit(node);
 						detail = null;
 					}}>{m.cluster_edit()}</Button
 				>
 			{/if}
-			{#if isAdmin && detail.revoked && detail.role !== 'master' && detail.local !== true}
+			{#if isAdmin && node.revoked && node.role !== 'master' && node.local !== true}
 				<Button
 					variant="danger"
 					onclick={() => {
-						removeTarget = detail;
+						removeTarget = node;
 						detail = null;
 					}}>{m.cluster_remove()}</Button
 				>

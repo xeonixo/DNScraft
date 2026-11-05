@@ -43,7 +43,7 @@ async fn readme_tool_table_matches_tools_list() {
         .collect();
 
     let documented = documented_tools();
-    assert_eq!(documented.len(), 34, "README must document all 34 tools");
+    assert_eq!(documented.len(), 36, "README must document all 36 tools");
     assert_eq!(
         documented, listed,
         "README tool table must match tools/list exactly, in order"

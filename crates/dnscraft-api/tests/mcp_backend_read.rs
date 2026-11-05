@@ -205,9 +205,9 @@ async fn search_query_log_maps_records_and_paginates() {
     let second = &first_page.queries[1];
     assert_eq!(second.query.name, "ok.example.com");
     assert_eq!(second.query.qtype, QType::Mx);
-    // No client directory is attached, so the client view stays empty.
-    assert_eq!(second.client.id, "");
-    assert_eq!(second.client.display_name, "");
+    // No client directory is attached; the stored client_id still surfaces as the view.
+    assert_eq!(second.client.id, "iphone-k7q2x9");
+    assert_eq!(second.client.display_name, "iphone-k7q2x9");
 
     let second_page = backend
         .search_query_log(QueryLogSearch {
@@ -300,7 +300,7 @@ async fn get_stats_aggregates_the_window() {
     );
     // Rows without a client id are grouped by source address: the two
     // blocked queries from 192.0.2.10 form their own device, apart from the
-    // two queries the iPhone sent with its id.
+    // two queries the iPhone sent with its id (used as the display name).
     assert_eq!(
         stats.top_clients,
         vec![
@@ -309,7 +309,7 @@ async fn get_stats_aggregates_the_window() {
                 queries: 2,
             },
             TopClient {
-                client_name: String::new(),
+                client_name: "iphone-k7q2x9".to_owned(),
                 queries: 2,
             },
         ]
@@ -454,7 +454,7 @@ async fn top_clients_group_by_id_then_name_then_address() {
         clients,
         vec![
             ("dev-1", "Phone DoH", 2),
-            ("iphone-k7q2x9", "", 2),
+            ("iphone-k7q2x9", "iphone-k7q2x9", 2),
             ("", "Living room TV", 1),
             ("192.0.2.30", "", 1),
         ]

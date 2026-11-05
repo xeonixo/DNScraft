@@ -144,6 +144,7 @@ impl FromStr for ForwardZoneId {
 
 /// Configuration of a [`Resolver`](crate::Resolver).
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ResolverConfig {
     /// Root server addresses used for priming and as fallback.
     pub root_hints: Vec<SocketAddr>,
@@ -351,6 +352,19 @@ mod tests {
         assert_eq!(config.root_reprime_interval, Duration::from_secs(86_400));
         assert_eq!(config.resolve_deadline, Duration::from_secs(10));
         assert!(config.outgoing_ipv6);
+    }
+
+    #[test]
+    fn partial_section_falls_back_to_defaults() {
+        let config: ResolverConfig = serde_json::from_value(serde_json::json!({
+            "query_timeout": "2s",
+            "resolve_deadline": "4500ms",
+        }))
+        .unwrap();
+        assert_eq!(config.query_timeout, Duration::from_secs(2));
+        assert_eq!(config.resolve_deadline, Duration::from_millis(4500));
+        assert_eq!(config.root_hints, default_root_hints());
+        assert_eq!(config.max_referral_depth, 16);
     }
 
     #[test]

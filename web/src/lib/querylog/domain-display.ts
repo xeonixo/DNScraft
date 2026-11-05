@@ -46,7 +46,7 @@ export function decodePunycode(input: string): string {
 	let n = INITIAL_N;
 	let i = 0;
 	let bias = INITIAL_BIAS;
-	for (let pos = basic > 0 ? basic + 1 : 0; pos < input.length; ) {
+	for (let pos = basic > 0 ? basic + 1 : 0; pos < input.length;) {
 		const previous = i;
 		let weight = 1;
 		for (let k = BASE; ; k += BASE) {

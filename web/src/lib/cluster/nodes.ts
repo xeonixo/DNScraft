@@ -14,7 +14,10 @@ export function listenersForNode<T extends { nodes: string[] }>(
 	return listeners.filter((row) => appliesToNode(row.nodes, nodeId));
 }
 
-export function viewsForNode<T extends { nodes: string[] }>(views: readonly T[], nodeId: string): T[] {
+export function viewsForNode<T extends { nodes: string[] }>(
+	views: readonly T[],
+	nodeId: string,
+): T[] {
 	return views.filter((row) => appliesToNode(row.nodes, nodeId));
 }
 

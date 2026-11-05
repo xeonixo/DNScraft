@@ -91,7 +91,10 @@ const BOOLEAN_FALSE = ['false', '0'];
 function isCidr(value: string): boolean {
 	const [addr, prefix, ...rest] = value.split('/');
 	if (rest.length > 0 || !/^[0-9a-fA-F:.]+$/.test(addr) || !/[.:]/.test(addr)) return false;
-	return prefix === undefined || (/^\d{1,3}$/.test(prefix) && Number(prefix) <= (addr.includes(':') ? 128 : 32));
+	return (
+		prefix === undefined ||
+		(/^\d{1,3}$/.test(prefix) && Number(prefix) <= (addr.includes(':') ? 128 : 32))
+	);
 }
 
 export function emptyDraft(): Draft {

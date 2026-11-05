@@ -17,10 +17,7 @@ export type ResolvedAnswer = {
 };
 
 /** Effective answer summary per view for list chips / sheet preview. */
-export function resolveAnswersForRecord(
-	record: PolicyRecord,
-	viewIds: string[],
-): ResolvedAnswer[] {
+export function resolveAnswersForRecord(record: PolicyRecord, viewIds: string[]): ResolvedAnswer[] {
 	return viewIds.map((view) => {
 		const value = record.overrides[view];
 		if (value === undefined) {
@@ -39,12 +36,19 @@ export function resolveAnswersForRecord(
 				mode: 'addresses',
 			};
 		}
-		if (value === '' || (typeof value === 'object' && value !== null && (value as { mode?: string }).mode === 'no_answer')) {
+		if (
+			value === '' ||
+			(typeof value === 'object' &&
+				value !== null &&
+				(value as { mode?: string }).mode === 'no_answer')
+		) {
 			return { view, label: '∅', deviant: true, mode: 'no_answer' };
 		}
 		if (
 			value === PUBLIC_OVERRIDE ||
-			(typeof value === 'object' && value !== null && (value as { mode?: string }).mode === 'public')
+			(typeof value === 'object' &&
+				value !== null &&
+				(value as { mode?: string }).mode === 'public')
 		) {
 			return { view, label: '@public', deviant: true, mode: 'public' };
 		}

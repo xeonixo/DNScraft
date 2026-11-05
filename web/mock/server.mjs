@@ -1274,8 +1274,7 @@ async function route(request, response, options) {
 			return sendData(response, { version: 2, public_enabled: webAccessPublic });
 		}
 		case 'GET /api/v1/update/check': {
-			const enabled =
-				currentOf(options.store).config.control_api_settings?.update_check === true;
+			const enabled = currentOf(options.store).config.control_api_settings?.update_check === true;
 			if (!enabled) {
 				return sendData(response, {
 					enabled: false,
@@ -1304,8 +1303,7 @@ async function route(request, response, options) {
 			return sendData(response, {
 				enabled,
 				directory: '/var/lib/dnscraft/backups',
-				retention_count:
-					typeof backups.retention_count === 'number' ? backups.retention_count : 7,
+				retention_count: typeof backups.retention_count === 'number' ? backups.retention_count : 7,
 				files: enabled ? 2 : 0,
 				last_run: enabled
 					? {
@@ -1323,8 +1321,7 @@ async function route(request, response, options) {
 			}
 			const body = await readJsonBody(request);
 			const enabled = body.enabled === true;
-			const retention_count =
-				typeof body.retention_count === 'number' ? body.retention_count : 7;
+			const retention_count = typeof body.retention_count === 'number' ? body.retention_count : 7;
 			const current = currentOf(options.store);
 			if (ifMatchProblem(request.headers['if-match'], current.version)) {
 				throw new ApiFailure(409, 'control_api.config.version');

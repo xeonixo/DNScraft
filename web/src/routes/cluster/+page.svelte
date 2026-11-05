@@ -480,9 +480,7 @@
 			<GroupedRow label={m.cluster_field_transport()} detail={transportLabel} />
 			<GroupedRow
 				label={m.cluster_field_fingerprint()}
-				detail={node.fingerprint
-					? formatFingerprint(node.fingerprint)
-					: m.cluster_value_unknown()}
+				detail={node.fingerprint ? formatFingerprint(node.fingerprint) : m.cluster_value_unknown()}
 				detailMono
 			/>
 			<GroupedRow

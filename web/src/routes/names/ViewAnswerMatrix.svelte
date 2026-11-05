@@ -81,7 +81,9 @@
 								type="text"
 								value={text}
 								disabled={readonly}
-								aria-label={j === 0 ? m.names_overrides_value() : m.names_value_extra({ n: String(j + 1) })}
+								aria-label={j === 0
+									? m.names_overrides_value()
+									: m.names_value_extra({ n: String(j + 1) })}
 								oninput={(event) => {
 									const next = [...row.values];
 									next[j] = event.currentTarget.value;
@@ -90,11 +92,7 @@
 							/>
 						{/each}
 						{#if !readonly}
-							<button
-								type="button"
-								class="add"
-								onclick={() => setValues(i, [...row.values, ''])}
-							>
+							<button type="button" class="add" onclick={() => setValues(i, [...row.values, ''])}>
 								{m.names_value_add()}
 							</button>
 						{/if}

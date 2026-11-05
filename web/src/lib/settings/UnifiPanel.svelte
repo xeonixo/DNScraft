@@ -486,7 +486,9 @@
 						bind:value={form.offline_retain_days}
 						aria-describedby="unifi-offline-unit"
 					/>
-					<span id="unifi-offline-unit" class="unit">{m.settings_clients_offline_retain_unit()}</span>
+					<span id="unifi-offline-unit" class="unit"
+						>{m.settings_clients_offline_retain_unit()}</span
+					>
 				</div>
 				<p class="hint">{m.settings_clients_offline_retain_note()}</p>
 

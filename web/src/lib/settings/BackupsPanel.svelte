@@ -163,11 +163,7 @@
 				{/snippet}
 			</GroupedRow>
 			<GroupedRow label={m.config_backups_directory()} detail={backups.directory} detailMono />
-			<GroupedRow
-				label={m.config_backups_files()}
-				detail={String(backups.files)}
-				detailMono
-			/>
+			<GroupedRow label={m.config_backups_files()} detail={String(backups.files)} detailMono />
 			<GroupedRow label={m.config_backups_last_run()} detail={lastRunLabel(backups.last_run)} />
 			{#if backups.next_run}
 				<GroupedRow

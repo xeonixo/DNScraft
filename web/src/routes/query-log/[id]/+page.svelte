@@ -166,6 +166,7 @@
 			{/if}
 			<p class="meta">
 				<span class="item">{record.query.type}</span>
+				<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- clientsHref resolves -->
 				<a class="item link" href={clientsHref(record)}>{displayText(device, 60).text}</a>
 				<span class="item">{formatDateTime(new Date(record.time), locale)}</span>
 				<span class="item"

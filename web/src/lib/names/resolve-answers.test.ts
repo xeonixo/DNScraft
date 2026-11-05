@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { cnameChainPreview, resolveAnswersForRecord } from './resolve-answers';
 import type { PolicyRecord } from '$lib/api/policy';
 
-const base = (partial: Partial<PolicyRecord> & Pick<PolicyRecord, 'name' | 'type' | 'rdata'>): PolicyRecord => ({
+const base = (
+	partial: Partial<PolicyRecord> & Pick<PolicyRecord, 'name' | 'type' | 'rdata'>,
+): PolicyRecord => ({
 	ttl: 60,
 	overrides: {},
 	...partial,

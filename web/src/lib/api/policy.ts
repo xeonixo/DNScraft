@@ -50,9 +50,7 @@ export function rdataTexts(value: RdataValue | null | undefined): string[] {
 /** Whether a wire override is the addresses structured form. */
 export function isAddressesOverride(value: unknown): value is AddressesOverride {
 	return (
-		typeof value === 'object' &&
-		value !== null &&
-		(value as AddressesOverride).mode === 'addresses'
+		typeof value === 'object' && value !== null && (value as AddressesOverride).mode === 'addresses'
 	);
 }
 
@@ -239,7 +237,8 @@ function isOverrideValue(value: unknown): value is OverrideValue {
 	if (row.mode === 'public' || row.mode === 'no_answer') return true;
 	if (row.mode === 'data') return isRdataValue(row.rdata);
 	if (row.mode === 'addresses') {
-		const aOk = row.a === undefined || (Array.isArray(row.a) && row.a.every((x) => typeof x === 'string'));
+		const aOk =
+			row.a === undefined || (Array.isArray(row.a) && row.a.every((x) => typeof x === 'string'));
 		const aaaaOk =
 			row.aaaa === undefined ||
 			(Array.isArray(row.aaaa) && row.aaaa.every((x) => typeof x === 'string'));

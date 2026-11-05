@@ -490,7 +490,10 @@
 
 		{#if isAdmin}
 			<div class="section-head">{m.filter_lists_globals_section()}</div>
-			{#if globalsFailure}<ErrorNotice code={globalsFailure.code} params={globalsFailure.params} />{/if}
+			{#if globalsFailure}<ErrorNotice
+					code={globalsFailure.code}
+					params={globalsFailure.params}
+				/>{/if}
 			<GroupedList>
 				<div class="globals-form">
 					<label class="field-block" for="filter-update-interval">
@@ -514,7 +517,11 @@
 					</label>
 					<p class="hint">{m.filter_lists_globals_hint()}</p>
 					<div class="globals-save">
-						<Button variant="primary" disabled={globalsBusy} onclick={() => void saveFilteringGlobals()}>
+						<Button
+							variant="primary"
+							disabled={globalsBusy}
+							onclick={() => void saveFilteringGlobals()}
+						>
 							{m.action_save()}
 						</Button>
 					</div>

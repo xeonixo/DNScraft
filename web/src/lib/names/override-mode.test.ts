@@ -1,19 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import {
-	overridesFromRows,
-	rowFromOverride,
-	rowsForViews,
-	overridePreview,
-} from './override-mode';
+import { overridesFromRows, rowFromOverride, rowsForViews, overridePreview } from './override-mode';
 
 describe('override-mode', () => {
 	it('maps legacy wires to modes', () => {
 		expect(rowFromOverride('lan', '@public').mode).toBe('public');
 		expect(rowFromOverride('lan', '').mode).toBe('no_answer');
 		expect(rowFromOverride('lan', '10.0.0.1').mode).toBe('custom');
-		expect(rowFromOverride('lan', { mode: 'addresses', a: ['10.0.0.5'] }).mode).toBe(
-			'addresses',
-		);
+		expect(rowFromOverride('lan', { mode: 'addresses', a: ['10.0.0.5'] }).mode).toBe('addresses');
 	});
 
 	it('omits inherit rows when encoding', () => {

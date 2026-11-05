@@ -233,10 +233,7 @@
 				detail={publicCfg.enabled ? m.listeners_public_on() : m.listeners_public_off()}
 			>
 				{#snippet trailing()}
-					<Switch
-						bind:checked={publicCfg.enabled}
-						aria-label={m.listeners_public_enabled()}
-					/>
+					<Switch bind:checked={publicCfg.enabled} aria-label={m.listeners_public_enabled()} />
 				{/snippet}
 			</GroupedRow>
 			<GroupedRow label={m.listeners_public_ban_strikes()}>

@@ -135,9 +135,10 @@
 						disabled={busy}
 						bind:value={cidrsText}
 						aria-describedby="web-access-cidrs-hint"
-						onblur={() => void saveCidrs()}
-					></textarea>
-					<span id="web-access-cidrs-hint" class="cidrs-hint">{m.settings_web_access_cidrs_hint()}</span>
+						onblur={() => void saveCidrs()}></textarea>
+					<span id="web-access-cidrs-hint" class="cidrs-hint"
+						>{m.settings_web_access_cidrs_hint()}</span
+					>
 				</label>
 			{/if}
 		{/if}

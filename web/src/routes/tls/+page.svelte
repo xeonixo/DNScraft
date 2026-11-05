@@ -887,14 +887,18 @@
 								autocomplete="off"
 							/>
 							<p class="field-label">{m.tls_dyndns_advanced_group()}</p>
-							<label class="field-label" for="tls-dyndns-interval">{m.tls_dyndns_interval_label()}</label>
+							<label class="field-label" for="tls-dyndns-interval"
+								>{m.tls_dyndns_interval_label()}</label
+							>
 							<input
 								id="tls-dyndns-interval"
 								class="field mono"
 								bind:value={formDyndnsInterval}
 								autocomplete="off"
 							/>
-							<label class="field-label" for="tls-dyndns-echo">{m.tls_dyndns_echo_url_label()}</label>
+							<label class="field-label" for="tls-dyndns-echo"
+								>{m.tls_dyndns_echo_url_label()}</label
+							>
 							<input
 								id="tls-dyndns-echo"
 								class="field mono"

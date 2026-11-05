@@ -68,5 +68,4 @@ export const getBackups = (): Promise<BackupStatus> => get('/backups');
 export const putBackupSettings = (
 	body: { enabled: boolean; retention_count: number },
 	options?: { ifMatch?: string },
-): Promise<BackupSettingsResult> =>
-	put('/backups/settings', { body, ifMatch: options?.ifMatch });
+): Promise<BackupSettingsResult> => put('/backups/settings', { body, ifMatch: options?.ifMatch });

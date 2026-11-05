@@ -35,7 +35,7 @@
 </script>
 
 {#if open}
-	<Sheet open={open} title={m.names_zones_title()} onclose={onclose} centeredOnWide>
+	<Sheet {open} title={m.names_zones_title()} {onclose} centeredOnWide>
 		<p class="hint">{m.names_zones_lead()}</p>
 		{#if !hasCloudflareToken}
 			<p class="hint">{m.names_zones_token_missing()}</p>

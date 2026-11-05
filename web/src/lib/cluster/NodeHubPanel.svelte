@@ -12,11 +12,7 @@
 	import { failureOf } from '$lib/api/result';
 	import { announce } from '$lib/live.svelte';
 	import { patchConfigSection } from '$lib/settings/config-patch';
-	import {
-		dyndnsProfileForNode,
-		listenersForNode,
-		viewsForNode,
-	} from '$lib/cluster/nodes';
+	import { dyndnsProfileForNode, listenersForNode, viewsForNode } from '$lib/cluster/nodes';
 	import { m } from '$lib/paraglide/messages';
 
 	interface Props {
@@ -64,7 +60,8 @@
 			const rawProfiles = Array.isArray(clients.unifi_profiles) ? clients.unifi_profiles : [];
 			profiles = rawProfiles
 				.map((row) => {
-					const id = typeof (row as { id?: unknown }).id === 'string' ? (row as { id: string }).id : '';
+					const id =
+						typeof (row as { id?: unknown }).id === 'string' ? (row as { id: string }).id : '';
 					return id ? { id } : null;
 				})
 				.filter((row): row is { id: string } => row !== null);
@@ -210,6 +207,7 @@
 			<GroupedRow label={m.cluster_hub_dyndns_none()} />
 		{/if}
 		<div class="links">
+			<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- tlsHref resolves -->
 			<a class="link" href={tlsHref()}>{m.cluster_hub_open_tls()}</a>
 		</div>
 	</GroupedList>
@@ -225,21 +223,19 @@
 			<GroupedRow label={m.cluster_hub_listeners_empty()} />
 		{/each}
 		<div class="links">
+			<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- listenersHref resolves -->
 			<a class="link" href={listenersHref()}>{m.cluster_hub_open_listeners()}</a>
 		</div>
 	</GroupedList>
 
 	<GroupedList header={m.cluster_hub_views_group()}>
 		{#each scopedViews as view (view.id)}
-			<GroupedRow
-				label={view.id}
-				detail={view.profile || m.cluster_value_unknown()}
-				detailMono
-			/>
+			<GroupedRow label={view.id} detail={view.profile || m.cluster_value_unknown()} detailMono />
 		{:else}
 			<GroupedRow label={m.cluster_hub_views_empty()} />
 		{/each}
 		<div class="links">
+			<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- zonesHref resolves -->
 			<a class="link" href={zonesHref()}>{m.cluster_hub_open_zones()}</a>
 		</div>
 	</GroupedList>

@@ -140,14 +140,17 @@ pub trait McpBackend: Send + Sync {
     async fn list_resolver_upstreams(&self) -> Result<ListResolverUpstreamsResult, BackendError>;
 
     /// Blocked-services catalog and per-set state.
-    async fn list_blocked_services(&self, locale: Option<&str>)
-        -> Result<ListBlockedServicesResult, BackendError>;
+    async fn list_blocked_services(
+        &self,
+        locale: Option<&str>,
+    ) -> Result<ListBlockedServicesResult, BackendError>;
 
     /// Attached domain zones (no discovery).
     async fn list_domain_zones(&self) -> Result<ListDomainZonesResult, BackendError>;
 
     /// Records in one attached zone.
-    async fn list_zone_records(&self, zone_id: &str) -> Result<ListZoneRecordsResult, BackendError>;
+    async fn list_zone_records(&self, zone_id: &str)
+    -> Result<ListZoneRecordsResult, BackendError>;
 
     /// Listener definitions from config.
     async fn list_listeners(&self) -> Result<ListListenersResult, BackendError>;
@@ -168,10 +171,7 @@ pub trait McpBackend: Send + Sync {
     ) -> Result<DeletePolicyRecordResult, BackendError>;
 
     /// Per-domain stats from the query log.
-    async fn get_domain_stats(
-        &self,
-        params: DomainStatsParams,
-    ) -> Result<Value, BackendError>;
+    async fn get_domain_stats(&self, params: DomainStatsParams) -> Result<Value, BackendError>;
 
     /// Query-volume timeseries.
     async fn get_stats_timeseries(
@@ -243,7 +243,8 @@ pub trait McpBackend: Send + Sync {
     ) -> Result<CancelTempAllowResult, BackendError>;
 
     /// Flush the resolver cache globally or for one domain.
-    async fn flush_cache(&self, params: FlushCacheParams) -> Result<FlushCacheResult, BackendError>;
+    async fn flush_cache(&self, params: FlushCacheParams)
+    -> Result<FlushCacheResult, BackendError>;
 
     /// Toggle a blocked-service entry in a filter set.
     async fn set_blocked_service(

@@ -239,8 +239,12 @@ fn maybe_install_colocated_quic<H: ?Sized>(
     let Some(attachment) = shared.doh.cluster.get() else {
         return;
     };
-    match build_colocated_quic_server_config(attachment, &shared.certs, &shared.tls_stats, &shared.doh.limits)
-    {
+    match build_colocated_quic_server_config(
+        attachment,
+        &shared.certs,
+        &shared.tls_stats,
+        &shared.doh.limits,
+    ) {
         Ok(config) => {
             endpoint.set_server_config(Some(config));
             let _ = installed.set(());
@@ -393,8 +397,7 @@ where
                     .map(|handshake| handshake.server_name.clone())
             })
             .flatten();
-        let is_cluster = cluster_sni
-            .is_some_and(|name| cluster_sni_selected(name, sni.as_deref()));
+        let is_cluster = cluster_sni.is_some_and(|name| cluster_sni_selected(name, sni.as_deref()));
         if is_cluster {
             serve_cluster_h3(Arc::clone(&shared), conn, peer).await;
         } else {
@@ -454,14 +457,9 @@ where
                 // Bound the request-body read only; the NDJSON response may sit quiet.
                 let body_timeout = shared.doh.limits.tcp_idle_timeout;
                 tokio::spawn(async move {
-                    let _ = dispatch_cluster_h3(
-                        resolver,
-                        attachment,
-                        peer,
-                        peer_cert,
-                        body_timeout,
-                    )
-                    .await;
+                    let _ =
+                        dispatch_cluster_h3(resolver, attachment, peer, peer_cert, body_timeout)
+                            .await;
                 });
             }
             Ok(None) => return,

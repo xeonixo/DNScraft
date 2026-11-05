@@ -264,8 +264,10 @@ async fn enrich_network_details(
                     );
                 }
             };
-            let details_path =
-                format!("{INTEGRATION_PREFIX}/sites/{site_id}/networks/{}", overview.id);
+            let details_path = format!(
+                "{INTEGRATION_PREFIX}/sites/{site_id}/networks/{}",
+                overview.id
+            );
             let (ipv4_prefix, ipv6_prefix, domain_name) = match gw.get(&details_path).await {
                 Ok(bytes) => parse_network_details(&bytes),
                 Err(_) => (None, None, None),
@@ -498,9 +500,7 @@ mod tests {
             "clients.config.invalid"
         );
         assert_eq!(
-            validate_path_id("bad id", "network_id")
-                .unwrap_err()
-                .code(),
+            validate_path_id("bad id", "network_id").unwrap_err().code(),
             "clients.config.invalid"
         );
     }

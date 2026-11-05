@@ -3,15 +3,15 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::net::{IpAddr, Ipv4Addr};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use dnscraft_cluster::{
     ActiveTransport, ClusterCa, ClusterClient, ClusterServer, ClusterServerConfig, ClusterStore,
     ListenConfig, LogIngest, NodeIdentity, PendingNodeIdentity, QuotaConfig, RelayResponse,
-    RelayedActor, TransportMode, TlsPaths, WriteExecutor,
+    RelayedActor, TlsPaths, TransportMode, WriteExecutor,
 };
 use dnscraft_common::clock::ManualClock;
 use dnscraft_common::secret::Secret;
@@ -84,7 +84,7 @@ async fn start_env() -> TestEnv {
             listen: ListenConfig {
                 bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
                 port: 0,
-            share_with_listener: None,
+                share_with_listener: None,
             },
             server_name: "127.0.0.1".to_owned(),
             node_cert_ttl: Duration::from_secs(86400),

@@ -3,8 +3,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::net::{IpAddr, Ipv4Addr};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
@@ -68,10 +68,8 @@ async fn start_env() -> TestEnv {
     let _ = rustls::crypto::ring::default_provider().install_default();
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "dnscraft-reverse-rpc-{}-{id}",
-        std::process::id()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("dnscraft-reverse-rpc-{}-{id}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let clock = Arc::new(ManualClock::new(SystemTime::now()));
@@ -84,7 +82,7 @@ async fn start_env() -> TestEnv {
             listen: ListenConfig {
                 bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
                 port: 0,
-            share_with_listener: None,
+                share_with_listener: None,
             },
             server_name: "127.0.0.1".to_owned(),
             node_cert_ttl: Duration::from_secs(86400),
@@ -151,8 +149,10 @@ async fn master_invokes_node_status_rpc() {
             match stream.next_record().await {
                 Ok(StreamRecord::RpcRequest(request)) => {
                     assert_eq!(request.method, RPC_NODE_STATUS);
-                    let response =
-                        RpcResponse::ok(request.request_id, json!({ "role": "sub_node", "ok": true }));
+                    let response = RpcResponse::ok(
+                        request.request_id,
+                        json!({ "role": "sub_node", "ok": true }),
+                    );
                     reply_client.post_rpc_reply(&response).await.unwrap();
                     break;
                 }

@@ -41,10 +41,11 @@ use dnscraft_cluster::{
     ActiveTransport, ActorValidator, AuthSnapshotApplier, AuthSnapshotSource, Backfill,
     ClusterBroadcast, ClusterCa, ClusterClient, ClusterConfig, ClusterError, ClusterServer,
     ClusterServerConfig, ClusterSettings, ClusterStore, ConfigApplier, ConfigSync, LogIngest,
-    LogOutbox, LogRecord, LogStreamer, NodeIdentity, OfflineWriteQueue, PendingNodeIdentity,
-    PROTOCOL_VERSION, RPC_CONFIG_REAPPLY, RPC_NODE_DIAGNOSTICS, RPC_NODE_STATUS, RPC_RUNTIME_EXEC,
-    RelayResponse, RelayedActor, Role, RpcRequest, RpcResponse, RuntimeCommandApplier, StreamRecord,
-    TlsCertificateSource, TlsPaths, TransportMode, WriteExecutor, WriteRelay,
+    LogOutbox, LogRecord, LogStreamer, NodeIdentity, OfflineWriteQueue, PROTOCOL_VERSION,
+    PendingNodeIdentity, RPC_CONFIG_REAPPLY, RPC_NODE_DIAGNOSTICS, RPC_NODE_STATUS,
+    RPC_RUNTIME_EXEC, RelayResponse, RelayedActor, Role, RpcRequest, RpcResponse,
+    RuntimeCommandApplier, StreamRecord, TlsCertificateSource, TlsPaths, TransportMode,
+    WriteExecutor, WriteRelay,
 };
 use dnscraft_common::clock::{Clock, add_duration, wait_until};
 use dnscraft_common::secret::Secret;
@@ -1668,8 +1669,7 @@ impl ClusterRuntime {
         };
         let settings = ClusterSettings::load(&options.data_dir).unwrap_or_default();
         let transport_mode = settings.transport.mode;
-        let quic_timeout =
-            Duration::from_millis(settings.transport.quic_connect_timeout_ms.max(1));
+        let quic_timeout = Duration::from_millis(settings.transport.quic_connect_timeout_ms.max(1));
         let compression = settings.compression;
         let client = Arc::new(
             ClusterClient::new_with_timing(
@@ -2227,7 +2227,10 @@ async fn handle_reverse_rpc(
             // Params are applied via the normal runtime_command path when present.
             RpcResponse::ok(&request.request_id, json!({ "accepted": true }))
         }
-        other => RpcResponse::err(&request.request_id, format!("cluster.rpc.unsupported:{other}")),
+        other => RpcResponse::err(
+            &request.request_id,
+            format!("cluster.rpc.unsupported:{other}"),
+        ),
     }
 }
 

@@ -1186,7 +1186,10 @@ mod tests {
         let lan = snap.views.iter().find(|v| v.id.as_str() == "lan").unwrap();
         let lan_rr = lan.records.get(&name).unwrap();
         assert_eq!(lan_rr.records.len(), 1);
-        assert_eq!(lan_rr.records[0].rdata, RData::A(Ipv4Addr::new(10, 0, 0, 5)));
+        assert_eq!(
+            lan_rr.records[0].rdata,
+            RData::A(Ipv4Addr::new(10, 0, 0, 5))
+        );
         let default = snap
             .views
             .iter()

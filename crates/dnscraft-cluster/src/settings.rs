@@ -124,7 +124,10 @@ impl Default for ReverseRpcSettings {
 }
 
 fn default_methods() -> Vec<String> {
-    DEFAULT_RPC_METHODS.iter().map(|s| (*s).to_owned()).collect()
+    DEFAULT_RPC_METHODS
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect()
 }
 fn default_connect_paths() -> Vec<String> {
     DEFAULT_CONNECT_PATH_PREFIXES

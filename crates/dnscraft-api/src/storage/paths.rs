@@ -113,10 +113,7 @@ mod tests {
         assert!(!root.join("dnscraft.db").exists());
         assert!(!root.join("dnscraft.db-wal").exists());
         assert!(!root.join("cluster.db").exists());
-        assert_eq!(
-            std::fs::read(root.join("db/dnscraft.db")).unwrap(),
-            b"main"
-        );
+        assert_eq!(std::fs::read(root.join("db/dnscraft.db")).unwrap(), b"main");
         assert_eq!(
             std::fs::read(root.join("db/dnscraft.db-wal")).unwrap(),
             b"wal"
@@ -129,10 +126,7 @@ mod tests {
         // Second boot is a no-op even if a stray root file appears later.
         std::fs::write(root.join("dnscraft.db"), b"stale").unwrap();
         ensure_database_layout(&root).unwrap();
-        assert_eq!(
-            std::fs::read(root.join("db/dnscraft.db")).unwrap(),
-            b"main"
-        );
+        assert_eq!(std::fs::read(root.join("db/dnscraft.db")).unwrap(), b"main");
 
         let _ = std::fs::remove_dir_all(&root);
     }

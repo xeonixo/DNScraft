@@ -88,12 +88,7 @@ async fn resolve_client_returns_single_match() {
         addresses: vec!["192.0.2.10".into()],
         ..Default::default()
     }]);
-    let body = call(
-        &server,
-        "resolve_client",
-        json!({ "query": "Malte Phone" }),
-    )
-    .await;
+    let body = call(&server, "resolve_client", json!({ "query": "Malte Phone" })).await;
     assert_eq!(body["result"]["isError"], false, "{body}");
     let out = harness::tool_output(&body);
     assert_eq!(out["clients"].as_array().unwrap().len(), 1);
@@ -119,12 +114,7 @@ async fn resolve_client_reports_ambiguous_matches() {
             ..Default::default()
         },
     ]);
-    let body = call(
-        &server,
-        "resolve_client",
-        json!({ "query": "Living Room" }),
-    )
-    .await;
+    let body = call(&server, "resolve_client", json!({ "query": "Living Room" })).await;
     assert_eq!(body["result"]["isError"], true, "{body}");
     assert_eq!(harness::error_code(&body), "mcp.ambiguous_client");
     assert_eq!(
@@ -355,7 +345,9 @@ async fn resources_list_and_read_safe_catalogs() {
     assert!(
         status == 200 && body["error"].is_object()
             || body["result"]["isError"] == true
-            || body["error"]["message"].as_str().is_some_and(|m| m.contains("unknown")),
+            || body["error"]["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("unknown")),
         "query-log must not be a resource: {body}"
     );
 }
@@ -392,14 +384,12 @@ async fn zone_record_writes_require_write_scope_and_gate() {
         }),
     )
     .await;
-    assert_eq!(harness::error_code(&body), "control_api.auth.insufficient_scope");
+    assert_eq!(
+        harness::error_code(&body),
+        "control_api.auth.insufficient_scope"
+    );
 
     let gated = harness::spawn_with(read_config(), support::write_token()).await;
-    let body = call(
-        &gated,
-        "flush_cache",
-        json!({}),
-    )
-    .await;
+    let body = call(&gated, "flush_cache", json!({})).await;
     assert_eq!(harness::error_code(&body), "mcp.write_tools_disabled");
 }

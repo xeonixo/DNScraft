@@ -35,9 +35,8 @@ pub type ClusterFuture = WebFuture;
 ///
 /// The request body is already buffered (`Bytes`) so TCP (Incoming) and HTTP/3
 /// share the same handler.
-pub type ClusterHandler = Arc<
-    dyn Fn(SocketAddr, Option<Vec<u8>>, Request<Bytes>) -> ClusterFuture + Send + Sync,
->;
+pub type ClusterHandler =
+    Arc<dyn Fn(SocketAddr, Option<Vec<u8>>, Request<Bytes>) -> ClusterFuture + Send + Sync>;
 
 /// Material needed to mux cluster mTLS onto a DoH listener.
 #[derive(Clone)]
@@ -227,7 +226,8 @@ pub struct ObservingCertResolver {
 
 impl std::fmt::Debug for ObservingCertResolver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ObservingCertResolver").finish_non_exhaustive()
+        f.debug_struct("ObservingCertResolver")
+            .finish_non_exhaustive()
     }
 }
 
@@ -251,8 +251,14 @@ mod tests {
 
     #[test]
     fn dns_sni_matches_case_insensitively() {
-        assert!(cluster_sni_selected("ns1.dns.example", Some("NS1.dns.example")));
-        assert!(!cluster_sni_selected("ns1.dns.example", Some("other.example")));
+        assert!(cluster_sni_selected(
+            "ns1.dns.example",
+            Some("NS1.dns.example")
+        ));
+        assert!(!cluster_sni_selected(
+            "ns1.dns.example",
+            Some("other.example")
+        ));
         assert!(!cluster_sni_selected("ns1.dns.example", None));
     }
 

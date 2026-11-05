@@ -162,8 +162,9 @@ pub(crate) fn validate_arguments(name: &str, arguments: Option<JsonObject>) -> b
             .is_ok_and(|a| validate_domain(&a.domain).is_ok()),
         "flush_cache" => parse_arguments::<FlushArgs>(arguments).is_ok(),
         "set_blocked_service" => parse_arguments::<ServiceArgs>(arguments).is_ok(),
-        "create_zone_record" => parse_arguments::<ZoneWriteArgs>(arguments)
-            .is_ok_and(|a| a.record_id.is_none()),
+        "create_zone_record" => {
+            parse_arguments::<ZoneWriteArgs>(arguments).is_ok_and(|a| a.record_id.is_none())
+        }
         "update_zone_record" => parse_arguments::<ZoneWriteArgs>(arguments)
             .is_ok_and(|a| a.record_id.as_ref().is_some_and(|id| !id.is_empty())),
         "delete_zone_record" => parse_arguments::<DeleteZoneArgs>(arguments).is_ok(),
@@ -361,7 +362,12 @@ impl ZoneWriteArgs {
         if self.zone_id.trim().is_empty() {
             return Err(invalid_input("zone_id is required"));
         }
-        if update && self.record_id.as_ref().is_none_or(|id| id.trim().is_empty()) {
+        if update
+            && self
+                .record_id
+                .as_ref()
+                .is_none_or(|id| id.trim().is_empty())
+        {
             return Err(invalid_input("record_id is required"));
         }
         Ok(ZoneRecordWriteParams {
@@ -382,11 +388,11 @@ async fn write_zone_record(
     token: &TokenInfo,
     update: bool,
 ) -> CallToolResult {
-    let params = match parse_arguments::<ZoneWriteArgs>(arguments).and_then(|a| a.into_params(update))
-    {
-        Ok(params) => params,
-        Err(error) => return error,
-    };
+    let params =
+        match parse_arguments::<ZoneWriteArgs>(arguments).and_then(|a| a.into_params(update)) {
+            Ok(params) => params,
+            Err(error) => return error,
+        };
     let action = if update {
         "mcp.update_zone_record"
     } else {

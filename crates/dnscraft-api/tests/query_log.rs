@@ -911,11 +911,7 @@ async fn query_log_outbox_prune_ignores_foreign_node_seqs() {
     let db = Db::open_in_memory(clock).await.unwrap();
     // Leftover rows from a previous `local` id share the DB with the enrolled
     // node; their high seqs must not widen the prune window.
-    let leftover = QueryLog::new(
-        db.clone(),
-        dnscraft_api::QueryLogConfig::default(),
-        "local",
-    );
+    let leftover = QueryLog::new(db.clone(), dnscraft_api::QueryLogConfig::default(), "local");
     let node = QueryLog::new(db, dnscraft_api::QueryLogConfig::default(), "waldo");
 
     leftover

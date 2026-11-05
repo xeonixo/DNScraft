@@ -11,8 +11,9 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use dnscraft_listeners::{
-    ClusterAttachment, ClusterSlot, DohServeParams, DohStats, EmptyClientIds, Exposure, FakeHandler,
-    Limits, ListenerConfig, Protocol, PublicConfig, SniGate, SystemClock, TlsStats, serve_doh,
+    ClusterAttachment, ClusterSlot, DohServeParams, DohStats, EmptyClientIds, Exposure,
+    FakeHandler, Limits, ListenerConfig, Protocol, PublicConfig, SniGate, SystemClock, TlsStats,
+    serve_doh,
 };
 use dnscraft_policy::ListenerId;
 use dnscraft_tls::{CertResolver, ReservedLabels};

@@ -201,7 +201,11 @@ async fn thirty_networks_paginated_and_details_fetched() {
         .filter(|r| !r.path.contains("/networks/"))
         .collect();
     // Default API page size is 25; with limit=200 we expect a single list page.
-    assert_eq!(list_reqs.len(), 1, "expected one networks list page; {list_reqs:?}");
+    assert_eq!(
+        list_reqs.len(),
+        1,
+        "expected one networks list page; {list_reqs:?}"
+    );
     assert!(
         list_reqs[0].path.contains("limit=200"),
         "expected limit=200 in {}",

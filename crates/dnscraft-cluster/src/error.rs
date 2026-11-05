@@ -276,27 +276,17 @@ mod tests {
                 node_id: "node-a".into(),
                 what: "relay request".into(),
             },
-            ClusterError::Compression {
-                reason: "x".into(),
-            },
-            ClusterError::RpcUnsupported {
-                method: "x".into(),
-            },
-            ClusterError::RpcDenied {
-                method: "x".into(),
-            },
-            ClusterError::ConnectDenied {
-                reason: "x".into(),
-            },
+            ClusterError::Compression { reason: "x".into() },
+            ClusterError::RpcUnsupported { method: "x".into() },
+            ClusterError::RpcDenied { method: "x".into() },
+            ClusterError::ConnectDenied { reason: "x".into() },
             ClusterError::ListenCollision {
                 listener_id: "doh".into(),
                 bind: "127.0.0.1".into(),
                 port: 443,
             },
             ClusterError::RpcTimeout,
-            ClusterError::RpcUnavailable {
-                reason: "x".into(),
-            },
+            ClusterError::RpcUnavailable { reason: "x".into() },
             ClusterError::TransportQuic {
                 message: "x".into(),
             },

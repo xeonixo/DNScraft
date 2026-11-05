@@ -433,8 +433,11 @@ impl QueryLog {
                     params![hour_cutoff],
                 )
                 .map_err(db_err)?;
-                tx.execute("DELETE FROM stats_daily WHERE day < ?1", params![day_cutoff])
-                    .map_err(db_err)?;
+                tx.execute(
+                    "DELETE FROM stats_daily WHERE day < ?1",
+                    params![day_cutoff],
+                )
+                .map_err(db_err)?;
                 tx.commit().map_err(db_err)?;
                 Ok(())
             })

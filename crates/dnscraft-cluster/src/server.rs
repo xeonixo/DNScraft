@@ -53,10 +53,10 @@ use tokio_rustls::TlsAcceptor;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::ca::{ClusterCa, cert_fingerprint, node_id_from_der};
+use crate::compress::{CAP_COMPRESS_ZSTD, maybe_decompress_body};
 use crate::config::{ListenConfig, QuotaConfig, TimingConfig};
 use crate::enroll::{PROTOCOL_VERSION, RenewRequest, enroll as run_enroll, renew as run_renew};
 use crate::error::ClusterError;
-use crate::compress::{CAP_COMPRESS_ZSTD, maybe_decompress_body};
 use crate::log::{LogAck, LogBatch, LogIngest};
 use crate::quota::QuotaLimiter;
 use crate::relay::{RuntimeCommand, WriteExecutor, WriteRelay};

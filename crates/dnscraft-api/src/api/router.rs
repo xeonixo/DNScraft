@@ -24,8 +24,8 @@ use super::clients_routes::{
     put_unifi_api_key, sync_clients,
 };
 use super::cluster_endpoints::{
-    get_cluster_settings, get_write, invoke_node_rpc, list_nodes, mint_join_token, put_cluster_settings,
-    revoke_node, update_node,
+    get_cluster_settings, get_write, invoke_node_rpc, list_nodes, mint_join_token,
+    put_cluster_settings, revoke_node, update_node,
 };
 use super::config_routes::{
     delete_pause, delete_profile, delete_view, get_config, get_pause, get_profile, get_view,
@@ -336,9 +336,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
             let state_for_alerts = state.clone();
             let inner = inner.with_list_alerts(Arc::new(move || {
                 let state = state_for_alerts.clone();
-                Box::pin(async move {
-                    crate::api::alerts_routes::collect_alerts(&state).await
-                })
+                Box::pin(async move { crate::api::alerts_routes::collect_alerts(&state).await })
             }));
             let backend = Arc::new(ControlMcpBackend::new(inner));
             router = router.nest_service("/mcp/v1", dnscraft_mcp::service(backend, mcp_config));

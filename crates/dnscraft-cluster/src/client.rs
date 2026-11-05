@@ -27,21 +27,21 @@ use rustls::{DigitallySignedStruct, Error as RustlsError};
 use serde::Deserialize;
 
 use crate::ca::cert_fingerprint;
+use crate::compress::{DEFAULT_LEVEL, ZstdEnvelope};
 use crate::config::{DEFAULT_MASTER_TIMEOUT, TimingConfig, TlsPaths};
 use crate::enroll::{EnrollRequest, EnrollResponse, PROTOCOL_VERSION, RenewRequest};
 use crate::error::ClusterError;
 use crate::identity::NodeIdentity;
 use crate::log::{LogAck, LogBatch};
 use crate::relay::{RelayResponse, RuntimeCommand, RuntimeCommandApplier, WriteRelay};
+use crate::rpc::RpcResponse;
 use crate::server::{
     HeartbeatRequest, HeartbeatResponse, PROTOCOL_HEADER, TlsCsrRequest, TlsCsrResponse, rfc3339,
 };
-use crate::rpc::RpcResponse;
 use crate::sync::{
     AuthSnapshotApplier, AuthSnapshotPush, CertInstaller, ConfigAck, ConfigApplier, ConfigPush,
     Hello, StreamError, StreamRecord,
 };
-use crate::compress::{DEFAULT_LEVEL, ZstdEnvelope};
 use crate::transport::{
     ActiveTransport, DEFAULT_QUIC_CONNECT_TIMEOUT, FallbackReason, TransportMode,
 };
@@ -255,8 +255,10 @@ impl ClusterClient {
             let mut guard = self.http.write().unwrap_or_else(PoisonError::into_inner);
             *guard = http;
         }
-        *self.identity.write().unwrap_or_else(PoisonError::into_inner) =
-            fresh.duplicate()?;
+        *self
+            .identity
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = fresh.duplicate()?;
         Ok(())
     }
 
@@ -277,15 +279,23 @@ impl ClusterClient {
         last_acked_log_seq: Option<u64>,
     ) -> Result<ClusterStream, ClusterError> {
         if self.transport_mode == TransportMode::H2Only {
-            let stream = self.open_stream_h2(last_applied_version, last_acked_log_seq).await?;
-            *self.last_transport.write().unwrap_or_else(PoisonError::into_inner) =
+            let stream = self
+                .open_stream_h2(last_applied_version, last_acked_log_seq)
+                .await?;
+            *self
+                .last_transport
+                .write()
+                .unwrap_or_else(PoisonError::into_inner) =
                 (ActiveTransport::H2, Some(FallbackReason::ModeH2Only));
             return Ok(stream);
         }
 
         if self.transport_mode.try_quic() {
-            let hello =
-                self.stream_hello(last_applied_version, last_acked_log_seq, ActiveTransport::Quic);
+            let hello = self.stream_hello(
+                last_applied_version,
+                last_acked_log_seq,
+                ActiveTransport::Quic,
+            );
             let body = serde_json::to_vec(&hello).map_err(|error| ClusterError::Internal {
                 message: format!("encode stream hello: {error}"),
             })?;
@@ -303,8 +313,10 @@ impl ClusterClient {
             .await
             {
                 Ok(quic) => {
-                    *self.last_transport.write().unwrap_or_else(PoisonError::into_inner) =
-                        (ActiveTransport::Quic, None);
+                    *self
+                        .last_transport
+                        .write()
+                        .unwrap_or_else(PoisonError::into_inner) = (ActiveTransport::Quic, None);
                     return Ok(ClusterStream::from_quic(quic));
                 }
                 Err(
@@ -319,16 +331,22 @@ impl ClusterClient {
                         reason = "quic_unavailable",
                         "cluster Prefer-QUIC failed; falling back to HTTP/2"
                     );
-                    *self.last_transport.write().unwrap_or_else(PoisonError::into_inner) = (
-                        ActiveTransport::None,
-                        Some(FallbackReason::QuicUnavailable),
-                    );
+                    *self
+                        .last_transport
+                        .write()
+                        .unwrap_or_else(PoisonError::into_inner) =
+                        (ActiveTransport::None, Some(FallbackReason::QuicUnavailable));
                 }
             }
         }
 
-        let stream = self.open_stream_h2(last_applied_version, last_acked_log_seq).await?;
-        *self.last_transport.write().unwrap_or_else(PoisonError::into_inner) =
+        let stream = self
+            .open_stream_h2(last_applied_version, last_acked_log_seq)
+            .await?;
+        *self
+            .last_transport
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) =
             (ActiveTransport::H2, Some(FallbackReason::QuicUnavailable));
         Ok(stream)
     }
@@ -374,8 +392,11 @@ impl ClusterClient {
         last_applied_version: Option<i64>,
         last_acked_log_seq: Option<u64>,
     ) -> Result<ClusterStream, ClusterError> {
-        let hello =
-            self.stream_hello(last_applied_version, last_acked_log_seq, ActiveTransport::H2);
+        let hello = self.stream_hello(
+            last_applied_version,
+            last_acked_log_seq,
+            ActiveTransport::H2,
+        );
         let body = serde_json::to_vec(&hello).map_err(|error| ClusterError::Internal {
             message: format!("encode stream hello: {error}"),
         })?;

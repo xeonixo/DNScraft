@@ -282,18 +282,18 @@ fn parse_address_lists(
 ) -> Result<ViewOverride, String> {
     let mut v4 = Vec::new();
     for text in a.unwrap_or_default() {
-        let ip: Ipv4Addr = text.parse().map_err(|_| {
-            format!("record `{owner}` override `{view}`: invalid IPv4 `{text}`")
-        })?;
+        let ip: Ipv4Addr = text
+            .parse()
+            .map_err(|_| format!("record `{owner}` override `{view}`: invalid IPv4 `{text}`"))?;
         if !v4.contains(&ip) {
             v4.push(ip);
         }
     }
     let mut v6 = Vec::new();
     for text in aaaa.unwrap_or_default() {
-        let ip: Ipv6Addr = text.parse().map_err(|_| {
-            format!("record `{owner}` override `{view}`: invalid IPv6 `{text}`")
-        })?;
+        let ip: Ipv6Addr = text
+            .parse()
+            .map_err(|_| format!("record `{owner}` override `{view}`: invalid IPv6 `{text}`"))?;
         if !v6.contains(&ip) {
             v6.push(ip);
         }
@@ -344,9 +344,7 @@ fn override_wire(value: &ViewOverride) -> OverrideWire {
             OverrideWire::Legacy(wire_of(data.iter().map(format_rdata).collect()))
         }
         ViewOverride::NoAnswer => OverrideWire::Legacy(TextOrList::One(String::new())),
-        ViewOverride::Public => {
-            OverrideWire::Legacy(TextOrList::One(PUBLIC_OVERRIDE.to_owned()))
-        }
+        ViewOverride::Public => OverrideWire::Legacy(TextOrList::One(PUBLIC_OVERRIDE.to_owned())),
         ViewOverride::Addresses { a, aaaa } => OverrideWire::Structured(StructuredOverride {
             mode: "addresses".to_owned(),
             rdata: None,
@@ -371,7 +369,9 @@ fn normalize_comment(owner: &str, comment: String) -> Result<String, String> {
         ));
     }
     if comment.contains('\n') || comment.contains('\r') {
-        return Err(format!("record `{owner}`: comment must not contain newlines"));
+        return Err(format!(
+            "record `{owner}`: comment must not contain newlines"
+        ));
     }
     Ok(comment)
 }

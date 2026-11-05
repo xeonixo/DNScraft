@@ -203,7 +203,12 @@ impl McpConfig {
             MAX_BLOCK_RULE_LIFETIME,
         )?;
         ProtectedDomains::new(self.protected_domains.iter().cloned())?;
-        if let Some(url) = self.public_url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
+        if let Some(url) = self
+            .public_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+        {
             if !(url.starts_with("https://") || url.starts_with("http://")) {
                 return Err(invalid(
                     "public_url",

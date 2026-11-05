@@ -14,6 +14,7 @@ use tokio::task::{JoinHandle, JoinSet};
 
 use crate::admission::{Admission, SourceClassifier, default_classifier};
 use crate::clock::Clock;
+use crate::cluster_slot::ClusterSlot;
 use crate::config::{Exposure, Limits, ListenerConfig, ListenersConfig, Protocol};
 use crate::conn::FramedStats;
 use crate::ddr::{DdrEndpoint, DdrEndpoints};
@@ -28,7 +29,6 @@ use crate::status::{ListenerStatus, ListenersStatus};
 use crate::tcp::{TcpServeParams, TcpStats, serve_tcp};
 use crate::tls::{PolicyClientIds, SniGate, TlsStats};
 use crate::udp::{UdpServeParams, UdpStats, serve_udp};
-use crate::cluster_slot::ClusterSlot;
 use crate::web::WebSlot;
 
 /// Shared runtime for all configured listeners.
@@ -247,11 +247,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
 
     /// DoH listeners that can host cluster colocation on `bind:port` (same IP/port, or
     /// a wildcard DoH bind that covers `bind`).
-    pub fn doh_listeners_for_colocation(
-        &self,
-        bind: IpAddr,
-        port: u16,
-    ) -> Vec<ListenerConfig> {
+    pub fn doh_listeners_for_colocation(&self, bind: IpAddr, port: u16) -> Vec<ListenerConfig> {
         let inner = self
             .inner
             .lock()
@@ -263,8 +259,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
             .filter(|listener| {
                 listener.protocol == Protocol::Doh
                     && listener.address.port() == port
-                    && (listener.address.ip() == bind
-                        || listener.address.ip().is_unspecified())
+                    && (listener.address.ip() == bind || listener.address.ip().is_unspecified())
             })
             .cloned()
             .collect()

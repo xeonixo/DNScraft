@@ -585,8 +585,7 @@ pub(crate) async fn token(State(state): State<AppState>, body: Bytes) -> Respons
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(get("code"));
-        let challenge =
-            URL_SAFE_NO_PAD.encode(digest(&SHA256, get("code_verifier").as_bytes()));
+        let challenge = URL_SAFE_NO_PAD.encode(digest(&SHA256, get("code_verifier").as_bytes()));
         let Some(pending) = pending.filter(|c| {
             c.expires > Instant::now()
                 && c.redirect_uri == get("redirect_uri")
@@ -983,7 +982,11 @@ mod tests {
             "https://www.perplexity.ai/rest/connections/oauth_callback",
             "https://enterprise.perplexity.ai/rest/connections/oauth_callback",
         ] {
-            assert_eq!(send(&app, register(uri)).await.0, StatusCode::CREATED, "{uri}");
+            assert_eq!(
+                send(&app, register(uri)).await.0,
+                StatusCode::CREATED,
+                "{uri}"
+            );
         }
         assert_eq!(
             send(
@@ -995,7 +998,9 @@ mod tests {
             StatusCode::BAD_REQUEST
         );
         assert_eq!(
-            send(&app, register("https://evil.chatgpt.com/connector/oauth/x")).await.0,
+            send(&app, register("https://evil.chatgpt.com/connector/oauth/x"))
+                .await
+                .0,
             StatusCode::BAD_REQUEST
         );
     }

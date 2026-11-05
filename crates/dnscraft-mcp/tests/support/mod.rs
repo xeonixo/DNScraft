@@ -739,9 +739,7 @@ impl McpBackend for MockBackend {
     }
 
     async fn list_alerts(&self) -> Result<ListAlertsResult, BackendError> {
-        Ok(slot(&self.alerts_result)
-            .clone()
-            .unwrap_or_default())
+        Ok(slot(&self.alerts_result).clone().unwrap_or_default())
     }
 
     async fn list_filter_lists(&self) -> Result<ListFilterListsResult, BackendError> {
@@ -771,7 +769,10 @@ impl McpBackend for MockBackend {
         Ok(ListDomainZonesResult::default())
     }
 
-    async fn list_zone_records(&self, zone_id: &str) -> Result<ListZoneRecordsResult, BackendError> {
+    async fn list_zone_records(
+        &self,
+        zone_id: &str,
+    ) -> Result<ListZoneRecordsResult, BackendError> {
         Ok(ListZoneRecordsResult {
             zone_id: zone_id.to_owned(),
             ..Default::default()
@@ -877,7 +878,10 @@ impl McpBackend for MockBackend {
         })
     }
 
-    async fn flush_cache(&self, params: FlushCacheParams) -> Result<FlushCacheResult, BackendError> {
+    async fn flush_cache(
+        &self,
+        params: FlushCacheParams,
+    ) -> Result<FlushCacheResult, BackendError> {
         *slot(&self.last_flush) = Some(params.clone());
         self.flush_calls.fetch_add(1, Ordering::SeqCst);
         if let Some(result) = slot(&self.flush_result).clone() {

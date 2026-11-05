@@ -24,7 +24,7 @@ use tower_service::Service;
 use crate::error::ClusterError;
 use crate::identity::NodeIdentity;
 use crate::server::{
-    ClusterRouter, NodeSlot, NodeSlots, PeerIdentity, PeerSocketAddr, HANDSHAKE_TIMEOUT,
+    ClusterRouter, HANDSHAKE_TIMEOUT, NodeSlot, NodeSlots, PeerIdentity, PeerSocketAddr,
 };
 use crate::sync::StreamRecord;
 const ALPN_H3: &[u8] = b"h3";
@@ -74,33 +74,33 @@ pub(crate) async fn bind_quic_endpoint(
     addr: SocketAddr,
     rustls: rustls::ServerConfig,
 ) -> Result<Endpoint, ClusterError> {
-    let socket = tokio::net::UdpSocket::bind(addr)
-        .await
+    let socket =
+        tokio::net::UdpSocket::bind(addr)
+            .await
+            .map_err(|error| ClusterError::TransportQuic {
+                message: format!("bind cluster QUIC listener {addr}: {error}"),
+            })?;
+    let std_sock = socket
+        .into_std()
         .map_err(|error| ClusterError::TransportQuic {
-            message: format!("bind cluster QUIC listener {addr}: {error}"),
+            message: format!("cluster QUIC socket into_std: {error}"),
         })?;
-    let std_sock = socket.into_std().map_err(|error| ClusterError::TransportQuic {
-        message: format!("cluster QUIC socket into_std: {error}"),
-    })?;
 
-    let quic_crypto = QuicServerConfig::try_from(rustls).map_err(|error| {
-        ClusterError::TransportQuic {
+    let quic_crypto =
+        QuicServerConfig::try_from(rustls).map_err(|error| ClusterError::TransportQuic {
             message: format!("QuicServerConfig: {error}"),
-        }
-    })?;
+        })?;
     let mut server_config = ServerConfig::with_crypto(Arc::new(quic_crypto));
     let mut transport = quinn::TransportConfig::default();
     transport.max_concurrent_bidi_streams(VarInt::from_u32(64));
     transport.max_concurrent_uni_streams(VarInt::from_u32(3));
     // Heartbeats use a separate TCP client; keep the stream QUIC path alive
     // without relying on application traffic.
-    transport.max_idle_timeout(Some(
-        Duration::from_secs(120)
-            .try_into()
-            .map_err(|_| ClusterError::TransportQuic {
-                message: "invalid cluster QUIC idle timeout".to_owned(),
-            })?,
-    ));
+    transport.max_idle_timeout(Some(Duration::from_secs(120).try_into().map_err(|_| {
+        ClusterError::TransportQuic {
+            message: "invalid cluster QUIC idle timeout".to_owned(),
+        }
+    })?));
     server_config.transport_config(Arc::new(transport));
 
     Endpoint::new(
@@ -355,43 +355,42 @@ async fn open_h3_stream_inner(
             message: format!("QUIC client endpoint: {error}"),
         }
     })?;
-    let crypto = QuicClientConfig::try_from(client_tls).map_err(|error| {
-        ClusterError::TransportQuic {
+    let crypto =
+        QuicClientConfig::try_from(client_tls).map_err(|error| ClusterError::TransportQuic {
             message: format!("QuicClientConfig: {error}"),
-        }
-    })?;
+        })?;
     // Stream responses are quiet between pushes; heartbeats go over HTTP/2.
     // Without keep-alive, a colocated DoH QUIC idle (historically 10s) drops us.
     let mut transport = quinn::TransportConfig::default();
     transport.keep_alive_interval(Some(Duration::from_secs(5)));
-    transport.max_idle_timeout(Some(
-        Duration::from_secs(120)
-            .try_into()
-            .map_err(|_| ClusterError::TransportQuic {
-                message: "invalid cluster QUIC client idle timeout".to_owned(),
-            })?,
-    ));
+    transport.max_idle_timeout(Some(Duration::from_secs(120).try_into().map_err(|_| {
+        ClusterError::TransportQuic {
+            message: "invalid cluster QUIC client idle timeout".to_owned(),
+        }
+    })?));
     let mut client_config = ClientConfig::new(Arc::new(crypto));
     client_config.transport_config(Arc::new(transport));
     endpoint.set_default_client_config(client_config);
 
     let _server_name = server_name;
-    let connecting = endpoint.connect(addr, &sni).map_err(|error| {
-        ClusterError::TransportQuic {
+    let connecting = endpoint
+        .connect(addr, &sni)
+        .map_err(|error| ClusterError::TransportQuic {
             message: format!("QUIC connect: {error}"),
-        }
-    })?;
-    let conn = connecting.await.map_err(|error| ClusterError::TransportQuic {
-        message: format!("QUIC handshake: {error}"),
-    })?;
+        })?;
+    let conn = connecting
+        .await
+        .map_err(|error| ClusterError::TransportQuic {
+            message: format!("QUIC handshake: {error}"),
+        })?;
 
     let quinn_conn = h3_quinn::Connection::new(conn.clone());
     let (mut driver, mut send_request) =
-        h3::client::new(quinn_conn).await.map_err(|error| {
-            ClusterError::TransportQuic {
+        h3::client::new(quinn_conn)
+            .await
+            .map_err(|error| ClusterError::TransportQuic {
                 message: format!("HTTP/3 client: {error}"),
-            }
-        })?;
+            })?;
     let driver_handle = tokio::spawn(async move {
         let _ = std::future::poll_fn(|cx| driver.poll_close(cx)).await;
     });
@@ -410,11 +409,13 @@ async fn open_h3_stream_inner(
             message: format!("HTTP/3 stream request: {error}"),
         })?;
 
-    let mut stream = send_request.send_request(req).await.map_err(|error| {
-        ClusterError::TransportQuic {
-            message: format!("HTTP/3 send stream: {error}"),
-        }
-    })?;
+    let mut stream =
+        send_request
+            .send_request(req)
+            .await
+            .map_err(|error| ClusterError::TransportQuic {
+                message: format!("HTTP/3 send stream: {error}"),
+            })?;
     if !hello_bytes.is_empty() {
         stream
             .send_data(hello_bytes)
@@ -423,15 +424,19 @@ async fn open_h3_stream_inner(
                 message: format!("HTTP/3 hello body: {error}"),
             })?;
     }
-    stream.finish().await.map_err(|error| ClusterError::TransportQuic {
-        message: format!("HTTP/3 finish request: {error}"),
-    })?;
+    stream
+        .finish()
+        .await
+        .map_err(|error| ClusterError::TransportQuic {
+            message: format!("HTTP/3 finish request: {error}"),
+        })?;
 
-    let response = stream.recv_response().await.map_err(|error| {
-        ClusterError::TransportQuic {
+    let response = stream
+        .recv_response()
+        .await
+        .map_err(|error| ClusterError::TransportQuic {
             message: format!("HTTP/3 response: {error}"),
-        }
-    })?;
+        })?;
     if response.status() != StatusCode::OK {
         return Err(ClusterError::TransportQuic {
             message: format!("HTTP/3 stream status {}", response.status()),
@@ -535,11 +540,10 @@ fn quic_authority(
         reason: "master_url host must be an IP for QUIC dial".to_owned(),
     })?;
     let addr = SocketAddr::new(ip, port);
-    let server_name = ServerName::try_from(host.to_owned()).map_err(|_| {
-        ClusterError::RoleInvalid {
+    let server_name =
+        ServerName::try_from(host.to_owned()).map_err(|_| ClusterError::RoleInvalid {
             reason: "master_url SNI invalid".to_owned(),
-        }
-    })?;
+        })?;
     Ok((addr, server_name, host.to_owned()))
 }
 

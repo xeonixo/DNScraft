@@ -1219,7 +1219,12 @@ async fn set_api_key_rebuilds_gateway_so_rotation_takes_effect() {
     let mock = MockGateway::start(API_KEY, CertKind::SelfSigned).await;
     seed(&mock).await;
     let clock = Arc::new(ManualClock::new(start()));
-    let eng = engine(&mock, Arc::clone(&clock) as Arc<_>, Duration::from_secs(3600)).await;
+    let eng = engine(
+        &mock,
+        Arc::clone(&clock) as Arc<_>,
+        Duration::from_secs(3600),
+    )
+    .await;
     await_initial_sync(&eng).await;
     let _ = mock.take_log().await;
 
@@ -1232,11 +1237,8 @@ async fn set_api_key_rebuilds_gateway_so_rotation_takes_effect() {
     assert!(eng.status().last_error.is_none());
     let log = mock.take_log().await;
     assert!(
-        log.iter().any(|r| {
-            r.headers
-                .get("x-api-key")
-                .is_some_and(|v| v == KEY_B)
-        }),
+        log.iter()
+            .any(|r| { r.headers.get("x-api-key").is_some_and(|v| v == KEY_B) }),
         "expected rotated key in request headers; log={log:?}"
     );
 }

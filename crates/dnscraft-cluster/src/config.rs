@@ -15,9 +15,7 @@ use dnscraft_common::config::check_https_url;
 use dnscraft_common::net::is_private;
 
 use crate::error::ClusterError;
-use crate::settings::{
-    CompressionSettings, ReverseRpcSettings, TransportSettings,
-};
+use crate::settings::{CompressionSettings, ReverseRpcSettings, TransportSettings};
 use crate::transport::{DEFAULT_QUIC_CONNECT_TIMEOUT, TransportMode};
 
 /// Default one-time join-token lifetime (15 min).

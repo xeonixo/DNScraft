@@ -202,15 +202,41 @@ pub(crate) async fn call(
     }
     match name {
         "classify_domain" => classify_domain(arguments, server, context).await,
-        "list_alerts" => simple_list("list_alerts", server.backend.list_alerts(), context, alerts_json).await,
+        "list_alerts" => {
+            simple_list(
+                "list_alerts",
+                server.backend.list_alerts(),
+                context,
+                alerts_json,
+            )
+            .await
+        }
         "list_filter_lists" => {
-            simple_list("list_filter_lists", server.backend.list_filter_lists(), context, filter_lists_json).await
+            simple_list(
+                "list_filter_lists",
+                server.backend.list_filter_lists(),
+                context,
+                filter_lists_json,
+            )
+            .await
         }
         "list_filter_sets" => {
-            simple_list("list_filter_sets", server.backend.list_filter_sets(), context, filter_sets_json).await
+            simple_list(
+                "list_filter_sets",
+                server.backend.list_filter_sets(),
+                context,
+                filter_sets_json,
+            )
+            .await
         }
         "list_policy_views" => {
-            simple_list("list_policy_views", server.backend.list_policy_views(), context, policy_views_json).await
+            simple_list(
+                "list_policy_views",
+                server.backend.list_policy_views(),
+                context,
+                policy_views_json,
+            )
+            .await
         }
         "list_resolver_upstreams" => {
             simple_list(
@@ -223,11 +249,23 @@ pub(crate) async fn call(
         }
         "list_blocked_services" => list_blocked_services(arguments, server, context).await,
         "list_domain_zones" => {
-            simple_list("list_domain_zones", server.backend.list_domain_zones(), context, zones_json).await
+            simple_list(
+                "list_domain_zones",
+                server.backend.list_domain_zones(),
+                context,
+                zones_json,
+            )
+            .await
         }
         "list_zone_records" => list_zone_records(arguments, server, context).await,
         "list_listeners" => {
-            simple_list("list_listeners", server.backend.list_listeners(), context, listeners_json).await
+            simple_list(
+                "list_listeners",
+                server.backend.list_listeners(),
+                context,
+                listeners_json,
+            )
+            .await
         }
         "list_policy_records" => {
             simple_list(
@@ -371,7 +409,8 @@ struct DomainStatsArgs {
 
 impl DomainStatsArgs {
     fn into_params(self) -> Result<DomainStatsParams, CallToolResult> {
-        let domain = canonicalize(&self.domain).map_err(|_| invalid_input("domain is not valid"))?;
+        let domain =
+            canonicalize(&self.domain).map_err(|_| invalid_input("domain is not valid"))?;
         Ok(DomainStatsParams {
             domain,
             from: self.from,
@@ -385,11 +424,12 @@ async fn get_domain_stats(
     server: &McpServer,
     context: RequestContext<RoleServer>,
 ) -> CallToolResult {
-    let params =
-        match parse_arguments::<DomainStatsArgs>(arguments).and_then(DomainStatsArgs::into_params) {
-            Ok(params) => params,
-            Err(error) => return error,
-        };
+    let params = match parse_arguments::<DomainStatsArgs>(arguments)
+        .and_then(DomainStatsArgs::into_params)
+    {
+        Ok(params) => params,
+        Err(error) => return error,
+    };
     match backend_call(
         "get_domain_stats",
         &context,
@@ -465,7 +505,8 @@ async fn resolve_client(
     server: &McpServer,
     context: RequestContext<RoleServer>,
 ) -> CallToolResult {
-    let params = match parse_arguments::<ResolveArgs>(arguments).and_then(ResolveArgs::into_params) {
+    let params = match parse_arguments::<ResolveArgs>(arguments).and_then(ResolveArgs::into_params)
+    {
         Ok(params) => params,
         Err(error) => return error,
     };
@@ -586,10 +627,9 @@ mod tests {
 
     #[test]
     fn resolve_args_reject_empty_query() {
-        assert!(!validate_arguments(
-            "resolve_client",
-            Some(serde_json::from_value(json!({ "query": "  " })).unwrap())
-        ));
+        let mut args = serde_json::Map::new();
+        args.insert("query".into(), json!("  "));
+        assert!(!validate_arguments("resolve_client", Some(args)));
     }
 
     #[test]

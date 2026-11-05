@@ -38,11 +38,10 @@ impl ZstdEnvelope {
     /// Compresses `plain` at `level` into an envelope.
     pub fn compress(plain: &[u8], level: i32) -> Result<Self, ClusterError> {
         let level = level.clamp(1, 3);
-        let compressed = zstd::bulk::compress(plain, level).map_err(|error| {
-            ClusterError::Internal {
+        let compressed =
+            zstd::bulk::compress(plain, level).map_err(|error| ClusterError::Internal {
                 message: format!("zstd compress: {error}"),
-            }
-        })?;
+            })?;
         if compressed.len() > DEFAULT_MAX_COMPRESSED_BYTES {
             return Err(ClusterError::Compression {
                 reason: "compressed payload exceeds limit".to_owned(),
@@ -71,11 +70,11 @@ impl ZstdEnvelope {
                 reason: format!("unsupported encoding {}", self.encoding),
             });
         }
-        let compressed = B64.decode(self.bytes.as_bytes()).map_err(|error| {
-            ClusterError::Compression {
-                reason: format!("invalid base64: {error}"),
-            }
-        })?;
+        let compressed =
+            B64.decode(self.bytes.as_bytes())
+                .map_err(|error| ClusterError::Compression {
+                    reason: format!("invalid base64: {error}"),
+                })?;
         if compressed.len() > max_compressed {
             return Err(ClusterError::Compression {
                 reason: "compressed payload exceeds limit".to_owned(),
@@ -138,11 +137,10 @@ pub fn maybe_decompress_body(body: &[u8]) -> Result<Vec<u8>, ClusterError> {
     if !looks_like_zstd_envelope(body) {
         return Ok(body.to_vec());
     }
-    let envelope: ZstdEnvelope = serde_json::from_slice(body).map_err(|error| {
-        ClusterError::Compression {
+    let envelope: ZstdEnvelope =
+        serde_json::from_slice(body).map_err(|error| ClusterError::Compression {
             reason: format!("invalid zstd envelope: {error}"),
-        }
-    })?;
+        })?;
     envelope.decompress()
 }
 

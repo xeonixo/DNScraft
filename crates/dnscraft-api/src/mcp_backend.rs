@@ -25,16 +25,16 @@ use dnscraft_mcp::dto::{
     McpRuleInfo, NodeStatus, PauseDuration, PauseInfo, PauseParams, PauseResult, PolicyViewSummary,
     QType, QueryClient, QueryDetail, QueryLogEntry, QueryLogFilter as McpQueryLogFilter,
     QueryLogResult, QueryLogSearch, QueryName, QueryTimings, RemoveRuleParams, RemoveRuleResult,
-    ResolveClientParams, ResumeResult, Selection, SetBlockedServiceParams, SetBlockedServiceResult,
-    StatsParams, StatsPeriod, StatsResult, StatsTimeseriesParams, SynthesizedAnswer,
-    TempAllowInfo, TempAllowParams, TempAllowResult, TestQueryFilter, TestQueryResult, TlsStatus,
-    TokenInfo, TokenScope, UpstreamStatusItem, ZoneRecord, ZoneRecordWriteParams,
-    ZoneRecordWriteResult, ResolverStatus,
+    ResolveClientParams, ResolverStatus, ResumeResult, Selection, SetBlockedServiceParams,
+    SetBlockedServiceResult, StatsParams, StatsPeriod, StatsResult, StatsTimeseriesParams,
+    SynthesizedAnswer, TempAllowInfo, TempAllowParams, TempAllowResult, TestQueryFilter,
+    TestQueryResult, TlsStatus, TokenInfo, TokenScope, UpstreamStatusItem, ZoneRecord,
+    ZoneRecordWriteParams, ZoneRecordWriteResult,
 };
 use dnscraft_mcp::tracker_kind::tracker_kind;
 use dnscraft_policy::RequestContext;
-use dnscraft_resolver::{FlushScope, PrimingStatus, Resolver, UpstreamState};
 use dnscraft_proto::Name;
+use dnscraft_resolver::{FlushScope, PrimingStatus, Resolver, UpstreamState};
 use serde_json::{Value, json};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -43,7 +43,6 @@ use crate::api::auth::roles::Scope;
 use crate::api::clients_routes::{ClientDirectory, DirectoryClient};
 use crate::api::config_routes::array;
 use crate::api::filter_routes::ServiceCatalogProvider;
-use crate::tls::TlsAdmin;
 use crate::api::query_log_routes::parse_timestamp;
 use crate::audit::Audit;
 use crate::config_apply::{ConfigActor, ConfigService, MutationAudit};
@@ -51,6 +50,7 @@ use crate::error::ControlApiError;
 use crate::query_log::{Order, OrderBy, QueryLog, QueryLogFilter};
 use crate::server::AppState;
 use crate::stats::{StatsScope, TopBy};
+use crate::tls::TlsAdmin;
 use crate::tls::TlsStatusProvider;
 use dnscraft_common::clock::Clock;
 
@@ -210,9 +210,13 @@ impl ControlMcpBackend {
         params: ZoneRecordWriteParams,
         update: bool,
     ) -> Result<ZoneRecordWriteResult, BackendError> {
-        let admin = self.inner.tls_admin.as_ref().ok_or(BackendError::Internal {
-            message: "domain zones not configured".into(),
-        })?;
+        let admin = self
+            .inner
+            .tls_admin
+            .as_ref()
+            .ok_or(BackendError::Internal {
+                message: "domain zones not configured".into(),
+            })?;
         let body = json!({
             "name": params.name,
             "type": params.r#type,
@@ -228,9 +232,7 @@ impl ControlMcpBackend {
                 .update_domain_zone_record(&params.zone_id, record_id, body)
                 .await
         } else {
-            admin
-                .create_domain_zone_record(&params.zone_id, body)
-                .await
+            admin.create_domain_zone_record(&params.zone_id, body).await
         }
         .map_err(|err| BackendError::Internal {
             message: err.to_string(),
@@ -2022,9 +2024,8 @@ impl McpBackend for ControlMcpBackend {
             }
             None => None,
         };
-        let set =
-            resolve_set_for_write(snapshot.as_ref(), params.filter_set_id.as_deref())
-                .map_err(backend_error)?;
+        let set = resolve_set_for_write(snapshot.as_ref(), params.filter_set_id.as_deref())
+            .map_err(backend_error)?;
         let protected = self.protected(snapshot.as_ref())?;
         reject_protected(&protected, domain.as_str(), params.include_subdomains)
             .map_err(backend_error)?;
@@ -2575,9 +2576,7 @@ impl McpBackend for ControlMcpBackend {
                         let on = set
                             .get("services")
                             .and_then(Value::as_array)
-                            .is_some_and(|list| {
-                                list.iter().any(|s| s.as_str() == Some(&*info.id))
-                            });
+                            .is_some_and(|list| list.iter().any(|s| s.as_str() == Some(&*info.id)));
                         Some((id.to_owned(), Value::Bool(on)))
                     })
                     .collect();
@@ -2595,14 +2594,20 @@ impl McpBackend for ControlMcpBackend {
     }
 
     async fn list_domain_zones(&self) -> Result<ListDomainZonesResult, BackendError> {
-        let admin = self.inner.tls_admin.as_ref().ok_or(BackendError::Internal {
-            message: "domain zones not configured".into(),
-        })?;
-        let attached = admin.attached_domain_zones().await.map_err(|err| {
-            BackendError::Internal {
-                message: err.to_string(),
-            }
-        })?;
+        let admin = self
+            .inner
+            .tls_admin
+            .as_ref()
+            .ok_or(BackendError::Internal {
+                message: "domain zones not configured".into(),
+            })?;
+        let attached =
+            admin
+                .attached_domain_zones()
+                .await
+                .map_err(|err| BackendError::Internal {
+                    message: err.to_string(),
+                })?;
         let zones = attached
             .get("zones")
             .and_then(Value::as_array)
@@ -2610,10 +2615,7 @@ impl McpBackend for ControlMcpBackend {
                 rows.iter()
                     .filter_map(|zone| {
                         let name = zone.get("name")?.as_str()?;
-                        let id = zone
-                            .get("id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or(name);
+                        let id = zone.get("id").and_then(|v| v.as_str()).unwrap_or(name);
                         Some(DomainZoneSummary {
                             id: id.to_owned(),
                             name: name.to_owned(),
@@ -2625,10 +2627,17 @@ impl McpBackend for ControlMcpBackend {
         Ok(ListDomainZonesResult { zones })
     }
 
-    async fn list_zone_records(&self, zone_id: &str) -> Result<ListZoneRecordsResult, BackendError> {
-        let admin = self.inner.tls_admin.as_ref().ok_or(BackendError::Internal {
-            message: "domain zones not configured".into(),
-        })?;
+    async fn list_zone_records(
+        &self,
+        zone_id: &str,
+    ) -> Result<ListZoneRecordsResult, BackendError> {
+        let admin = self
+            .inner
+            .tls_admin
+            .as_ref()
+            .ok_or(BackendError::Internal {
+                message: "domain zones not configured".into(),
+            })?;
         let page = admin
             .domain_zone_records(zone_id, 1, 100, None)
             .await
@@ -2718,10 +2727,7 @@ impl McpBackend for ControlMcpBackend {
             })
             .await
             .map_err(backend_error)?;
-        let record = stored
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
+        let record = stored.lock().unwrap_or_else(|e| e.into_inner()).clone();
         Ok(dnscraft_mcp::dto::UpsertPolicyRecordResult {
             version: version.unwrap_or(0) as u64,
             record,
@@ -2870,7 +2876,10 @@ impl McpBackend for ControlMcpBackend {
         })
     }
 
-    async fn flush_cache(&self, params: FlushCacheParams) -> Result<FlushCacheResult, BackendError> {
+    async fn flush_cache(
+        &self,
+        params: FlushCacheParams,
+    ) -> Result<FlushCacheResult, BackendError> {
         let resolver = self.inner.resolver.as_ref().ok_or(BackendError::Internal {
             message: "resolver not configured".into(),
         })?;
@@ -2883,14 +2892,12 @@ impl McpBackend for ControlMcpBackend {
                         json!({ "domain": raw }),
                     ))
                 })?;
-                FlushScope::Domain(
-                    Name::from_ascii(domain.as_str()).map_err(|_| {
-                        backend_error(mcp_error(
-                            "control_api.resolver.flush.invalid_domain",
-                            json!({ "domain": raw }),
-                        ))
-                    })?,
-                )
+                FlushScope::Domain(Name::from_ascii(domain.as_str()).map_err(|_| {
+                    backend_error(mcp_error(
+                        "control_api.resolver.flush.invalid_domain",
+                        json!({ "domain": raw }),
+                    ))
+                })?)
             }
         };
         let _report = resolver.flush(scope);
@@ -2920,7 +2927,10 @@ impl McpBackend for ControlMcpBackend {
                 let list = set
                     .as_object_mut()
                     .ok_or_else(|| {
-                        mcp_error("filtering.config.invalid", json!({ "reason": "set not object" }))
+                        mcp_error(
+                            "filtering.config.invalid",
+                            json!({ "reason": "set not object" }),
+                        )
                     })?
                     .entry("services")
                     .or_insert_with(|| json!([]));
@@ -2964,9 +2974,13 @@ impl McpBackend for ControlMcpBackend {
         &self,
         params: DeleteZoneRecordParams,
     ) -> Result<DeleteZoneRecordResult, BackendError> {
-        let admin = self.inner.tls_admin.as_ref().ok_or(BackendError::Internal {
-            message: "domain zones not configured".into(),
-        })?;
+        let admin = self
+            .inner
+            .tls_admin
+            .as_ref()
+            .ok_or(BackendError::Internal {
+                message: "domain zones not configured".into(),
+            })?;
         admin
             .delete_domain_zone_record(&params.zone_id, &params.record_id)
             .await

@@ -140,9 +140,9 @@ pub const DEFAULT_CONNECT_PATH_PREFIXES: &[&str] = &["/api/v1/status", "/api/v1/
 /// Returns true when `path` is under an allowlisted prefix (GET-only policy).
 pub fn connect_path_allowed(path: &str, prefixes: &[String]) -> bool {
     let path = path.split('?').next().unwrap_or(path);
-    prefixes.iter().any(|prefix| {
-        path == prefix.as_str() || path.starts_with(&format!("{prefix}/"))
-    })
+    prefixes
+        .iter()
+        .any(|prefix| path == prefix.as_str() || path.starts_with(&format!("{prefix}/")))
 }
 
 /// Returns true when `authority` (host or `host:port`) resolves to loopback.
@@ -283,7 +283,10 @@ mod tests {
 
     #[test]
     fn method_gate() {
-        let allow: Vec<String> = DEFAULT_RPC_METHODS.iter().map(|s| (*s).to_owned()).collect();
+        let allow: Vec<String> = DEFAULT_RPC_METHODS
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
         assert!(ensure_method(RPC_NODE_STATUS, &allow).is_ok());
         assert_eq!(
             ensure_method("shell.exec", &allow).unwrap_err().code(),

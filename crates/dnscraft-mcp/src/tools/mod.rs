@@ -23,8 +23,8 @@ use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, GetPromptRequestParams,
     GetPromptResponse, Implementation, JsonObject, ListPromptsResult, ListResourcesResult,
     ListToolsResult, PaginatedRequestParams, Prompt, PromptMessage, ProtocolVersion,
-    ReadResourceRequestParams, ReadResourceResponse, Resource, ResourceContents, ResultType,
-    Role, ServerCapabilities, ServerConfig, Tool,
+    ReadResourceRequestParams, ReadResourceResponse, Resource, ResourceContents, ResultType, Role,
+    ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler, tool_handler};
@@ -121,7 +121,9 @@ pub fn parse_mcp_tool_input(tool: &str, json: &[u8]) -> Result<(), McpError> {
     let valid = match tool {
         "get_status" => true,
         name if read::is_read_tool(name) => read::validate_arguments(name, Some(arguments)),
-        name if v2_read::is_v2_read_tool(name) => v2_read::validate_arguments(name, Some(arguments)),
+        name if v2_read::is_v2_read_tool(name) => {
+            v2_read::validate_arguments(name, Some(arguments))
+        }
         name if write::is_write_tool(name) => write::validate_arguments(name, Some(arguments)),
         name if v2_write::is_v2_write_tool(name) => {
             v2_write::validate_arguments(name, Some(arguments))
@@ -229,7 +231,10 @@ impl ServerHandler for McpServer {
                 .build(),
         )
         .with_instructions(INSTRUCTIONS_TEXT)
-        .with_server_info(Implementation::new("dnscraft-mcp", env!("CARGO_PKG_VERSION")))
+        .with_server_info(Implementation::new(
+            "dnscraft-mcp",
+            env!("CARGO_PKG_VERSION"),
+        ))
     }
 
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
@@ -316,17 +321,23 @@ impl ServerHandler for McpServer {
             prompts: vec![
                 Prompt::from_raw(
                     "diagnose_block",
-                    Some("Workflow: resolve the client, explain_block or test_query, then summarize for the user. Ask when inputs are missing."),
+                    Some(
+                        "Workflow: resolve the client, explain_block or test_query, then summarize for the user. Ask when inputs are missing.",
+                    ),
                     None,
                 ),
                 Prompt::from_raw(
                     "network_health_check",
-                    Some("Workflow: get_status, list_alerts, list_resolver_upstreams. Report issues without guessing."),
+                    Some(
+                        "Workflow: get_status, list_alerts, list_resolver_upstreams. Report issues without guessing.",
+                    ),
                     None,
                 ),
                 Prompt::from_raw(
                     "temporary_access",
-                    Some("Workflow: classify_domain first; if tracking, get explicit user consent before allow_temporarily with acknowledge_tracking."),
+                    Some(
+                        "Workflow: classify_domain first; if tracking, get explicit user consent before allow_temporarily with acknowledge_tracking.",
+                    ),
                     None,
                 ),
             ],
@@ -343,9 +354,15 @@ impl ServerHandler for McpServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<GetPromptResponse, rmcp::ErrorData> {
         let text = match request.name.as_str() {
-            "diagnose_block" => "Use resolve_client, explain_block, and test_query. Ask for domain and device when unknown.",
-            "network_health_check" => "Use get_status, list_alerts, and list_resolver_upstreams. Do not invent health data.",
-            "temporary_access" => "Use classify_domain before allow_temporarily. Tracking domains require acknowledge_tracking after the user explicitly agrees.",
+            "diagnose_block" => {
+                "Use resolve_client, explain_block, and test_query. Ask for domain and device when unknown."
+            }
+            "network_health_check" => {
+                "Use get_status, list_alerts, and list_resolver_upstreams. Do not invent health data."
+            }
+            "temporary_access" => {
+                "Use classify_domain before allow_temporarily. Tracking domains require acknowledge_tracking after the user explicitly agrees."
+            }
             other => {
                 return Err(rmcp::ErrorData::invalid_params(
                     "unknown prompt",
@@ -354,11 +371,8 @@ impl ServerHandler for McpServer {
             }
         };
         Ok(GetPromptResponse::Complete(
-            rmcp::model::GetPromptResult::new(vec![PromptMessage::new_text(
-                Role::Assistant,
-                text,
-            )])
-            .with_description(text),
+            rmcp::model::GetPromptResult::new(vec![PromptMessage::new_text(Role::Assistant, text)])
+                .with_description(text),
         ))
     }
 

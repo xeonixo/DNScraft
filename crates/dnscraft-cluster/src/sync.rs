@@ -564,11 +564,7 @@ impl ConfigSync {
             .any(|cap| cap == CAP_TRANSPORT_QUIC)
         {
             Some("quic")
-        } else if node
-            .capabilities
-            .iter()
-            .any(|cap| cap == CAP_TRANSPORT_H2)
-        {
+        } else if node.capabilities.iter().any(|cap| cap == CAP_TRANSPORT_H2) {
             Some("h2")
         } else {
             None

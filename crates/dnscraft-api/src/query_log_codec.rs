@@ -323,11 +323,7 @@ pub(crate) fn split_record(mut record: Json, status: StatusCode) -> (Json, Optio
 
 /// Rebuilds the public wire document from denormalised columns + slim JSON
 /// (+ optional detail).
-pub(crate) fn hydrate_wire(
-    slim: Json,
-    detail: Option<Json>,
-    cols: &WireColumns<'_>,
-) -> Json {
+pub(crate) fn hydrate_wire(slim: Json, detail: Option<Json>, cols: &WireColumns<'_>) -> Json {
     let mut record = match slim {
         Json::Object(map) => map,
         other => {
@@ -376,7 +372,9 @@ pub(crate) fn hydrate_wire(
     }
     // Rows without detail drop these keys; the wire contract (and the UI) expects them present.
     record.entry("steps").or_insert_with(|| json!([]));
-    record.entry("selection").or_insert_with(|| json!({ "cause": "default" }));
+    record
+        .entry("selection")
+        .or_insert_with(|| json!({ "cause": "default" }));
     record.entry("filter").or_insert(Json::Null);
     Json::Object(record)
 }
@@ -435,9 +433,7 @@ pub(crate) fn read_answer_source(value: rusqlite::types::ValueRef<'_>) -> Answer
 pub(crate) fn read_rcode(value: rusqlite::types::ValueRef<'_>) -> i64 {
     match value {
         rusqlite::types::ValueRef::Integer(v) => v,
-        rusqlite::types::ValueRef::Text(bytes) => {
-            rcode_from_str(&String::from_utf8_lossy(bytes))
-        }
+        rusqlite::types::ValueRef::Text(bytes) => rcode_from_str(&String::from_utf8_lossy(bytes)),
         _ => -1,
     }
 }
@@ -455,9 +451,11 @@ pub(crate) fn read_query_type(value: rusqlite::types::ValueRef<'_>) -> i64 {
 pub(crate) fn read_query_class(value: rusqlite::types::ValueRef<'_>) -> i64 {
     match value {
         rusqlite::types::ValueRef::Integer(v) => v,
-        rusqlite::types::ValueRef::Text(bytes) => parse_query_class(&String::from_utf8_lossy(bytes))
-            .map(i64::from)
-            .unwrap_or(1),
+        rusqlite::types::ValueRef::Text(bytes) => {
+            parse_query_class(&String::from_utf8_lossy(bytes))
+                .map(i64::from)
+                .unwrap_or(1)
+        }
         _ => 1,
     }
 }

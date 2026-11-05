@@ -574,7 +574,7 @@ fn build_colocated_acceptor(
         alpn = vec![ALPN_H2, ALPN_HTTP_1_1];
     }
     // Ensure cluster HTTP/2 ALPN is present even if the DoH policy omits it.
-    if !alpn.iter().any(|proto| *proto == ALPN_H2) {
+    if !alpn.contains(&ALPN_H2) {
         alpn.insert(0, ALPN_H2);
     }
     let config = colocated_tcp_server_config(mux, &attachment.ca_cert_pem, &alpn)?;

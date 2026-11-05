@@ -212,7 +212,7 @@ async fn list_nodes_returns_joined_nodes_with_role() {
             "local": false,
             "connected": false,
             "remote_addr": Value::Null,
-            "transport": "mtls",
+            "transport": "none",
             "display_name": Value::Null,
             "hostname": Value::Null,
         })

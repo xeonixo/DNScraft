@@ -7,7 +7,7 @@
 //! `EnrollRequest` carries the one-time token in a [`Secret`], so the decoded
 //! value is never logged here.
 
-use dnscraft_cluster::{ClusterError, EnrollRequest, PROTOCOL_VERSION};
+use dnscraft_cluster::{ClusterError, EnrollRequest, protocol_supported};
 use libfuzzer_sys::fuzz_target;
 
 fn check_code(error: &ClusterError) {
@@ -27,7 +27,7 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
     match request.check_protocol() {
-        Ok(()) => assert_eq!(request.protocol, PROTOCOL_VERSION),
+        Ok(()) => assert!(protocol_supported(request.protocol)),
         Err(error) => check_code(&error),
     }
 });

@@ -68,9 +68,11 @@ fn non_empty(value: Option<String>) -> Option<String> {
 const RPC_DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn data_dir(state: &AppState) -> Result<&std::path::Path, ControlApiError> {
-    state.cluster_data_dir().ok_or_else(|| ControlApiError::NotFound {
-        what: "cluster".to_owned(),
-    })
+    state
+        .cluster_data_dir()
+        .ok_or_else(|| ControlApiError::NotFound {
+            what: "cluster".to_owned(),
+        })
 }
 
 fn clustered(state: &AppState) -> Result<(), ControlApiError> {
@@ -94,17 +96,9 @@ fn live_transport_status(state: &AppState, settings: &ClusterSettings) -> Cluste
             },
         )
     } else if state.cluster_store().is_some() {
-        (
-            ActiveTransport::H2,
-            None,
-            Some(PROTOCOL_VERSION),
-        )
+        (ActiveTransport::H2, None, Some(PROTOCOL_VERSION))
     } else {
-        (
-            ActiveTransport::None,
-            None,
-            None,
-        )
+        (ActiveTransport::None, None, None)
     };
     settings.clone().with_status(active, fallback, protocol)
 }
@@ -375,16 +369,13 @@ pub(crate) async fn invoke_node_rpc(
         });
     }
     let body = json_body(body, "cluster.role.invalid")?;
-    let broadcast = state.cluster_broadcast().ok_or_else(|| ControlApiError::NotFound {
-        what: "cluster".to_owned(),
-    })?;
+    let broadcast = state
+        .cluster_broadcast()
+        .ok_or_else(|| ControlApiError::NotFound {
+            what: "cluster".to_owned(),
+        })?;
     let response = broadcast
-        .invoke_rpc(
-            &node_id,
-            &body.method,
-            body.params,
-            RPC_DEFAULT_TIMEOUT,
-        )
+        .invoke_rpc(&node_id, &body.method, body.params, RPC_DEFAULT_TIMEOUT)
         .await?;
     if let Some(error) = response.error {
         return Err(ControlApiError::Module {

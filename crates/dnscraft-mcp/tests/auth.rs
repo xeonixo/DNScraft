@@ -325,7 +325,7 @@ async fn write_gate_controls_listing_and_calls() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(listed.len(), 34);
+    assert_eq!(listed.len(), 36);
     for name in read_names.into_iter().chain(write_names) {
         assert!(listed.contains(&name), "{name} missing from {listed:?}");
     }

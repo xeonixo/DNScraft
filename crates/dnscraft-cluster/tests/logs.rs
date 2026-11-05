@@ -263,7 +263,7 @@ async fn start_master(name: &str, ingest: Arc<dyn LogIngest>) -> Master {
             listen: ListenConfig {
                 bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
                 port: 0,
-            share_with_listener: None,
+                share_with_listener: None,
             },
             server_name: "127.0.0.1".to_owned(),
             node_cert_ttl: NODE_CERT_TTL,

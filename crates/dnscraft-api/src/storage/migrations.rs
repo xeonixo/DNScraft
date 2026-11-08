@@ -305,6 +305,12 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     // v13: move the bulky `record` JSON out of the hot `query_log` table into
     // `query_log_record`, so scans over query_name/time/status touch narrow pages.
     // The table is rebuilt (not DROP COLUMN) so its pages end up compact.
+    // Perf: rows are copied in rowid order and the (node_id, id) uniqueness is
+    // enforced by the unique index built afterwards (sorted build). A PRIMARY KEY
+    // on random UUIDs filled in insertion order thrashes the page cache for hours.
+    // NOT INDEXED + the `|| ''` sort keys force a sequential table scan and an
+    // external sort: walking an index in key order does one random read per row,
+    // which is hours on a rotating disk (a 1.5M-row table on a 5400 rpm HDD).
     "CREATE TABLE query_log_record (
         node_id TEXT NOT NULL,
         id      TEXT NOT NULL,
@@ -312,7 +318,8 @@ pub(crate) const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (node_id, id)
     ) WITHOUT ROWID;
     INSERT INTO query_log_record (node_id, id, record)
-        SELECT node_id, id, record FROM query_log WHERE record <> '{}';
+        SELECT node_id, id, record FROM query_log NOT INDEXED WHERE record <> '{}'
+        ORDER BY node_id || '', id || '';
     CREATE TABLE query_log_v13 (
         id         TEXT NOT NULL,
         time       INTEGER NOT NULL,
@@ -333,8 +340,7 @@ pub(crate) const MIGRATIONS: &[&str] = &[
         rcode INTEGER NOT NULL DEFAULT 0,
         seq INTEGER,
         device_id TEXT,
-        cached INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (node_id, id)
+        cached INTEGER NOT NULL DEFAULT 0
     );
     INSERT INTO query_log_v13 (
         id, time, node_id, source_ip, query_name, listener_id, protocol,
@@ -345,7 +351,7 @@ pub(crate) const MIGRATIONS: &[&str] = &[
         id, time, node_id, source_ip, query_name, listener_id, protocol,
         source_ip_truncated, client_id, client_name, query_type, query_class,
         view_id, profile_id, status, answer_source, rcode, seq, device_id, cached
-    FROM query_log ORDER BY time;
+    FROM query_log NOT INDEXED;
     DROP TABLE query_log;
     ALTER TABLE query_log_v13 RENAME TO query_log;
     CREATE INDEX query_log_time_idx ON query_log(time);
@@ -359,6 +365,15 @@ pub(crate) const MIGRATIONS: &[&str] = &[
 
 /// Applies every migration newer than the recorded version, then records it.
 pub(crate) fn migrate(conn: &mut Connection) -> Result<(), ControlApiError> {
+    // Large rebuilds (v13) are page-cache bound; the default 2 MB cache makes them crawl.
+    conn.pragma_update(None, "cache_size", -262_144).map_err(db_err)?;
+    let result = migrate_inner(conn);
+    // Restore the default so steady-state memory use is unchanged.
+    let _ = conn.pragma_update(None, "cache_size", -2_000);
+    result
+}
+
+fn migrate_inner(conn: &mut Connection) -> Result<(), ControlApiError> {
     let tx = conn.transaction().map_err(db_err)?;
     let current: i64 = tx
         .query_row("PRAGMA user_version", [], |row| row.get(0))

@@ -683,7 +683,11 @@ impl QueryLog {
 
         let (conditions, mut values) = filter_clause(filter);
         let total = {
-            let sql = format!("SELECT COUNT(*) FROM query_log WHERE 1 = 1{conditions}");
+            // ponytail: total is capped at TOTAL_CAP so a rare substring search stops
+            // early instead of counting the whole table; exact counts need an index.
+            let sql = format!(
+                "SELECT COUNT(*) FROM (SELECT 1 FROM query_log WHERE 1 = 1{conditions} LIMIT {TOTAL_CAP})"
+            );
             let values = values.clone();
             self.db
                 .with_read_conn(move |conn| {
@@ -1428,6 +1432,9 @@ fn prepare_remote_row(
     }
     device_id
 }
+
+/// Upper bound for [`QueryLogPage::total`]; a value equal to it means "at least".
+const TOTAL_CAP: i64 = 10_000;
 
 /// Builds the shared `WHERE` conditions for a [`QueryLogFilter`].
 ///

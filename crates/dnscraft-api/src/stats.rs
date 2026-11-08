@@ -902,11 +902,13 @@ async fn filter_hits(
         .with_read_conn(move |conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT json_extract(record, '$.filter.rule_text') AS rule, COUNT(*) AS hits
+                    "SELECT json_extract(r.record, '$.filter.rule_text') AS rule, COUNT(*) AS hits
                      FROM query_log
+                     LEFT JOIN query_log_record r
+                       ON r.node_id = query_log.node_id AND r.id = query_log.id
                      WHERE time >= ?1 AND time <= ?2
-                       AND json_extract(record, '$.filter.rule_text') IS NOT NULL
-                       AND (?3 IS NULL OR node_id = ?3)
+                       AND json_extract(r.record, '$.filter.rule_text') IS NOT NULL
+                       AND (?3 IS NULL OR query_log.node_id = ?3)
                        AND (?4 IS NULL OR profile_id = ?4)
                      GROUP BY rule
                      ORDER BY hits DESC, rule ASC
@@ -975,11 +977,13 @@ async fn raw_counts(
         let mut stmt = conn
             .prepare(
                 "SELECT protocol, view_id, profile_id, answer_source, rcode, status,
-                        json_extract(record, '$.dnssec', '$.filter.list_id', '$.filter.reason'),
+                        json_extract(r.record, '$.dnssec', '$.filter.list_id', '$.filter.reason'),
                         COUNT(*)
                  FROM query_log
+                 LEFT JOIN query_log_record r
+                   ON r.node_id = query_log.node_id AND r.id = query_log.id
                  WHERE time >= ?1 AND time <= ?2
-                   AND (?3 IS NULL OR node_id = ?3)
+                   AND (?3 IS NULL OR query_log.node_id = ?3)
                    AND (?4 IS NULL OR profile_id = ?4)
                  GROUP BY 1, 2, 3, 4, 5, 6, 7",
             )
@@ -1596,12 +1600,14 @@ async fn response_time_ms(
         .with_read_conn(move |conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT json_extract(record, '$.timings.total_us')
+                    "SELECT json_extract(r.record, '$.timings.total_us')
                      FROM query_log
+                     LEFT JOIN query_log_record r
+                       ON r.node_id = query_log.node_id AND r.id = query_log.id
                      WHERE time >= ?1 AND time <= ?2
-                       AND (?3 IS NULL OR node_id = ?3)
+                       AND (?3 IS NULL OR query_log.node_id = ?3)
                        AND (?4 IS NULL OR profile_id = ?4)
-                       AND json_extract(record, '$.timings.total_us') IS NOT NULL
+                       AND json_extract(r.record, '$.timings.total_us') IS NOT NULL
                      ORDER BY 1",
                 )
                 .map_err(db_err)?;
@@ -1731,7 +1737,11 @@ impl QueryLog {
 
             let last_decision = conn
                 .query_row(
-                    "SELECT id, time, status, record FROM query_log
+                    "SELECT id, time, status,
+                            COALESCE((SELECT r.record FROM query_log_record r
+                                      WHERE r.node_id = query_log.node_id
+                                        AND r.id = query_log.id), '{}')
+                     FROM query_log
                      WHERE query_name = ?1 ORDER BY time DESC, id DESC LIMIT 1",
                     params![name],
                     |row| {

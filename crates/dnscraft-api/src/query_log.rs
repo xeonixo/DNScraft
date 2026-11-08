@@ -50,7 +50,9 @@ use crate::storage::{Db, db_err, kv_get, kv_set};
 /// Columns selected when hydrating a stored row into the wire document.
 const HYDRATE_COLS: &str = "id, node_id, listener_id, protocol, source_ip, source_ip_truncated,
     client_id, device_id, query_name, query_type, query_class, view_id, profile_id,
-    status, answer_source, rcode, record";
+    status, answer_source, rcode,
+    COALESCE((SELECT r.record FROM query_log_record r
+              WHERE r.node_id = query_log.node_id AND r.id = query_log.id), '{}')";
 
 /// Maps one `HYDRATE_COLS` (+ optional detail) row into the public wire JSON.
 fn hydrate_from_row(
@@ -570,6 +572,14 @@ impl QueryLog {
                     params![cutoff],
                 )
                 .map_err(db_err)?;
+                tx.execute(
+                    "DELETE FROM query_log_record
+                     WHERE (node_id, id) IN (
+                         SELECT node_id, id FROM query_log WHERE time < ?1
+                     )",
+                    params![cutoff],
+                )
+                .map_err(db_err)?;
                 tx.execute("DELETE FROM query_log WHERE time < ?1", params![cutoff])
                     .map_err(db_err)?;
                 // The per-node `seq` is allocated in this same transaction: a
@@ -584,11 +594,17 @@ impl QueryLog {
                              id, time, node_id, source_ip, query_name, listener_id,
                              protocol, source_ip_truncated, client_id, client_name,
                              query_type, query_class, view_id, profile_id, status,
-                             answer_source, rcode, record, seq, device_id, cached
+                             answer_source, rcode, seq, device_id, cached
                          ) VALUES (
                              ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21
+                             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20
                          )",
+                        )
+                        .map_err(db_err)?;
+                    let mut record_stmt = tx
+                        .prepare(
+                            "INSERT INTO query_log_record (node_id, id, record)
+                             VALUES (?1, ?2, ?3)",
                         )
                         .map_err(db_err)?;
                     let mut detail_stmt = tx
@@ -618,12 +634,14 @@ impl QueryLog {
                             row.status,
                             row.answer_source,
                             row.rcode,
-                            row.record,
                             seq,
                             row.device_id,
                             row.cached,
                         ])
                         .map_err(db_err)?;
+                        record_stmt
+                            .execute(params![row.node_id, row.id, row.record])
+                            .map_err(db_err)?;
                         if let Some(detail) = &row.detail {
                             detail_stmt
                                 .execute(params![row.node_id, row.id, detail])
@@ -662,6 +680,14 @@ impl QueryLog {
             .with_conn(move |conn| {
                 conn.execute(
                     "DELETE FROM query_log_detail
+                     WHERE (node_id, id) IN (
+                         SELECT node_id, id FROM query_log WHERE time < ?1
+                     )",
+                    params![cutoff],
+                )
+                .map_err(db_err)?;
+                conn.execute(
+                    "DELETE FROM query_log_record
                      WHERE (node_id, id) IN (
                          SELECT node_id, id FROM query_log WHERE time < ?1
                      )",
@@ -881,7 +907,10 @@ impl QueryLog {
                         "SELECT q.seq, q.id, q.time, q.source_ip, q.query_name, q.listener_id,
                                 q.protocol, q.source_ip_truncated, q.client_id, q.client_name,
                                 q.query_type, q.query_class, q.view_id, q.profile_id, q.status,
-                                q.answer_source, q.rcode, q.record, d.detail
+                                q.answer_source, q.rcode,
+                                COALESCE((SELECT r.record FROM query_log_record r
+                                          WHERE r.node_id = q.node_id AND r.id = q.id), '{}'),
+                                d.detail
                          FROM query_log q
                          LEFT JOIN query_log_detail d
                            ON d.node_id = q.node_id AND d.id = q.id
@@ -1082,10 +1111,10 @@ impl QueryLog {
                              id, time, node_id, source_ip, query_name, listener_id,
                              protocol, source_ip_truncated, client_id, client_name,
                              query_type, query_class, view_id, profile_id, status,
-                             answer_source, rcode, record, seq, device_id, cached
+                             answer_source, rcode, seq, device_id, cached
                          ) VALUES (
                              ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21
+                             ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20
                          ) ON CONFLICT DO NOTHING",
                             params![
                                 row.id,
@@ -1109,7 +1138,6 @@ impl QueryLog {
                                 status.as_i64(),
                                 AnswerSourceCode::from_str(&row.answer_source).as_i64(),
                                 query_log_codec::rcode_from_str(&row.rcode),
-                                slim.to_string(),
                                 seq,
                                 device_id,
                                 i64::from(cached),
@@ -1119,6 +1147,13 @@ impl QueryLog {
                     if inserted == 0 {
                         duplicates = duplicates.saturating_add(1);
                     } else {
+                        tx.execute(
+                            "INSERT INTO query_log_record (node_id, id, record)
+                             VALUES (?1, ?2, ?3)
+                             ON CONFLICT(node_id, id) DO UPDATE SET record = excluded.record",
+                            params![node_for_tx, row.id, slim.to_string()],
+                        )
+                        .map_err(db_err)?;
                         if let Some(detail) = detail {
                             tx.execute(
                                 "INSERT INTO query_log_detail (node_id, id, detail)
@@ -1506,8 +1541,9 @@ fn filter_clause(filter: &QueryLogFilter) -> (String, Vec<Value>) {
             // New rows set `cached`; legacy fat blobs still expose steps in record.
             sql.push_str(
                 " AND (cached = 1 OR EXISTS (
-                     SELECT 1 FROM json_each(query_log.record, '$.steps') AS step
-                     WHERE json_extract(step.value, '$.stage') = 'resolve'
+                     SELECT 1 FROM query_log_record r, json_each(r.record, '$.steps') AS step
+                     WHERE r.node_id = query_log.node_id AND r.id = query_log.id
+                       AND json_extract(step.value, '$.stage') = 'resolve'
                        AND json_extract(step.value, '$.source') = 'cache'
                    ) OR EXISTS (
                      SELECT 1 FROM query_log_detail d, json_each(d.detail, '$.steps') AS step

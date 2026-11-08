@@ -302,6 +302,59 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     // v12: v11 made the primary key (node_id, id), so lookups by `id` alone
     // (live-stream hydration, record detail) lost their index and scanned the table.
     "CREATE INDEX IF NOT EXISTS query_log_id_idx ON query_log(id);",
+    // v13: move the bulky `record` JSON out of the hot `query_log` table into
+    // `query_log_record`, so scans over query_name/time/status touch narrow pages.
+    // The table is rebuilt (not DROP COLUMN) so its pages end up compact.
+    "CREATE TABLE query_log_record (
+        node_id TEXT NOT NULL,
+        id      TEXT NOT NULL,
+        record  TEXT NOT NULL,
+        PRIMARY KEY (node_id, id)
+    ) WITHOUT ROWID;
+    INSERT INTO query_log_record (node_id, id, record)
+        SELECT node_id, id, record FROM query_log WHERE record <> '{}';
+    CREATE TABLE query_log_v13 (
+        id         TEXT NOT NULL,
+        time       INTEGER NOT NULL,
+        node_id    TEXT NOT NULL,
+        source_ip  TEXT NOT NULL,
+        query_name TEXT NOT NULL,
+        listener_id TEXT NOT NULL DEFAULT '',
+        protocol INTEGER NOT NULL DEFAULT 0,
+        source_ip_truncated INTEGER NOT NULL DEFAULT 0,
+        client_id TEXT,
+        client_name TEXT,
+        query_type INTEGER NOT NULL DEFAULT 0,
+        query_class INTEGER NOT NULL DEFAULT 1,
+        view_id TEXT NOT NULL DEFAULT '',
+        profile_id TEXT NOT NULL DEFAULT '',
+        status INTEGER NOT NULL DEFAULT 0,
+        answer_source INTEGER NOT NULL DEFAULT 0,
+        rcode INTEGER NOT NULL DEFAULT 0,
+        seq INTEGER,
+        device_id TEXT,
+        cached INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (node_id, id)
+    );
+    INSERT INTO query_log_v13 (
+        id, time, node_id, source_ip, query_name, listener_id, protocol,
+        source_ip_truncated, client_id, client_name, query_type, query_class,
+        view_id, profile_id, status, answer_source, rcode, seq, device_id, cached
+    )
+    SELECT
+        id, time, node_id, source_ip, query_name, listener_id, protocol,
+        source_ip_truncated, client_id, client_name, query_type, query_class,
+        view_id, profile_id, status, answer_source, rcode, seq, device_id, cached
+    FROM query_log ORDER BY time;
+    DROP TABLE query_log;
+    ALTER TABLE query_log_v13 RENAME TO query_log;
+    CREATE INDEX query_log_time_idx ON query_log(time);
+    CREATE INDEX query_log_client_idx ON query_log(client_id);
+    CREATE INDEX query_log_status_idx ON query_log(status);
+    CREATE UNIQUE INDEX query_log_node_seq_idx ON query_log(node_id, seq);
+    CREATE UNIQUE INDEX query_log_node_id_idx ON query_log(node_id, id);
+    CREATE INDEX query_log_device_idx ON query_log(device_id);
+    CREATE INDEX query_log_id_idx ON query_log(id);",
 ];
 
 /// Applies every migration newer than the recorded version, then records it.
@@ -337,7 +390,7 @@ mod tests {
     fn device_id_migration_adds_column_and_index() {
         let mut conn = Connection::open_in_memory().unwrap();
         migrate(&mut conn).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 12);
+        assert_eq!(schema_version(&conn).unwrap(), 13);
 
         let columns: Vec<String> = conn
             .prepare("PRAGMA table_info(query_log)")
@@ -374,7 +427,7 @@ mod tests {
     fn audit_log_rejects_update_and_delete_after_v2() {
         let mut conn = Connection::open_in_memory().unwrap();
         migrate(&mut conn).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 12);
+        assert_eq!(schema_version(&conn).unwrap(), 13);
 
         conn.execute(
             "INSERT INTO audit_log (

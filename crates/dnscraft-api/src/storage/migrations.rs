@@ -361,6 +361,8 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     CREATE UNIQUE INDEX query_log_node_id_idx ON query_log(node_id, id);
     CREATE INDEX query_log_device_idx ON query_log(device_id);
     CREATE INDEX query_log_id_idx ON query_log(id);",
+    // v14: exact-domain lookups and the distinct-name skip-scan behind substring search.
+    "CREATE INDEX IF NOT EXISTS query_log_name_time_idx ON query_log(query_name, time);",
 ];
 
 /// Applies every migration newer than the recorded version, then records it.
@@ -405,7 +407,7 @@ mod tests {
     fn device_id_migration_adds_column_and_index() {
         let mut conn = Connection::open_in_memory().unwrap();
         migrate(&mut conn).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 13);
+        assert_eq!(schema_version(&conn).unwrap(), 14);
 
         let columns: Vec<String> = conn
             .prepare("PRAGMA table_info(query_log)")
@@ -442,7 +444,7 @@ mod tests {
     fn audit_log_rejects_update_and_delete_after_v2() {
         let mut conn = Connection::open_in_memory().unwrap();
         migrate(&mut conn).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 13);
+        assert_eq!(schema_version(&conn).unwrap(), 14);
 
         conn.execute(
             "INSERT INTO audit_log (

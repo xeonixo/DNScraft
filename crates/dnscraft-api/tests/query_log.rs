@@ -227,6 +227,21 @@ async fn query_log_filters_order_and_pagination_over_ten_thousand_rows() {
     }
     assert_eq!(seen.len(), 20);
 
+    // Substring domain filter (case-insensitive, LIKE wildcards are literals):
+    // "ost7.example" matches only host7, 100 events; "%" and unknown names match none.
+    for (needle, expect) in [("OST7.EXAMPLE", 100), ("nomatch", 0), ("%", 0)] {
+        let page = log
+            .list(&QueryLogFilter {
+                domain_substr: Some(needle.to_owned()),
+                limit: 500,
+                ..default_filter()
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.total, expect, "substring {needle}");
+        assert_eq!(page.records.len() as i64, expect, "substring {needle}");
+    }
+
     // Exact domain filter: 100 events share each host name.
     let page = log
         .list(&QueryLogFilter {

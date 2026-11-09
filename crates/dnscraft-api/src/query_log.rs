@@ -1512,7 +1512,20 @@ fn filter_clause(filter: &QueryLogFilter) -> (String, Vec<Value>) {
         values.push(Value::Text(normalize_name(domain)));
     }
     if let Some(needle) = &filter.domain_substr {
-        sql.push_str(" AND query_name LIKE ? ESCAPE '\\'");
+        // Skip-scan the distinct names through the (query_name, time) index (a few
+        // 10k names even on millions of rows), then fetch rows by exact name. A plain
+        // `query_name LIKE '%x%'` scans the whole table for every search.
+        sql.push_str(
+            " AND query_name IN (
+                 WITH RECURSIVE n(name) AS (
+                     SELECT MIN(query_name) FROM query_log
+                     UNION ALL
+                     SELECT (SELECT MIN(query_name) FROM query_log WHERE query_name > n.name)
+                     FROM n WHERE name IS NOT NULL
+                 )
+                 SELECT name FROM n WHERE name LIKE ? ESCAPE '\\'
+             )",
+        );
         values.push(Value::Text(like_contains(needle)));
     }
     if let Some(protocol) = &filter.protocol {

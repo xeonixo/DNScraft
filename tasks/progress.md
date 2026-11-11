@@ -2,6 +2,16 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-11-11 — P2: God-module splits (mechanical)
+
+- **`config_validate.rs`:** validation / diff / merge helpers out of `config_apply`
+  (~2083 → ~1413 + 679).
+- **`mcp_backend/` Phase A:** `shared.rs`, `snapshot.rs`, `rules.rs`; `mod.rs` keeps
+  `McpBackendInner` + trait impl (~3348 → ~2147 + helpers). Re-exports preserve
+  `crate::mcp_backend::{rfc3339, parse_set, …}` call sites.
+- **`query_log_wire.rs`:** decision/step JSON + status labels (~2421 → ~2145 + 292).
+- Cluster god-module deferred. Behavior-preserving move only.
+
 ## 2026-11-11 — P2: Prometheus `/metrics` + local-auth lockout harden
 
 - **Metrics:** `GET /metrics` Prometheus text on the control-api (viewer/admin);

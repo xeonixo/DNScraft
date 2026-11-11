@@ -6,7 +6,7 @@
 #
 # Build with buildx (see deploy/README.md); TARGETARCH selects the musl triple.
 
-ARG RUST_VERSION=1.88
+ARG RUST_VERSION=1.89
 
 FROM rust:${RUST_VERSION}-alpine@sha256:9dfaae478ecd298b6b5a039e1f2cc4fc040fc818a2de9aa78fa714dea036574d AS builder
 

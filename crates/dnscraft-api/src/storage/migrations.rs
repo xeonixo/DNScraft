@@ -363,6 +363,52 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     CREATE INDEX query_log_id_idx ON query_log(id);",
     // v14: exact-domain lookups and the distinct-name skip-scan behind substring search.
     "CREATE INDEX IF NOT EXISTS query_log_name_time_idx ON query_log(query_name, time);",
+    // v15: dashboard rollups — cache/blocked counters on the existing buckets, plus
+    // bounded top-N domain and client tables so the UI need not scan the raw log.
+    // Clearing prior rollups forces one full reseed so the new counters are accurate.
+    "DELETE FROM stats_hourly;
+     DELETE FROM stats_daily;
+     DELETE FROM kv WHERE key = 'stats.rollup.through_hour';
+     ALTER TABLE stats_hourly ADD COLUMN blocked_count INTEGER NOT NULL DEFAULT 0;
+     ALTER TABLE stats_hourly ADD COLUMN cache_hits INTEGER NOT NULL DEFAULT 0;
+     ALTER TABLE stats_hourly ADD COLUMN cache_misses INTEGER NOT NULL DEFAULT 0;
+     ALTER TABLE stats_daily ADD COLUMN blocked_count INTEGER NOT NULL DEFAULT 0;
+     ALTER TABLE stats_daily ADD COLUMN cache_hits INTEGER NOT NULL DEFAULT 0;
+     ALTER TABLE stats_daily ADD COLUMN cache_misses INTEGER NOT NULL DEFAULT 0;
+     CREATE TABLE IF NOT EXISTS stats_domain_hourly (
+         hour    INTEGER NOT NULL,
+         node_id TEXT NOT NULL,
+         domain  TEXT NOT NULL,
+         queries INTEGER NOT NULL,
+         blocked INTEGER NOT NULL,
+         PRIMARY KEY (hour, node_id, domain)
+     );
+     CREATE TABLE IF NOT EXISTS stats_domain_daily (
+         day     INTEGER NOT NULL,
+         node_id TEXT NOT NULL,
+         domain  TEXT NOT NULL,
+         queries INTEGER NOT NULL,
+         blocked INTEGER NOT NULL,
+         PRIMARY KEY (day, node_id, domain)
+     );
+     CREATE TABLE IF NOT EXISTS stats_client_hourly (
+         hour        INTEGER NOT NULL,
+         node_id     TEXT NOT NULL,
+         client_key  TEXT NOT NULL,
+         client_name TEXT NOT NULL DEFAULT '',
+         queries     INTEGER NOT NULL,
+         blocked     INTEGER NOT NULL,
+         PRIMARY KEY (hour, node_id, client_key)
+     );
+     CREATE TABLE IF NOT EXISTS stats_client_daily (
+         day         INTEGER NOT NULL,
+         node_id     TEXT NOT NULL,
+         client_key  TEXT NOT NULL,
+         client_name TEXT NOT NULL DEFAULT '',
+         queries     INTEGER NOT NULL,
+         blocked     INTEGER NOT NULL,
+         PRIMARY KEY (day, node_id, client_key)
+     );",
 ];
 
 /// Applies every migration newer than the recorded version, then records it.
@@ -408,7 +454,7 @@ mod tests {
     fn device_id_migration_adds_column_and_index() {
         let mut conn = Connection::open_in_memory().unwrap();
         migrate(&mut conn).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 14);
+        assert_eq!(schema_version(&conn).unwrap(), 15);
 
         let columns: Vec<String> = conn
             .prepare("PRAGMA table_info(query_log)")
@@ -442,10 +488,44 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_rollup_migration_adds_cache_columns_and_top_n_tables() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 15);
+
+        let hourly: Vec<String> = conn
+            .prepare("PRAGMA table_info(stats_hourly)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        for name in ["blocked_count", "cache_hits", "cache_misses"] {
+            assert!(hourly.iter().any(|col| col == name), "missing {name}");
+        }
+
+        for table in [
+            "stats_domain_hourly",
+            "stats_domain_daily",
+            "stats_client_hourly",
+            "stats_client_daily",
+        ] {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(exists, 1, "{table}");
+        }
+    }
+
+    #[test]
     fn audit_log_rejects_update_and_delete_after_v2() {
         let mut conn = Connection::open_in_memory().unwrap();
         migrate(&mut conn).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 14);
+        assert_eq!(schema_version(&conn).unwrap(), 15);
 
         conn.execute(
             "INSERT INTO audit_log (

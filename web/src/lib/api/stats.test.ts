@@ -4,6 +4,7 @@ import {
 	flushCache,
 	getDomainStats,
 	getReadiness,
+	getTopBlockedDomains,
 	getTopDomains,
 	periodQuery,
 	pauseFilterSet,
@@ -83,6 +84,20 @@ describe('settle', () => {
 		fetchMock.mockResolvedValueOnce(json(200, { data: { domains: [] } }));
 		await expect(settle(getTopDomains('7d', 5))).resolves.toEqual({ kind: 'ok', data: [] });
 		expect(fetchMock.mock.calls[0]?.[0]).toMatch(/\/api\/v1\/stats\/top_domains\?from=.*&limit=5$/);
+	});
+});
+
+describe('getTopBlockedDomains', () => {
+	it('hits the blocked ranking endpoint', async () => {
+		fetchMock.mockResolvedValueOnce(
+			json(200, { data: { domains: [{ domain: 'ads.test', queries: 4, blocked: 4 }] } }),
+		);
+		await expect(getTopBlockedDomains('24h', 10)).resolves.toEqual([
+			{ domain: 'ads.test', queries: 4, blocked: 4 },
+		]);
+		expect(fetchMock.mock.calls[0]?.[0]).toMatch(
+			/\/api\/v1\/stats\/top_blocked_domains\?from=.*&limit=10$/,
+		);
 	});
 });
 

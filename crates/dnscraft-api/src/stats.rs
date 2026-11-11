@@ -14,9 +14,10 @@
 //!
 //! [`QueryLog::stats_overview`] prefers `stats_hourly` for completed hours and
 //! only scans the raw log for the still-open hour (plus a full raw fallback
-//! before the first rollup pass). Top-domain / top-client endpoints still read
-//! the raw log inside the requested window. Cardinality is capped per the
-//! spec: [`TOP_CLIENTS_MAX`] and [`TOP_DOMAINS_MAX`].
+//! before the first rollup pass). Top-domain / top-client / cache endpoints
+//! follow the same pattern via `stats_domain_*`, `stats_client_*` and the
+//! cache counters on `stats_hourly`. Cardinality is capped per the spec:
+//! [`TOP_CLIENTS_MAX`] and [`TOP_DOMAINS_MAX`].
 //!
 //! ## Export
 //!
@@ -52,12 +53,19 @@ pub const TOP_CLIENTS_MAX: u32 = 1000;
 pub const TOP_DOMAINS_MAX: u32 = 10_000;
 /// Rollup retention in days (the spec's 365-day dashboard window).
 pub const ROLLUP_RETENTION_DAYS: i64 = 365;
-/// Raw-log days each rollup pass recomputes; covers rows a node delivers late after being offline.
-const ROLLUP_RECOMPUTE_DAYS: i64 = 3;
+/// Hours re-read after the watermark for late cluster arrivals.
+const ROLLUP_LATE_HOURS: i64 = 24;
+/// Domains kept per hour/day and node in the top-N rollup tables.
+const ROLLUP_DOMAIN_TOP_K: i64 = 200;
+/// Clients kept per hour/day and node in the top-N rollup tables.
+const ROLLUP_CLIENT_TOP_K: i64 = 100;
+/// `kv` key: last closed unix hour fully folded into the rollups.
+const ROLLUP_THROUGH_HOUR_KEY: &str = "stats.rollup.through_hour";
 
 const MICROS_PER_HOUR: i64 = 3_600_000_000;
 const SECONDS_PER_HOUR: i64 = 3_600;
 const SECONDS_PER_DAY: i64 = 86_400;
+const HOURS_PER_DAY: i64 = 24;
 /// Rules listed in the overview's `filter_hits.top_rules`.
 const OVERVIEW_TOP_RULES: i64 = 10;
 const DEFAULT_WINDOW_HOURS: i64 = 24;
@@ -334,6 +342,191 @@ impl ExportFormat {
     }
 }
 
+type NameBucket = (i64, String, String, i64, i64);
+type ClientBucket = (i64, String, String, String, i64, i64);
+
+/// Top-N domains (or similar name keys) per hour and node from the raw log.
+fn top_n_name_buckets(
+    conn: &rusqlite::Connection,
+    since_us: i64,
+    until_us: i64,
+    top_k: i64,
+) -> Result<Vec<NameBucket>, ControlApiError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT hour, node_id, domain, queries, blocked FROM (
+                 SELECT time / ?2 AS hour, node_id, query_name AS domain,
+                        COUNT(*) AS queries,
+                        COALESCE(SUM(CASE WHEN status = 2 THEN 1 ELSE 0 END), 0) AS blocked,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY time / ?2, node_id
+                            ORDER BY COUNT(*) DESC, query_name ASC
+                        ) AS rn
+                 FROM query_log
+                 WHERE time >= ?1 AND time < ?3
+                 GROUP BY 1, 2, 3
+             ) WHERE rn <= ?4",
+        )
+        .map_err(db_err)?;
+    let rows = stmt
+        .query_map(params![since_us, MICROS_PER_HOUR, until_us, top_k], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })
+        .map_err(db_err)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+}
+
+/// Top-N clients per hour and node from the raw log.
+fn top_n_client_buckets(
+    conn: &rusqlite::Connection,
+    since_us: i64,
+    until_us: i64,
+    top_k: i64,
+) -> Result<Vec<ClientBucket>, ControlApiError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT hour, node_id, client_key, client_name, queries, blocked FROM (
+                 SELECT time / ?2 AS hour, node_id,
+                        COALESCE(device_id, client_id, client_name, source_ip) AS client_key,
+                        COALESCE(MAX(client_name), '') AS client_name,
+                        COUNT(*) AS queries,
+                        COALESCE(SUM(CASE WHEN status = 2 THEN 1 ELSE 0 END), 0) AS blocked,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY time / ?2, node_id
+                            ORDER BY COUNT(*) DESC,
+                                     COALESCE(device_id, client_id, client_name, source_ip) ASC
+                        ) AS rn
+                 FROM query_log
+                 WHERE time >= ?1 AND time < ?3
+                 GROUP BY 1, 2, 3
+             ) WHERE rn <= ?4",
+        )
+        .map_err(db_err)?;
+    let rows = stmt
+        .query_map(params![since_us, MICROS_PER_HOUR, until_us, top_k], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+            ))
+        })
+        .map_err(db_err)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+}
+
+fn prune_rollups(
+    tx: &rusqlite::Transaction<'_>,
+    hour_cutoff: i64,
+    day_cutoff: i64,
+) -> Result<(), ControlApiError> {
+    for (sql, cutoff) in [
+        ("DELETE FROM stats_hourly WHERE hour < ?1", hour_cutoff),
+        ("DELETE FROM stats_daily WHERE day < ?1", day_cutoff),
+        ("DELETE FROM stats_domain_hourly WHERE hour < ?1", hour_cutoff),
+        ("DELETE FROM stats_domain_daily WHERE day < ?1", day_cutoff),
+        ("DELETE FROM stats_client_hourly WHERE hour < ?1", hour_cutoff),
+        ("DELETE FROM stats_client_daily WHERE day < ?1", day_cutoff),
+    ] {
+        tx.execute(sql, params![cutoff]).map_err(db_err)?;
+    }
+    Ok(())
+}
+
+/// Rebuild daily dimensional buckets for `[from_day, to_day]` from hourly rows.
+fn rebuild_daily_dimensional(
+    tx: &rusqlite::Transaction<'_>,
+    from_day: i64,
+    to_day: i64,
+) -> Result<(), ControlApiError> {
+    tx.execute(
+        "DELETE FROM stats_daily WHERE day >= ?1 AND day <= ?2",
+        params![from_day, to_day],
+    )
+    .map_err(db_err)?;
+    tx.execute(
+        "INSERT INTO stats_daily (
+             day, node_id, profile_id, protocol, answer_source,
+             query_count, blocked_count, cache_hits, cache_misses
+         )
+         SELECT hour / ?3, node_id, profile_id, protocol, answer_source,
+                SUM(query_count), SUM(blocked_count), SUM(cache_hits), SUM(cache_misses)
+         FROM stats_hourly
+         WHERE hour >= ?1 * ?3 AND hour < (?2 + 1) * ?3
+         GROUP BY 1, 2, 3, 4, 5",
+        params![from_day, to_day, HOURS_PER_DAY],
+    )
+    .map_err(db_err)?;
+    Ok(())
+}
+
+fn rebuild_daily_domains(
+    tx: &rusqlite::Transaction<'_>,
+    from_day: i64,
+    to_day: i64,
+) -> Result<(), ControlApiError> {
+    tx.execute(
+        "DELETE FROM stats_domain_daily WHERE day >= ?1 AND day <= ?2",
+        params![from_day, to_day],
+    )
+    .map_err(db_err)?;
+    tx.execute(
+        "INSERT INTO stats_domain_daily (day, node_id, domain, queries, blocked)
+         SELECT day, node_id, domain, queries, blocked FROM (
+             SELECT hour / ?3 AS day, node_id, domain,
+                    SUM(queries) AS queries, SUM(blocked) AS blocked,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY hour / ?3, node_id
+                        ORDER BY SUM(queries) DESC, domain ASC
+                    ) AS rn
+             FROM stats_domain_hourly
+             WHERE hour >= ?1 * ?3 AND hour < (?2 + 1) * ?3
+             GROUP BY 1, 2, 3
+         ) WHERE rn <= ?4",
+        params![from_day, to_day, HOURS_PER_DAY, ROLLUP_DOMAIN_TOP_K],
+    )
+    .map_err(db_err)?;
+    Ok(())
+}
+
+fn rebuild_daily_clients(
+    tx: &rusqlite::Transaction<'_>,
+    from_day: i64,
+    to_day: i64,
+) -> Result<(), ControlApiError> {
+    tx.execute(
+        "DELETE FROM stats_client_daily WHERE day >= ?1 AND day <= ?2",
+        params![from_day, to_day],
+    )
+    .map_err(db_err)?;
+    tx.execute(
+        "INSERT INTO stats_client_daily (day, node_id, client_key, client_name, queries, blocked)
+         SELECT day, node_id, client_key, client_name, queries, blocked FROM (
+             SELECT hour / ?3 AS day, node_id, client_key,
+                    MAX(client_name) AS client_name,
+                    SUM(queries) AS queries, SUM(blocked) AS blocked,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY hour / ?3, node_id
+                        ORDER BY SUM(queries) DESC, client_key ASC
+                    ) AS rn
+             FROM stats_client_hourly
+             WHERE hour >= ?1 * ?3 AND hour < (?2 + 1) * ?3
+             GROUP BY 1, 2, 3
+         ) WHERE rn <= ?4",
+        params![from_day, to_day, HOURS_PER_DAY, ROLLUP_CLIENT_TOP_K],
+    )
+    .map_err(db_err)?;
+    Ok(())
+}
+
 impl QueryLog {
     /// Folds the raw query log into the hourly and daily rollup tables and
     /// prunes rollups older than [`ROLLUP_RETENTION_DAYS`].
@@ -342,102 +535,177 @@ impl QueryLog {
     /// so running the pass again never double-counts. Callers trigger it on a
     /// schedule; tests drive it after inserting fixed-time events.
     ///
-    /// Only the last [`ROLLUP_RECOMPUTE_DAYS`] are re-read (everything on the
-    /// first pass, while the rollups are empty): the pass holds the single
-    /// writer connection, and a full-table scan would stall config saves and
-    /// log ingestion for as long as it runs.
+    /// After the first seed, only closed hours since the watermark (plus a
+    /// [`ROLLUP_LATE_HOURS`] late-arrival window) are re-read. Daily buckets are
+    /// derived from hourly rows so the raw log is scanned once. Top-N domain and
+    /// client tables are rewritten for the same hour range.
     pub async fn run_rollup(&self) -> Result<(), ControlApiError> {
         let now = self.db().now_unix();
+        // Include the still-open hour: MAX upserts refresh it each pass. Dashboard
+        // reads still use closed hours from rollups plus a raw open-hour tail.
+        let open_hour = now.div_euclid(SECONDS_PER_HOUR);
+        let until_hour = open_hour;
         let cutoff_seconds = now.saturating_sub(ROLLUP_RETENTION_DAYS * SECONDS_PER_DAY);
         let hour_cutoff = cutoff_seconds.div_euclid(SECONDS_PER_HOUR);
         let day_cutoff = cutoff_seconds.div_euclid(SECONDS_PER_DAY);
-        let recent_us = now
-            .saturating_sub(ROLLUP_RECOMPUTE_DAYS * SECONDS_PER_DAY)
-            .saturating_mul(1_000_000);
-        // The scans run on a reader (seconds on a large log); only the small
-        // aggregate is written, so the writer is held for milliseconds.
-        type Bucket = (i64, String, String, String, String, i64);
-        let (hourly, daily) = self
+
+        // Decide the raw window on a reader; scans stay off the writer.
+        let (since_hour, since_us) = self
             .db()
             .with_read_conn(move |conn| {
                 let seeded: bool = conn
-                    .query_row("SELECT EXISTS(SELECT 1 FROM stats_daily)", [], |row| {
+                    .query_row("SELECT EXISTS(SELECT 1 FROM stats_hourly)", [], |row| {
                         row.get(0)
                     })
                     .map_err(db_err)?;
-                let since_us = if seeded { recent_us } else { 0 };
-                let scan = |divisor: i64| -> Result<Vec<Bucket>, ControlApiError> {
-                    // Rollup tables keep string labels so older buckets stay comparable.
-                    let mut stmt = conn
-                        .prepare(
-                            "SELECT time / ?2, node_id, profile_id,
-                                    CASE protocol
-                                        WHEN 1 THEN 'udp53' WHEN 2 THEN 'tcp53' WHEN 3 THEN 'dot'
-                                        WHEN 4 THEN 'doh' WHEN 5 THEN 'doq'
-                                        ELSE CAST(protocol AS TEXT)
-                                    END,
-                                    CASE answer_source
-                                        WHEN 1 THEN 'resolver' WHEN 2 THEN 'synth_any'
-                                        WHEN 3 THEN 'resolve_error' WHEN 4 THEN 'local_view'
-                                        WHEN 5 THEN 'local_client' WHEN 6 THEN 'bypass'
-                                        WHEN 7 THEN 'filter_block' WHEN 8 THEN 'listener_ddr'
-                                        ELSE CAST(answer_source AS TEXT)
-                                    END,
-                                    COUNT(*)
-                             FROM query_log
-                             WHERE time >= ?1
-                             GROUP BY 1, 2, 3, 4, 5",
-                        )
-                        .map_err(db_err)?;
-                    let rows = stmt
-                        .query_map(params![since_us, divisor], |row| {
-                            Ok((
-                                row.get(0)?,
-                                row.get(1)?,
-                                row.get(2)?,
-                                row.get(3)?,
-                                row.get(4)?,
-                                row.get(5)?,
-                            ))
-                        })
-                        .map_err(db_err)?;
-                    rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+                let through: Option<i64> = crate::storage::kv_get(conn, ROLLUP_THROUGH_HOUR_KEY)?
+                    .and_then(|value| value.parse().ok());
+                let since_hour = if !seeded {
+                    0
+                } else {
+                    through
+                        .unwrap_or(until_hour)
+                        .saturating_sub(ROLLUP_LATE_HOURS)
                 };
-                Ok((scan(MICROS_PER_HOUR)?, scan(MICROS_PER_HOUR * 24)?))
+                Ok((since_hour, since_hour.saturating_mul(MICROS_PER_HOUR)))
             })
             .await?;
+
+        type DimBucket = (i64, String, String, String, String, i64, i64, i64, i64);
+
+        let (hourly, domains, clients) = self
+            .db()
+            .with_read_conn(move |conn| {
+                // One dimensional scan for closed-hour stats (incl. cache counters).
+                let mut dim_stmt = conn
+                    .prepare(
+                        "SELECT time / ?2, node_id, profile_id,
+                                CASE protocol
+                                    WHEN 1 THEN 'udp53' WHEN 2 THEN 'tcp53' WHEN 3 THEN 'dot'
+                                    WHEN 4 THEN 'doh' WHEN 5 THEN 'doq'
+                                    ELSE CAST(protocol AS TEXT)
+                                END,
+                                CASE answer_source
+                                    WHEN 1 THEN 'resolver' WHEN 2 THEN 'synth_any'
+                                    WHEN 3 THEN 'resolve_error' WHEN 4 THEN 'local_view'
+                                    WHEN 5 THEN 'local_client' WHEN 6 THEN 'bypass'
+                                    WHEN 7 THEN 'filter_block' WHEN 8 THEN 'listener_ddr'
+                                    ELSE CAST(answer_source AS TEXT)
+                                END,
+                                COUNT(*),
+                                COALESCE(SUM(CASE WHEN status = 2 THEN 1 ELSE 0 END), 0),
+                                COALESCE(SUM(CASE WHEN cached = 1 THEN 1 ELSE 0 END), 0),
+                                COALESCE(SUM(CASE WHEN cached = 0 AND status = 1
+                                                   THEN 1 ELSE 0 END), 0)
+                         FROM query_log
+                         WHERE time >= ?1 AND time < ?3
+                         GROUP BY 1, 2, 3, 4, 5",
+                    )
+                    .map_err(db_err)?;
+                let until_us = until_hour
+                    .saturating_add(1)
+                    .saturating_mul(MICROS_PER_HOUR);
+                let hourly: Vec<DimBucket> = dim_stmt
+                    .query_map(params![since_us, MICROS_PER_HOUR, until_us], |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                            row.get(6)?,
+                            row.get(7)?,
+                            row.get(8)?,
+                        ))
+                    })
+                    .map_err(db_err)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(db_err)?;
+
+                let domains = top_n_name_buckets(conn, since_us, until_us, ROLLUP_DOMAIN_TOP_K)?;
+                let clients = top_n_client_buckets(conn, since_us, until_us, ROLLUP_CLIENT_TOP_K)?;
+                Ok((hourly, domains, clients))
+            })
+            .await?;
+
+        let from_day = since_hour.div_euclid(HOURS_PER_DAY);
+        let to_day = until_hour.div_euclid(HOURS_PER_DAY);
+
         self.db()
             .with_conn(move |conn| {
                 let tx = conn.transaction().map_err(db_err)?;
-                for (table, bucket, rows) in [
-                    ("stats_hourly", "hour", &hourly),
-                    ("stats_daily", "day", &daily),
-                ] {
-                    let mut stmt = tx
-                        .prepare(&format!(
-                            "INSERT INTO {table} (
-                                 {bucket}, node_id, profile_id, protocol, answer_source,
-                                 query_count
-                             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                             ON CONFLICT({bucket}, node_id, profile_id, protocol, answer_source)
-                             DO UPDATE SET query_count = MAX(query_count, excluded.query_count)"
-                        ))
+
+                let mut dim_ins = tx
+                    .prepare(
+                        "INSERT INTO stats_hourly (
+                             hour, node_id, profile_id, protocol, answer_source,
+                             query_count, blocked_count, cache_hits, cache_misses
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                         ON CONFLICT(hour, node_id, profile_id, protocol, answer_source)
+                         DO UPDATE SET
+                             query_count = MAX(query_count, excluded.query_count),
+                             blocked_count = MAX(blocked_count, excluded.blocked_count),
+                             cache_hits = MAX(cache_hits, excluded.cache_hits),
+                             cache_misses = MAX(cache_misses, excluded.cache_misses)",
+                    )
+                    .map_err(db_err)?;
+                for (hour, node, profile, protocol, source, count, blocked, hits, misses) in &hourly
+                {
+                    dim_ins
+                        .execute(params![
+                            hour, node, profile, protocol, source, count, blocked, hits, misses
+                        ])
                         .map_err(db_err)?;
-                    for (b, node, profile, protocol, source, count) in rows {
-                        stmt.execute(params![b, node, profile, protocol, source, count])
-                            .map_err(db_err)?;
-                    }
                 }
+                drop(dim_ins);
+
+                // Top-N tables: replace the recomputed hours so fallen-out keys disappear.
                 tx.execute(
-                    "DELETE FROM stats_hourly WHERE hour < ?1",
-                    params![hour_cutoff],
+                    "DELETE FROM stats_domain_hourly WHERE hour >= ?1 AND hour <= ?2",
+                    params![since_hour, until_hour],
                 )
                 .map_err(db_err)?;
                 tx.execute(
-                    "DELETE FROM stats_daily WHERE day < ?1",
-                    params![day_cutoff],
+                    "DELETE FROM stats_client_hourly WHERE hour >= ?1 AND hour <= ?2",
+                    params![since_hour, until_hour],
                 )
                 .map_err(db_err)?;
+
+                let mut domain_ins = tx
+                    .prepare(
+                        "INSERT INTO stats_domain_hourly (hour, node_id, domain, queries, blocked)
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                    )
+                    .map_err(db_err)?;
+                for (hour, node, domain, queries, blocked) in &domains {
+                    domain_ins
+                        .execute(params![hour, node, domain, queries, blocked])
+                        .map_err(db_err)?;
+                }
+                drop(domain_ins);
+
+                let mut client_ins = tx
+                    .prepare(
+                        "INSERT INTO stats_client_hourly
+                             (hour, node_id, client_key, client_name, queries, blocked)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    )
+                    .map_err(db_err)?;
+                for (hour, node, key, name, queries, blocked) in &clients {
+                    client_ins
+                        .execute(params![hour, node, key, name, queries, blocked])
+                        .map_err(db_err)?;
+                }
+                drop(client_ins);
+
+                // Daily dimensional rows: rebuild affected days from all hourly rows.
+                rebuild_daily_dimensional(&tx, from_day, to_day)?;
+                rebuild_daily_domains(&tx, from_day, to_day)?;
+                rebuild_daily_clients(&tx, from_day, to_day)?;
+
+                prune_rollups(&tx, hour_cutoff, day_cutoff)?;
+                crate::storage::kv_set(&tx, ROLLUP_THROUGH_HOUR_KEY, &until_hour.to_string())?;
                 tx.commit().map_err(db_err)?;
                 Ok(())
             })
@@ -567,47 +835,8 @@ impl QueryLog {
         let db = self.db();
         let (from, to) = resolve_window(db, from_us, to_us)?;
         let scope = Scope::from(scope);
-        let limit = i64::from(limit.clamp(1, TOP_CLIENTS_MAX));
-        let order = match by {
-            TopBy::Queries => "queries DESC, cid ASC",
-            TopBy::Blocked => "blocked DESC, queries DESC, cid ASC",
-        };
-        let clients = db
-            .with_read_conn(move |conn| {
-                let sql = format!(
-                    // A device is its directory client id, else its client id, else its directory
-                    // name, else its source address (LAN clients carry no client id). `cid` is the
-                    // id, or the address when the row has neither id nor name.
-                    "SELECT COALESCE(device_id, client_id, CASE WHEN client_name IS NULL THEN source_ip ELSE '' END) AS cid,
-                            COALESCE(MAX(client_name), ''),
-                            COUNT(*) AS queries,
-                            COALESCE(SUM(CASE WHEN status = 2 THEN 1 ELSE 0 END), 0)
-                                AS blocked
-                     FROM query_log
-                     WHERE time >= ?1 AND time <= ?2
-                       AND (?4 IS NULL OR node_id = ?4)
-                       AND (?5 IS NULL OR profile_id = ?5)
-                     GROUP BY COALESCE(device_id, client_id, client_name, source_ip)
-                     ORDER BY {order}
-                     LIMIT ?3"
-                );
-                let mut stmt = conn.prepare(&sql).map_err(db_err)?;
-                let rows = stmt
-                    .query_map(
-                        params![from, to, limit, scope.node_id, scope.profile_id],
-                        |row| {
-                            Ok(TopClient {
-                                client_id: row.get(0)?,
-                                client_name: row.get(1)?,
-                                queries: row.get(2)?,
-                                blocked: row.get(3)?,
-                            })
-                        },
-                    )
-                    .map_err(db_err)?;
-                rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
-            })
-            .await?;
+        let limit = limit.clamp(1, TOP_CLIENTS_MAX);
+        let clients = ranked_clients_with_rollups(db, from, to, &scope, limit, by).await?;
         Ok(TopClients {
             from: format_micros(from),
             to: format_micros(to),
@@ -692,39 +921,9 @@ impl QueryLog {
         let db = self.db();
         let (from, to) = resolve_window(db, from_us, to_us)?;
         let scope = Scope::from(scope);
-        let limit = i64::from(limit.clamp(1, TOP_DOMAINS_MAX));
-        let domains = db
-            .with_read_conn(move |conn| {
-                // `order` is always one of the constants passed above.
-                let sql = format!(
-                    "SELECT query_name,
-                            COUNT(*) AS queries,
-                            COALESCE(SUM(CASE WHEN status = 2 THEN 1 ELSE 0 END), 0)
-                                AS blocked
-                     FROM query_log
-                     WHERE time >= ?1 AND time <= ?2
-                       AND (?4 IS NULL OR node_id = ?4)
-                       AND (?5 IS NULL OR profile_id = ?5)
-                     GROUP BY query_name
-                     ORDER BY {order}
-                     LIMIT ?3"
-                );
-                let mut stmt = conn.prepare(&sql).map_err(db_err)?;
-                let rows = stmt
-                    .query_map(
-                        params![from, to, limit, scope.node_id, scope.profile_id],
-                        |row| {
-                            Ok(TopDomain {
-                                domain: row.get(0)?,
-                                queries: row.get(1)?,
-                                blocked: row.get(2)?,
-                            })
-                        },
-                    )
-                    .map_err(db_err)?;
-                rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
-            })
-            .await?;
+        let limit = limit.clamp(1, TOP_DOMAINS_MAX);
+        let by_blocked = order.starts_with("blocked");
+        let domains = ranked_domains_with_rollups(db, from, to, &scope, limit, by_blocked).await?;
         Ok(TopDomains {
             from: format_micros(from),
             to: format_micros(to),
@@ -760,23 +959,7 @@ impl QueryLog {
         let db = self.db();
         let (from, to) = resolve_window(db, from_us, to_us)?;
         let scope = Scope::from(scope);
-        let (hits, misses) = db
-            .with_read_conn(move |conn| {
-                conn.query_row(
-                    "SELECT
-                         COALESCE(SUM(CASE WHEN cached = 1 THEN 1 ELSE 0 END), 0),
-                         COALESCE(SUM(CASE WHEN cached = 0 AND status = 1
-                                           THEN 1 ELSE 0 END), 0)
-                     FROM query_log
-                     WHERE time >= ?1 AND time <= ?2
-                       AND (?3 IS NULL OR node_id = ?3)
-                       AND (?4 IS NULL OR profile_id = ?4)",
-                    params![from, to, scope.node_id, scope.profile_id],
-                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
-                )
-                .map_err(db_err)
-            })
-            .await?;
+        let (hits, misses) = cache_stats_with_rollups(db, from, to, &scope).await?;
         Ok(CacheStats {
             from: format_micros(from),
             to: format_micros(to),
@@ -1280,6 +1463,500 @@ fn merge_counts(
         *left.entry(key).or_default() += count;
     }
     left
+}
+
+/// Whether the hourly domain rollups have been seeded.
+async fn domain_rollups_seeded(db: &Db) -> Result<bool, ControlApiError> {
+    db.with_read_conn(|conn| {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM stats_domain_hourly)",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(db_err)
+    })
+    .await
+}
+
+/// Whether the hourly client rollups have been seeded.
+async fn client_rollups_seeded(db: &Db) -> Result<bool, ControlApiError> {
+    db.with_read_conn(|conn| {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM stats_client_hourly)",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(db_err)
+    })
+    .await
+}
+
+/// Raw top domains for `[from, to]` (used for the open-hour tail and as fallback).
+async fn ranked_domains_raw(
+    db: &Db,
+    from: i64,
+    to: i64,
+    scope: &Scope,
+    limit: u32,
+    by_blocked: bool,
+) -> Result<Vec<TopDomain>, ControlApiError> {
+    let scope = scope.clone();
+    let limit = i64::from(limit);
+    let order = if by_blocked {
+        "blocked DESC, queries DESC, query_name ASC"
+    } else {
+        "queries DESC, query_name ASC"
+    };
+    db.with_read_conn(move |conn| {
+        let sql = format!(
+            "SELECT query_name,
+                    COUNT(*) AS queries,
+                    COALESCE(SUM(CASE WHEN status = 2 THEN 1 ELSE 0 END), 0) AS blocked
+             FROM query_log
+             WHERE time >= ?1 AND time <= ?2
+               AND (?4 IS NULL OR node_id = ?4)
+               AND (?5 IS NULL OR profile_id = ?5)
+             GROUP BY query_name
+             ORDER BY {order}
+             LIMIT ?3"
+        );
+        let mut stmt = conn.prepare(&sql).map_err(db_err)?;
+        let rows = stmt
+            .query_map(
+                params![from, to, limit, scope.node_id, scope.profile_id],
+                |row| {
+                    Ok(TopDomain {
+                        domain: row.get(0)?,
+                        queries: row.get(1)?,
+                        blocked: row.get(2)?,
+                    })
+                },
+            )
+            .map_err(db_err)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+    })
+    .await
+}
+
+async fn ranked_clients_raw(
+    db: &Db,
+    from: i64,
+    to: i64,
+    scope: &Scope,
+    limit: u32,
+    by: TopBy,
+) -> Result<Vec<TopClient>, ControlApiError> {
+    let scope = scope.clone();
+    let limit = i64::from(limit);
+    let order = match by {
+        TopBy::Queries => "queries DESC, cid ASC",
+        TopBy::Blocked => "blocked DESC, queries DESC, cid ASC",
+    };
+    db.with_read_conn(move |conn| {
+        let sql = format!(
+            "SELECT COALESCE(device_id, client_id, CASE WHEN client_name IS NULL THEN source_ip ELSE '' END) AS cid,
+                    COALESCE(MAX(client_name), ''),
+                    COUNT(*) AS queries,
+                    COALESCE(SUM(CASE WHEN status = 2 THEN 1 ELSE 0 END), 0) AS blocked
+             FROM query_log
+             WHERE time >= ?1 AND time <= ?2
+               AND (?4 IS NULL OR node_id = ?4)
+               AND (?5 IS NULL OR profile_id = ?5)
+             GROUP BY COALESCE(device_id, client_id, client_name, source_ip)
+             ORDER BY {order}
+             LIMIT ?3"
+        );
+        let mut stmt = conn.prepare(&sql).map_err(db_err)?;
+        let rows = stmt
+            .query_map(
+                params![from, to, limit, scope.node_id, scope.profile_id],
+                |row| {
+                    Ok(TopClient {
+                        client_id: row.get(0)?,
+                        client_name: row.get(1)?,
+                        queries: row.get(2)?,
+                        blocked: row.get(3)?,
+                    })
+                },
+            )
+            .map_err(db_err)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+    })
+    .await
+}
+
+async fn cache_stats_raw(
+    db: &Db,
+    from: i64,
+    to: i64,
+    scope: &Scope,
+) -> Result<(i64, i64), ControlApiError> {
+    let scope = scope.clone();
+    db.with_read_conn(move |conn| {
+        conn.query_row(
+            "SELECT
+                 COALESCE(SUM(CASE WHEN cached = 1 THEN 1 ELSE 0 END), 0),
+                 COALESCE(SUM(CASE WHEN cached = 0 AND status = 1 THEN 1 ELSE 0 END), 0)
+             FROM query_log
+             WHERE time >= ?1 AND time <= ?2
+               AND (?3 IS NULL OR node_id = ?3)
+               AND (?4 IS NULL OR profile_id = ?4)",
+            params![from, to, scope.node_id, scope.profile_id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .map_err(db_err)
+    })
+    .await
+}
+
+/// Merge rollup domain rows with an optional open-hour raw tail, then re-rank.
+fn merge_domain_ranks(
+    closed: Vec<TopDomain>,
+    tail: Vec<TopDomain>,
+    limit: u32,
+    by_blocked: bool,
+) -> Vec<TopDomain> {
+    let mut map: HashMap<String, TopDomain> = HashMap::new();
+    for row in closed.into_iter().chain(tail) {
+        let entry = map.entry(row.domain.clone()).or_insert(TopDomain {
+            domain: row.domain.clone(),
+            queries: 0,
+            blocked: 0,
+        });
+        entry.queries += row.queries;
+        entry.blocked += row.blocked;
+    }
+    let mut rows: Vec<TopDomain> = map.into_values().collect();
+    if by_blocked {
+        rows.sort_by(|a, b| {
+            b.blocked
+                .cmp(&a.blocked)
+                .then(b.queries.cmp(&a.queries))
+                .then(a.domain.cmp(&b.domain))
+        });
+    } else {
+        rows.sort_by(|a, b| b.queries.cmp(&a.queries).then(a.domain.cmp(&b.domain)));
+    }
+    rows.truncate(limit as usize);
+    rows
+}
+
+fn merge_client_ranks(
+    closed: Vec<TopClient>,
+    tail: Vec<TopClient>,
+    limit: u32,
+    by: TopBy,
+) -> Vec<TopClient> {
+    let mut map: HashMap<String, TopClient> = HashMap::new();
+    for row in closed.into_iter().chain(tail) {
+        let entry = map.entry(row.client_id.clone()).or_insert(TopClient {
+            client_id: row.client_id.clone(),
+            client_name: row.client_name.clone(),
+            queries: 0,
+            blocked: 0,
+        });
+        entry.queries += row.queries;
+        entry.blocked += row.blocked;
+        if entry.client_name.is_empty() && !row.client_name.is_empty() {
+            entry.client_name = row.client_name;
+        }
+    }
+    let mut rows: Vec<TopClient> = map.into_values().collect();
+    match by {
+        TopBy::Queries => {
+            rows.sort_by(|a, b| b.queries.cmp(&a.queries).then(a.client_id.cmp(&b.client_id)));
+        }
+        TopBy::Blocked => {
+            rows.sort_by(|a, b| {
+                b.blocked
+                    .cmp(&a.blocked)
+                    .then(b.queries.cmp(&a.queries))
+                    .then(a.client_id.cmp(&b.client_id))
+            });
+        }
+    }
+    rows.truncate(limit as usize);
+    rows
+}
+
+struct RollupLoad<'a> {
+    table: &'static str,
+    bucket_col: &'static str,
+    from_bucket: i64,
+    to_bucket: i64,
+    node_id: Option<&'a str>,
+    limit: u32,
+}
+
+async fn load_domain_rollups(
+    db: &Db,
+    load: RollupLoad<'_>,
+    by_blocked: bool,
+) -> Result<Vec<TopDomain>, ControlApiError> {
+    // Fetch more than `limit` so merging hours still yields a stable top-N.
+    let fetch = i64::from(load.limit)
+        .saturating_mul(20)
+        .clamp(i64::from(load.limit), ROLLUP_DOMAIN_TOP_K);
+    let order = if by_blocked {
+        "blocked DESC, queries DESC, domain ASC"
+    } else {
+        "queries DESC, domain ASC"
+    };
+    let table = load.table;
+    let bucket_col = load.bucket_col;
+    let from_bucket = load.from_bucket;
+    let to_bucket = load.to_bucket;
+    let node_id = load.node_id.map(str::to_owned);
+    db.with_read_conn(move |conn| {
+        let sql = format!(
+            "SELECT domain, SUM(queries) AS queries, SUM(blocked) AS blocked
+             FROM {table}
+             WHERE {bucket_col} >= ?1 AND {bucket_col} <= ?2
+               AND (?4 IS NULL OR node_id = ?4)
+             GROUP BY domain
+             ORDER BY {order}
+             LIMIT ?3"
+        );
+        let mut stmt = conn.prepare(&sql).map_err(db_err)?;
+        let rows = stmt
+            .query_map(params![from_bucket, to_bucket, fetch, node_id], |row| {
+                Ok(TopDomain {
+                    domain: row.get(0)?,
+                    queries: row.get(1)?,
+                    blocked: row.get(2)?,
+                })
+            })
+            .map_err(db_err)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+    })
+    .await
+}
+
+async fn load_client_rollups(
+    db: &Db,
+    load: RollupLoad<'_>,
+    by: TopBy,
+) -> Result<Vec<TopClient>, ControlApiError> {
+    let fetch = i64::from(load.limit)
+        .saturating_mul(20)
+        .clamp(i64::from(load.limit), ROLLUP_CLIENT_TOP_K);
+    let order = match by {
+        TopBy::Queries => "queries DESC, client_key ASC",
+        TopBy::Blocked => "blocked DESC, queries DESC, client_key ASC",
+    };
+    let table = load.table;
+    let bucket_col = load.bucket_col;
+    let from_bucket = load.from_bucket;
+    let to_bucket = load.to_bucket;
+    let node_id = load.node_id.map(str::to_owned);
+    db.with_read_conn(move |conn| {
+        let sql = format!(
+            "SELECT client_key, MAX(client_name), SUM(queries) AS queries, SUM(blocked) AS blocked
+             FROM {table}
+             WHERE {bucket_col} >= ?1 AND {bucket_col} <= ?2
+               AND (?4 IS NULL OR node_id = ?4)
+             GROUP BY client_key
+             ORDER BY {order}
+             LIMIT ?3"
+        );
+        let mut stmt = conn.prepare(&sql).map_err(db_err)?;
+        let rows = stmt
+            .query_map(params![from_bucket, to_bucket, fetch, node_id], |row| {
+                Ok(TopClient {
+                    client_id: row.get(0)?,
+                    client_name: row.get(1)?,
+                    queries: row.get(2)?,
+                    blocked: row.get(3)?,
+                })
+            })
+            .map_err(db_err)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+    })
+    .await
+}
+
+/// Prefer hourly domain rollups for closed hours; fall back to raw when unseeded
+/// or when a profile filter is active (domain tables have no profile dimension).
+async fn ranked_domains_with_rollups(
+    db: &Db,
+    from: i64,
+    to: i64,
+    scope: &Scope,
+    limit: u32,
+    by_blocked: bool,
+) -> Result<Vec<TopDomain>, ControlApiError> {
+    if scope.profile_id.is_some() || !domain_rollups_seeded(db).await? {
+        return ranked_domains_raw(db, from, to, scope, limit, by_blocked).await;
+    }
+
+    let from_hour = from.div_euclid(MICROS_PER_HOUR);
+    let open_hour = to.div_euclid(MICROS_PER_HOUR);
+
+    // Long windows: merge daily buckets, then stitch the open hour from raw.
+    let use_daily = (open_hour - from_hour) >= HOURS_PER_DAY * 2;
+    if use_daily {
+        let from_day = from.div_euclid(MICROS_PER_DAY);
+        let to_day = to.div_euclid(MICROS_PER_DAY);
+        let closed = load_domain_rollups(
+            db,
+            RollupLoad {
+                table: "stats_domain_daily",
+                bucket_col: "day",
+                from_bucket: from_day,
+                to_bucket: to_day,
+                node_id: scope.node_id.as_deref(),
+                limit,
+            },
+            by_blocked,
+        )
+        .await?;
+        let tail_from = (open_hour.saturating_mul(MICROS_PER_HOUR)).max(from);
+        let tail = if tail_from <= to {
+            ranked_domains_raw(db, tail_from, to, scope, limit, by_blocked).await?
+        } else {
+            Vec::new()
+        };
+        return Ok(merge_domain_ranks(closed, tail, limit, by_blocked));
+    }
+
+    let closed = if from_hour < open_hour {
+        load_domain_rollups(
+            db,
+            RollupLoad {
+                table: "stats_domain_hourly",
+                bucket_col: "hour",
+                from_bucket: from_hour,
+                to_bucket: open_hour - 1,
+                node_id: scope.node_id.as_deref(),
+                limit,
+            },
+            by_blocked,
+        )
+        .await?
+    } else {
+        Vec::new()
+    };
+    let tail_from = (open_hour.saturating_mul(MICROS_PER_HOUR)).max(from);
+    let tail = if tail_from <= to {
+        ranked_domains_raw(db, tail_from, to, scope, limit, by_blocked).await?
+    } else {
+        Vec::new()
+    };
+    Ok(merge_domain_ranks(closed, tail, limit, by_blocked))
+}
+
+async fn ranked_clients_with_rollups(
+    db: &Db,
+    from: i64,
+    to: i64,
+    scope: &Scope,
+    limit: u32,
+    by: TopBy,
+) -> Result<Vec<TopClient>, ControlApiError> {
+    if scope.profile_id.is_some() || !client_rollups_seeded(db).await? {
+        return ranked_clients_raw(db, from, to, scope, limit, by).await;
+    }
+
+    let from_hour = from.div_euclid(MICROS_PER_HOUR);
+    let open_hour = to.div_euclid(MICROS_PER_HOUR);
+    let use_daily = (open_hour - from_hour) >= HOURS_PER_DAY * 2;
+    if use_daily {
+        let from_day = from.div_euclid(MICROS_PER_DAY);
+        let to_day = to.div_euclid(MICROS_PER_DAY);
+        let closed = load_client_rollups(
+            db,
+            RollupLoad {
+                table: "stats_client_daily",
+                bucket_col: "day",
+                from_bucket: from_day,
+                to_bucket: to_day,
+                node_id: scope.node_id.as_deref(),
+                limit,
+            },
+            by,
+        )
+        .await?;
+        let tail_from = (open_hour.saturating_mul(MICROS_PER_HOUR)).max(from);
+        let tail = if tail_from <= to {
+            ranked_clients_raw(db, tail_from, to, scope, limit, by).await?
+        } else {
+            Vec::new()
+        };
+        return Ok(merge_client_ranks(closed, tail, limit, by));
+    }
+
+    let closed = if from_hour < open_hour {
+        load_client_rollups(
+            db,
+            RollupLoad {
+                table: "stats_client_hourly",
+                bucket_col: "hour",
+                from_bucket: from_hour,
+                to_bucket: open_hour - 1,
+                node_id: scope.node_id.as_deref(),
+                limit,
+            },
+            by,
+        )
+        .await?
+    } else {
+        Vec::new()
+    };
+    let tail_from = (open_hour.saturating_mul(MICROS_PER_HOUR)).max(from);
+    let tail = if tail_from <= to {
+        ranked_clients_raw(db, tail_from, to, scope, limit, by).await?
+    } else {
+        Vec::new()
+    };
+    Ok(merge_client_ranks(closed, tail, limit, by))
+}
+
+async fn cache_stats_with_rollups(
+    db: &Db,
+    from: i64,
+    to: i64,
+    scope: &Scope,
+) -> Result<(i64, i64), ControlApiError> {
+    let seeded: bool = db
+        .with_read_conn(|conn| {
+            conn.query_row("SELECT EXISTS(SELECT 1 FROM stats_hourly)", [], |row| {
+                row.get(0)
+            })
+            .map_err(db_err)
+        })
+        .await?;
+    if !seeded {
+        return cache_stats_raw(db, from, to, scope).await;
+    }
+
+    let from_hour = from.div_euclid(MICROS_PER_HOUR);
+    let open_hour = to.div_euclid(MICROS_PER_HOUR);
+    let scope_c = scope.clone();
+    let closed = if from_hour < open_hour {
+        db.with_read_conn(move |conn| {
+            conn.query_row(
+                "SELECT COALESCE(SUM(cache_hits), 0), COALESCE(SUM(cache_misses), 0)
+                 FROM stats_hourly
+                 WHERE hour >= ?1 AND hour <= ?2
+                   AND (?3 IS NULL OR node_id = ?3)
+                   AND (?4 IS NULL OR profile_id = ?4)",
+                params![from_hour, open_hour - 1, scope_c.node_id, scope_c.profile_id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .map_err(db_err)
+        })
+        .await?
+    } else {
+        (0, 0)
+    };
+
+    let tail_from = (open_hour.saturating_mul(MICROS_PER_HOUR)).max(from);
+    let tail = if tail_from <= to {
+        cache_stats_raw(db, tail_from, to, scope).await?
+    } else {
+        (0, 0)
+    };
+    Ok((closed.0 + tail.0, closed.1 + tail.1))
 }
 
 async fn active_client_count(

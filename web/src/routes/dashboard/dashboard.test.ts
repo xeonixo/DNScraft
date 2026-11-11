@@ -80,6 +80,8 @@ function serve(overrides: Record<string, Handler> = {}): void {
 		'GET /readyz': () => ok({ ready: true }),
 		'GET /api/v1/stats/overview': () => ok(overview),
 		'GET /api/v1/stats/top_domains': () => ok(topDomains),
+		'GET /api/v1/stats/top_blocked_domains': () =>
+			ok({ domains: topDomains.domains.filter((d) => d.blocked > 0) }),
 		'GET /api/v1/stats/top_clients': () => ok(topClients),
 		'GET /api/v1/stats/cache': () => ok(cache),
 		'GET /api/v1/resolver/upstreams': () => ok(upstreams),
@@ -233,9 +235,10 @@ describe('dashboard tiles and panels', () => {
 	});
 
 	it('renders a domain with markup as inert text', async () => {
+		const risky = { domain: '<script>alert(1)</script>', queries: 3, blocked: 3 };
 		serve({
-			'GET /api/v1/stats/top_domains': () =>
-				ok({ domains: [{ domain: '<script>alert(1)</script>', queries: 3, blocked: 3 }] }),
+			'GET /api/v1/stats/top_domains': () => ok({ domains: [risky] }),
+			'GET /api/v1/stats/top_blocked_domains': () => ok({ domains: [risky] }),
 		});
 		const { container } = render(Page);
 
@@ -252,11 +255,29 @@ describe('dashboard tiles and panels', () => {
 						{ domain: '', queries: 90, blocked: 90 },
 					],
 				}),
+			'GET /api/v1/stats/top_blocked_domains': () =>
+				ok({ domains: [{ domain: '', queries: 90, blocked: 90 }] }),
 		});
 		render(Page);
 
 		expect(await screen.findByText('www.example.com')).toBeInTheDocument();
 		expect(screen.getByText(m.dashboard_section_upstreams())).toBeInTheDocument();
+	});
+
+	it('requests top domains and top blocked domains separately with limit 10', async () => {
+		serve();
+		render(Page);
+		await screen.findByText('www.example.com');
+
+		const domainUrls = fetchMock.mock.calls
+			.map(([url]) => String(url))
+			.filter((url) => url.includes('/stats/top_domains?'));
+		const blockedUrls = fetchMock.mock.calls
+			.map(([url]) => String(url))
+			.filter((url) => url.includes('/stats/top_blocked_domains?'));
+		expect(domainUrls.some((url) => url.includes('limit=10'))).toBe(true);
+		expect(blockedUrls.some((url) => url.includes('limit=10'))).toBe(true);
+		expect(domainUrls.every((url) => !url.includes('limit=100'))).toBe(true);
 	});
 
 	it('shows the unavailable state for a 404 and keeps the other panels', async () => {

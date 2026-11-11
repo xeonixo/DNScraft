@@ -758,3 +758,91 @@ async fn stats_profile_filter_scopes_every_dashboard_endpoint() {
     let (_, _, body) = request(&log, "/api/v1/stats/top_domains?profile_id=nobody").await;
     assert_eq!(json(&body)["data"]["domains"].as_array().unwrap().len(), 0);
 }
+
+#[tokio::test]
+async fn dashboard_tops_and_cache_match_raw_after_rollup() {
+    let (log, _clock) = harness(QueryLogConfig::default()).await;
+    // Closed hour (2h ago) plus open-hour tail — rollups fold both; reads merge
+    // closed hours from the top-N tables with a raw open-hour scan.
+    let mut events = Vec::new();
+    for i in 0..5u64 {
+        let mut spec = Spec::new(
+            at_secs(BASE_SECS - 2 * 3600 - 10 - i),
+            format!("hot{}.example.com", i % 2),
+        );
+        spec.client = Some(format!("client-{}", i % 3));
+        spec.cache = i % 2 == 0;
+        spec.blocked = i == 1;
+        events.push(spec.event());
+    }
+    events.push(Spec::new(at_secs(BASE_SECS - 15), "fresh.example.com").event());
+    log.insert_batch(events).await.unwrap();
+
+    // Before rollup: raw path still answers.
+    let (status, _, before) = request(&log, "/api/v1/stats/top_domains?limit=10").await;
+    assert_eq!(status, StatusCode::OK);
+    let before_domains = json(&before)["data"]["domains"].as_array().unwrap().clone();
+    assert!(!before_domains.is_empty());
+
+    log.run_rollup().await.unwrap();
+
+    let (_, _, after) = request(&log, "/api/v1/stats/top_domains?limit=10").await;
+    let after_json = json(&after);
+    let after_domains = after_json["data"]["domains"].as_array().unwrap();
+    assert_eq!(after_domains.len(), before_domains.len());
+    for (left, right) in before_domains.iter().zip(after_domains.iter()) {
+        assert_eq!(left["domain"], right["domain"]);
+        assert_eq!(left["queries"], right["queries"]);
+        assert_eq!(left["blocked"], right["blocked"]);
+    }
+
+    let (_, _, blocked) = request(&log, "/api/v1/stats/top_blocked_domains?limit=10").await;
+    let blocked_json = json(&blocked);
+    let blocked_domains = blocked_json["data"]["domains"].as_array().unwrap();
+    assert_eq!(blocked_domains[0]["domain"], "hot1.example.com");
+    assert_eq!(blocked_domains[0]["blocked"], 1);
+    assert!(
+        blocked_domains
+            .iter()
+            .filter(|row| row["blocked"].as_i64() == Some(1))
+            .count()
+            == 1
+    );
+
+    let (_, _, clients) = request(&log, "/api/v1/stats/top_clients?limit=10").await;
+    assert_eq!(
+        json(&clients)["data"]["clients"].as_array().unwrap().len(),
+        4 // three closed-hour clients + the anonymous open-hour source
+    );
+
+    let (_, _, cache_body) = request(&log, "/api/v1/stats/cache").await;
+    let cache = &json(&cache_body)["data"];
+    // Three cache hits in the closed hour (i = 0,2,4); open-hour row is a miss.
+    assert_eq!(cache["hits"], 3);
+    assert_eq!(cache["misses"], 2);
+}
+
+#[tokio::test]
+async fn rollup_pass_makes_closed_hour_tops_available_without_raw_seed_gap() {
+    let (log, clock) = harness(QueryLogConfig::default()).await;
+    log.insert_batch(vec![
+        Spec::new(at_secs(BASE_SECS - 2 * 3600 - 5), "a.example.com").event(),
+        Spec::new(at_secs(BASE_SECS - 2 * 3600 - 4), "a.example.com").event(),
+        Spec::new(at_secs(BASE_SECS - 2 * 3600 - 3), "b.example.com").event(),
+    ])
+    .await
+    .unwrap();
+    log.run_rollup().await.unwrap();
+    // Leave the raw retention window so a raw-only path would see nothing; rollups remain.
+    clock.advance(Duration::from_secs(40 * 86_400));
+    let (status, _, body) =
+        request(&log, "/api/v1/stats/top_domains?from=2023-01-01T00:00:00Z&limit=10").await;
+    assert_eq!(status, StatusCode::OK);
+    let body_json = json(&body);
+    let domains = body_json["data"]["domains"].as_array().unwrap();
+    assert_eq!(domains.len(), 2);
+    assert_eq!(domains[0]["domain"], "a.example.com");
+    assert_eq!(domains[0]["queries"], 2);
+    assert_eq!(domains[1]["domain"], "b.example.com");
+    assert_eq!(domains[1]["queries"], 1);
+}

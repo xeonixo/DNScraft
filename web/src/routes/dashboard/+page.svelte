@@ -24,6 +24,7 @@
 		getOverview,
 		getReadiness,
 		getStatus,
+		getTopBlockedDomains,
 		getTopClients,
 		getTopDomains,
 		FILTER_SET,
@@ -60,12 +61,13 @@
 
 	/** Shown for a value whose read has not produced data. */
 	const NO_VALUE = '—';
-	const POLL_INTERVAL_MS = 30_000;
+	/** Health strip / upstreams / alerts — cheap, polled often. */
+	const STATUS_POLL_MS = 30_000;
+	/** Overview, tops, cache — heavy aggregations, polled less often. */
+	const STATS_POLL_MS = 90_000;
 	const POLL_MAX_BACKOFF_MS = 300_000;
-	/** Rows shown per top list. */
+	/** Rows shown per top list (and fetched from the API). */
 	const TOP_LIMIT = 10;
-	/** Domains fetched for both lists; the blocked ranking is computed from this window. */
-	const DOMAIN_FETCH_LIMIT = 100;
 
 	const periodOptions: { value: Period; label: string }[] = [
 		{ value: '24h', label: m.period_24h() },
@@ -79,6 +81,7 @@
 	let readiness = $state<Result<Readiness>>({ kind: 'loading' });
 	let overview = $state<Result<StatsOverview>>({ kind: 'loading' });
 	let domains = $state<Result<TopDomain[]>>({ kind: 'loading' });
+	let blocked = $state<Result<TopDomain[]>>({ kind: 'loading' });
 	let clients = $state<Result<TopClient[]>>({ kind: 'loading' });
 	let cache = $state<Result<CacheStats>>({ kind: 'loading' });
 	let upstreams = $state<Result<UpstreamsData>>({ kind: 'loading' });
@@ -119,7 +122,7 @@
 			await resumeFilterSet(FILTER_SET);
 			pausedUntil = null;
 			announce(m.dashboard_resumed());
-			poller.refresh();
+			refreshAll();
 		} catch (cause) {
 			resumeFailure = failureOf(cause);
 		} finally {
@@ -127,46 +130,68 @@
 		}
 	}
 
-	/** One polling cycle reads every panel. Returns false when any read failed (triggers backoff). */
-	async function refreshAll(): Promise<boolean> {
-		const now = new Date();
-		const current = period;
-		const [s, r, o, d, c, k, u, a] = await Promise.all([
+	/** Cheap health reads; polled every 30s. */
+	async function refreshStatus(): Promise<boolean> {
+		const [s, r, u, a] = await Promise.all([
 			settle(getStatus()),
 			settle(getReadiness()),
-			settle(getOverview(current, now)),
-			settle(getTopDomains(current, DOMAIN_FETCH_LIMIT, now)),
-			settle(getTopClients(current, TOP_LIMIT, now)),
-			settle(getCacheStats(current, now)),
 			settle(getUpstreams()),
 			settle(getAlerts()),
 		]);
 		status = s;
 		readiness = r;
-		overview = o;
-		domains = d;
-		clients = c;
-		cache = k;
 		upstreams = u;
 		alertCount = a.kind === 'ok' ? a.data.active_count : 0;
-		return [s, r, o, d, c, k, u].every((result) => result.kind !== 'error');
+		return [s, r, u].every((result) => result.kind !== 'error');
 	}
 
-	const poller = createPoller(refreshAll, {
-		intervalMs: POLL_INTERVAL_MS,
+	/** Heavy aggregations; polled less often so raw-log scans stay rare. */
+	async function refreshStats(): Promise<boolean> {
+		const now = new Date();
+		const current = period;
+		const [o, d, b, c, k] = await Promise.all([
+			settle(getOverview(current, now)),
+			settle(getTopDomains(current, TOP_LIMIT, now)),
+			settle(getTopBlockedDomains(current, TOP_LIMIT, now)),
+			settle(getTopClients(current, TOP_LIMIT, now)),
+			settle(getCacheStats(current, now)),
+		]);
+		overview = o;
+		domains = d;
+		blocked = b;
+		clients = c;
+		cache = k;
+		return [o, d, b, c, k].every((result) => result.kind !== 'error');
+	}
+
+	const statusPoller = createPoller(refreshStatus, {
+		intervalMs: STATUS_POLL_MS,
+		maxBackoffMs: POLL_MAX_BACKOFF_MS,
+		doc: globalThis.document,
+	});
+	const statsPoller = createPoller(refreshStats, {
+		intervalMs: STATS_POLL_MS,
 		maxBackoffMs: POLL_MAX_BACKOFF_MS,
 		doc: globalThis.document,
 	});
 
+	/** Refresh both strips after an admin action (pause/resume/flush). */
+	function refreshAll(): void {
+		statusPoller.refresh();
+		statsPoller.refresh();
+	}
+
 	onMount(() => {
-		poller.start();
+		statusPoller.start();
+		statsPoller.start();
 		void loadPause();
 		const tick = setInterval(() => (clock = Date.now()), 15_000);
 		void settle(listClusterNodes()).then((result) => {
 			if (result.kind === 'ok') clusterNodes = result.data;
 		});
 		return () => {
-			poller.stop();
+			statusPoller.stop();
+			statsPoller.stop();
 			clearInterval(tick);
 		};
 	});
@@ -196,15 +221,11 @@
 		overview.kind === 'ok' ? view.answerSourceRows(overview.data.by_answer_source) : [],
 	);
 
-	/** Each top list shows TOP_LIMIT rows; the rest of the fetched window sits behind "Show more". */
 	const topDomainRows = $derived(domains.kind === 'ok' ? domains.data : []);
+	/** Drop zero-blocked rows the ranking endpoint may still return at the tail. */
 	const blockedDomains = $derived(
-		domains.kind === 'ok' ? view.topBlockedDomains(domains.data, DOMAIN_FETCH_LIMIT) : [],
+		blocked.kind === 'ok' ? view.topBlockedDomains(blocked.data, TOP_LIMIT) : [],
 	);
-	const topDomainHead = $derived(topDomainRows.slice(0, TOP_LIMIT));
-	const topDomainRest = $derived(topDomainRows.slice(TOP_LIMIT));
-	const blockedHead = $derived(blockedDomains.slice(0, TOP_LIMIT));
-	const blockedRest = $derived(blockedDomains.slice(TOP_LIMIT));
 	const clientRows = $derived(clients.kind === 'ok' ? clients.data : []);
 
 	/** Largest value in each list, so the proportional bars share one scale per list. */
@@ -279,7 +300,7 @@
 		pausedUntil = until;
 		clock = Date.now();
 		announce(m.dashboard_pause_success({ time: formatDateTime(new Date(until), locale) }));
-		poller.refresh();
+		refreshAll();
 	}
 
 	function onFlushed(result: FlushResult): void {
@@ -290,7 +311,7 @@
 				? m.dashboard_cache_success_all({ count })
 				: m.dashboard_cache_success_domain({ domain: result.domain ?? '', count }),
 		);
-		poller.refresh();
+		refreshAll();
 	}
 </script>
 
@@ -410,7 +431,7 @@
 			options={periodOptions}
 			bind:value={period}
 			label={m.dashboard_period_label()}
-			onchange={() => poller.refresh()}
+			onchange={() => statsPoller.refresh()}
 		/>
 	</header>
 
@@ -447,7 +468,7 @@
 		</section>
 	{/if}
 	{#if status.kind !== 'ok'}
-		<ResultNotice result={status} onretry={() => poller.refresh()} />
+		<ResultNotice result={status} onretry={() => statusPoller.refresh()} />
 	{/if}
 
 	<div class="tiles">
@@ -503,7 +524,7 @@
 					</div>
 				</GroupedList>
 			{:else}
-				<ResultNotice result={overview} onretry={() => poller.refresh()} />
+				<ResultNotice result={overview} onretry={() => statsPoller.refresh()} />
 			{/if}
 		</div>
 
@@ -546,53 +567,39 @@
 					<p class="foot">{upstreamsFooter}</p>
 				</details>
 			{:else if upstreams.kind !== 'ok'}
-				<ResultNotice result={upstreams} onretry={() => poller.refresh()} />
+				<ResultNotice result={upstreams} onretry={() => statusPoller.refresh()} />
 			{/if}
 		</div>
 
 		{#if domains.kind === 'ok'}
 			<div class="cell">
 				<GroupedList header={m.dashboard_section_top_domains()}>
-					{#each topDomainHead as row, index (index)}
+					{#each topDomainRows as row, index (index)}
 						{@render topDomainRow(row)}
 					{:else}
 						<GroupedRow label={m.dashboard_empty_period()} />
 					{/each}
-					{#if topDomainRest.length > 0}
-						<details class="disclosure fold">
-							<summary>{m.dashboard_show_more()}</summary>
-							<div class="rows">
-								{#each topDomainRest as row, index (index)}
-									{@render topDomainRow(row)}
-								{/each}
-							</div>
-						</details>
-					{/if}
 				</GroupedList>
 			</div>
+		{:else}
+			<div class="cell">
+				<ResultNotice result={domains} onretry={() => statsPoller.refresh()} />
+			</div>
+		{/if}
 
+		{#if blocked.kind === 'ok'}
 			<div class="cell">
 				<GroupedList header={m.dashboard_section_top_blocked()}>
-					{#each blockedHead as row, index (index)}
+					{#each blockedDomains as row, index (index)}
 						{@render blockedDomainRow(row)}
 					{:else}
 						<GroupedRow label={m.dashboard_nothing_blocked()} />
 					{/each}
-					{#if blockedRest.length > 0}
-						<details class="disclosure fold">
-							<summary>{m.dashboard_show_more()}</summary>
-							<div class="rows">
-								{#each blockedRest as row, index (index)}
-									{@render blockedDomainRow(row)}
-								{/each}
-							</div>
-						</details>
-					{/if}
 				</GroupedList>
 			</div>
 		{:else}
-			<div class="cell wide">
-				<ResultNotice result={domains} onretry={() => poller.refresh()} />
+			<div class="cell">
+				<ResultNotice result={blocked} onretry={() => statsPoller.refresh()} />
 			</div>
 		{/if}
 
@@ -617,13 +624,13 @@
 					{/each}
 				</GroupedList>
 			{:else}
-				<ResultNotice result={clients} onretry={() => poller.refresh()} />
+				<ResultNotice result={clients} onretry={() => statsPoller.refresh()} />
 			{/if}
 		</div>
 
 		<div class="cell">
 			{#if cache.kind !== 'ok'}
-				<ResultNotice result={cache} onretry={() => poller.refresh()} />
+				<ResultNotice result={cache} onretry={() => statsPoller.refresh()} />
 			{/if}
 			<GroupedList header={m.dashboard_section_cache()}>
 				{#if cache.kind === 'ok'}

@@ -147,6 +147,16 @@ export const getTopDomains = (period: Period, limit: number, now?: Date): Promis
 		`/stats/top_domains?${periodQuery(period, now)}&limit=${limit}`,
 	).then((data) => data.domains);
 
+/** Domains ranked by blocked count (not by total queries). */
+export const getTopBlockedDomains = (
+	period: Period,
+	limit: number,
+	now?: Date,
+): Promise<TopDomain[]> =>
+	get<{ domains: TopDomain[] }>(
+		`/stats/top_blocked_domains?${periodQuery(period, now)}&limit=${limit}`,
+	).then((data) => data.domains);
+
 export const getTopClients = (period: Period, limit: number, now?: Date): Promise<TopClient[]> =>
 	get<{ clients: TopClient[] }>(
 		`/stats/top_clients?${periodQuery(period, now)}&limit=${limit}`,

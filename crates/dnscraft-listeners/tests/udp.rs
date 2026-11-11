@@ -124,14 +124,14 @@ async fn same_port_v4_and_v6_unspecified() {
     let clock: Arc<dyn dnscraft_listeners::Clock> = Arc::new(SystemClock);
 
     // Bind IPv4 first with port 0, then IPv6 on the same port.
-    let adm4 = Arc::new(std::sync::Mutex::new(dnscraft_listeners::Admission::new(
+    let adm4 = Arc::new(dnscraft_listeners::Admission::new(
         &limits,
         &PublicConfig::default(),
-    )));
-    let adm6 = Arc::new(std::sync::Mutex::new(dnscraft_listeners::Admission::new(
+    ));
+    let adm6 = Arc::new(dnscraft_listeners::Admission::new(
         &limits,
         &PublicConfig::default(),
-    )));
+    ));
     let join4 = tokio::spawn(serve_udp(UdpServeParams {
         listener: ListenerConfig {
             node_id: None,

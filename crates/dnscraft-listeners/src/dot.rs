@@ -35,7 +35,7 @@ pub struct DotServeParams<H: ?Sized> {
     /// Shared limits (includes `tls_handshake_timeout`).
     pub limits: Limits,
     /// Shared admission (bans / rates) across listeners.
-    pub admission: Arc<Mutex<Admission>>,
+    pub admission: Arc<Admission>,
     /// Policy or test handler.
     pub handler: Arc<H>,
     /// Wall clock.
@@ -89,7 +89,7 @@ where
 
     let resolver = ListenerCertResolver::local(Arc::clone(&certs), Arc::clone(&tls_stats));
     let tls_policy = listener.tls_policy.clone().unwrap_or_default();
-    let tls_config: Arc<ServerConfig> = tcp_server_config(resolver, &[ALPN_DOT], &tls_policy);
+    let tls_config: Arc<ServerConfig> = tcp_server_config(resolver, &[ALPN_DOT], &tls_policy)?;
 
     let conn_cap_n = limits.max_connections_per_listener.max(1);
     let conn_cap = Arc::new(Semaphore::new(conn_cap_n as usize));
@@ -152,11 +152,7 @@ fn handle_accept<H>(
     // Banned public source: close before any TLS work.
     {
         let now = shared.clock.now();
-        let mut adm = shared
-            .admission
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if adm.is_banned(peer.ip(), now) {
+        if shared.admission.is_banned(peer.ip(), now) {
             FramedStats::bump(&shared.stats.dropped_admission);
             drop(stream);
             return;

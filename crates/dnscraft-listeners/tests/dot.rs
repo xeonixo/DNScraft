@@ -441,7 +441,7 @@ async fn public_ban_after_strikes_from_public_ip_helper() {
         ))),
         registry: Arc::new(PolicyClientIds(engine)),
     };
-    let mut adm = Admission::new(
+    let adm = Admission::new(
         &Limits::default(),
         &PublicConfig {
             ban_strikes: 2,
@@ -451,8 +451,8 @@ async fn public_ban_after_strikes_from_public_ip_helper() {
     let peer: IpAddr = "203.0.113.77".parse().unwrap();
     let now = SystemTime::UNIX_EPOCH + Duration::from_secs(50);
     let bad = inspect_public_sni(Some("unknown.dns.example.com"), &gate);
-    apply_sni_strike(&mut adm, peer, &bad, now);
-    apply_sni_strike(&mut adm, peer, &bad, now);
+    apply_sni_strike(&adm, peer, &bad, now);
+    apply_sni_strike(&adm, peer, &bad, now);
     let d = adm.check(
         &listener_dot(
             SocketAddr::from((Ipv4Addr::LOCALHOST, 853)),

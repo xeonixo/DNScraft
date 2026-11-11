@@ -6,7 +6,6 @@ mod support;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
@@ -164,7 +163,8 @@ impl ServerHarness {
             resolver,
             &[dnscraft_listeners::ALPN_DOT],
             &TlsPolicy::default(),
-        );
+        )
+        .expect("tls config");
         let admission = if exposure == Exposure::Public {
             support::public_test_admission(&Limits::default(), &PublicConfig::default())
         } else {
@@ -174,7 +174,6 @@ impl ServerHarness {
             .await
             .unwrap();
         let addr = listener.local_addr().unwrap();
-        let adm = Arc::clone(&admission);
         let gate = Arc::new(gate);
         let certs_c = Arc::clone(&certs);
         let stats_c = Arc::clone(&stats);
@@ -186,7 +185,7 @@ impl ServerHarness {
                 };
                 let config = Arc::clone(&config);
                 let gate = Arc::clone(&gate);
-                let adm = Arc::clone(&adm);
+                let adm = Arc::clone(&admission);
                 let certs = Arc::clone(&certs_c);
                 let stats = Arc::clone(&stats_c);
                 let clock = Arc::clone(&clock);
@@ -311,7 +310,7 @@ fn inspect_public_sni_matrix() {
     );
 
     // Strikes only for missing / unknown; public peer records them.
-    let mut adm = Admission::new(
+    let adm = Admission::new(
         &Limits::default(),
         &PublicConfig {
             ban_strikes: 2,
@@ -321,8 +320,8 @@ fn inspect_public_sni_matrix() {
     let public_peer: IpAddr = "203.0.113.50".parse().unwrap();
     let now = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
     let unknown = inspect_public_sni(Some("unknown.dns.example.com"), &g);
-    apply_sni_strike(&mut adm, public_peer, &unknown, now);
-    apply_sni_strike(&mut adm, public_peer, &unknown, now);
+    apply_sni_strike(&adm, public_peer, &unknown, now);
+    apply_sni_strike(&adm, public_peer, &unknown, now);
     // After 2 strikes → banned.
     let decision = adm.check(
         &dnscraft_listeners::ListenerConfig {
@@ -503,19 +502,16 @@ async fn cert_hot_reload_keeps_open_connection() {
         resolver,
         &[dnscraft_listeners::ALPN_DOT],
         &TlsPolicy::default(),
-    );
+    )
+    .expect("tls config");
 
     let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
         .await
         .unwrap();
     let addr = listener.local_addr().unwrap();
-    let admission = Arc::new(Mutex::new(Admission::new(
-        &Limits::default(),
-        &PublicConfig::default(),
-    )));
+    let admission = Arc::new(Admission::new(&Limits::default(), &PublicConfig::default()));
     let gate = Arc::new(g);
     let certs_c = Arc::clone(&certs);
-    let adm = Arc::clone(&admission);
     let stats = Arc::new(TlsStats::default());
 
     let server = tokio::spawn(async move {
@@ -529,7 +525,7 @@ async fn cert_hot_reload_keeps_open_connection() {
                 exposure: Exposure::Local,
                 gate: gate.as_ref(),
                 certs: certs_c.as_ref(),
-                admission: adm.as_ref(),
+                admission: admission.as_ref(),
                 peer: peer1.ip(),
                 clock: &clock,
                 handshake_timeout: HANDSHAKE,
@@ -552,7 +548,7 @@ async fn cert_hot_reload_keeps_open_connection() {
                 exposure: Exposure::Local,
                 gate: gate.as_ref(),
                 certs: certs_c.as_ref(),
-                admission: adm.as_ref(),
+                admission: admission.as_ref(),
                 peer: peer2.ip(),
                 clock: &clock,
                 handshake_timeout: HANDSHAKE,
@@ -636,7 +632,7 @@ fn quic_config_has_zero_early_data_and_tls13_alpn() {
     let certs = Arc::new(CertResolver::new());
     let stats = Arc::new(TlsStats::default());
     let resolver = ListenerCertResolver::local(certs, stats);
-    let cfg = quic_server_config(resolver, &TlsPolicy::default());
+    let cfg = quic_server_config(resolver, &TlsPolicy::default()).expect("tls config");
     assert_eq!(cfg.max_early_data_size, 0);
     assert!(cfg.alpn_protocols.iter().any(|p| p == b"doq"));
     assert!(cfg.alpn_protocols.iter().any(|p| p == b"h3"));
@@ -651,7 +647,8 @@ fn tcp_config_alpn_is_per_protocol_family() {
         ListenerCertResolver::local(Arc::clone(&certs), Arc::clone(&stats)),
         &[dnscraft_listeners::ALPN_DOT],
         &TlsPolicy::default(),
-    );
+    )
+    .expect("tls config");
     assert_eq!(dot.alpn_protocols, vec![b"dot".to_vec()]);
 
     let doh = tcp_server_config(
@@ -661,7 +658,8 @@ fn tcp_config_alpn_is_per_protocol_family() {
             dnscraft_listeners::ALPN_HTTP_1_1,
         ],
         &TlsPolicy::default(),
-    );
+    )
+    .expect("tls config");
     assert_eq!(
         doh.alpn_protocols,
         vec![b"h2".to_vec(), b"http/1.1".to_vec()]

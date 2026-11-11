@@ -33,7 +33,6 @@ use dnscraft_policy::{
     ViewConfig, ViewId,
 };
 use dnscraft_resolver::{Resolver, ResolverConfig};
-use std::sync::Mutex;
 use tokio::sync::{oneshot, watch};
 
 fn empty_filter() -> Arc<FilterEngine> {
@@ -110,10 +109,7 @@ async fn main() {
         let (udp_sd_tx, udp_sd_rx) = watch::channel(false);
         let (tcp_sd_tx, tcp_sd_rx) = watch::channel(false);
 
-        let admission = Arc::new(Mutex::new(Admission::new(
-            &Limits::default(),
-            &PublicConfig::default(),
-        )));
+        let admission = Arc::new(Admission::new(&Limits::default(), &PublicConfig::default()));
         let mut udp_join = tokio::spawn(serve_udp(UdpServeParams {
             listener: ListenerConfig {
                 node_id: None,

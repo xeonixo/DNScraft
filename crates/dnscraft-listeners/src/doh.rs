@@ -94,7 +94,7 @@ pub struct DohServeParams<H: ?Sized> {
     /// Shared limits.
     pub limits: Limits,
     /// Shared admission (bans / rates) across listeners.
-    pub admission: Arc<Mutex<Admission>>,
+    pub admission: Arc<Admission>,
     /// Policy or test handler.
     pub handler: Arc<H>,
     /// Wall clock.
@@ -128,7 +128,7 @@ pub(crate) struct DohShared<H: ?Sized> {
     pub(crate) listener: ListenerConfig,
     pub(crate) limits: Limits,
     pub(crate) handler: Arc<H>,
-    pub(crate) admission: Arc<Mutex<Admission>>,
+    pub(crate) admission: Arc<Admission>,
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) stats: Arc<DohStats>,
     pub(crate) sni_gate: Arc<SniGate>,
@@ -196,7 +196,7 @@ where
     let resolver = ListenerCertResolver::local(Arc::clone(&certs), Arc::clone(&tls_stats));
     let tls_policy = listener.tls_policy.clone().unwrap_or_default();
     let alpn: Vec<&[u8]> = tls_policy.alpn.iter().map(String::as_bytes).collect();
-    let tls_config: Arc<ServerConfig> = tcp_server_config(resolver, &alpn, &tls_policy);
+    let tls_config: Arc<ServerConfig> = tcp_server_config(resolver, &alpn, &tls_policy)?;
     let acceptor = tls_acceptor(Arc::clone(&tls_config));
 
     let conn_cap_n = limits.max_connections_per_listener.max(1);
@@ -267,11 +267,7 @@ fn handle_accept<H>(
     // Banned public source: close before any TLS work.
     {
         let now = shared.clock.now();
-        let mut adm = shared
-            .admission
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if adm.is_banned(peer.ip(), now) {
+        if shared.admission.is_banned(peer.ip(), now) {
             DohStats::bump(&shared.stats.dropped_banned);
             drop(stream);
             return;
@@ -329,11 +325,12 @@ fn handle_accept<H>(
                     TlsStats::bump(&tls_stats.handshake_fail);
                 }
                 {
-                    let mut adm = shared
-                        .admission
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    apply_tls_handshake_strike(&mut adm, exposure, peer.ip(), shared.clock.now());
+                    apply_tls_handshake_strike(
+                        &shared.admission,
+                        exposure,
+                        peer.ip(),
+                        shared.clock.now(),
+                    );
                 }
                 release_per_source(&shared.per_source, source);
                 DohStats::bump(&shared.stats.closed);
@@ -494,7 +491,7 @@ impl ConnActivity {
 /// Only unvalidated sources on a public listener, where a spoofed source could otherwise hold
 /// connection permits or trigger handshake strikes against a victim address.
 pub(crate) fn needs_address_validation(
-    admission: &Mutex<Admission>,
+    admission: &Admission,
     exposure: Exposure,
     source: IpAddr,
     validated: bool,
@@ -502,10 +499,7 @@ pub(crate) fn needs_address_validation(
     if validated {
         return false;
     }
-    let class = admission
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .classify(source);
+    let class = admission.classify(source);
     public_client_id_required(exposure, class)
 }
 
@@ -640,8 +634,6 @@ where
             let now = shared.clock.now();
             shared
                 .admission
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .strike(peer.ip(), StrikeReason::WebAuth, now);
         }
         return response;
@@ -666,23 +658,14 @@ fn web_allowed<H: ?Sized>(shared: &DohShared<H>, peer: IpAddr) -> bool {
     shared.web.public()
         && shared.listener.exposure == Exposure::Public
         && shared.web.allows_public_cidr(peer)
-        && !shared
-            .admission
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_banned(peer, now)
+        && !shared.admission.is_banned(peer, now)
 }
 
 /// `true` for a private TCP peer: the web UI is routed by source, never for public sources. On a
 /// public-exposure listener this extends the rule that already gives private sources local DNS
 /// rules; the owner opts in per listener with `control_api.shared_doh_listener`.
 fn private_source<H: ?Sized>(shared: &DohShared<H>, peer: IpAddr) -> bool {
-    shared
-        .admission
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .classify(peer)
-        == SourceClass::Private
+    shared.admission.classify(peer) == SourceClass::Private
 }
 
 async fn handle_http<H>(
@@ -812,11 +795,9 @@ where
 
     let now = shared.clock.now();
     let decision = {
-        let mut adm = shared
+        shared
             .admission
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        adm.check(&shared.listener, source, &client_id_state, now)
+            .check(&shared.listener, source, &client_id_state, now)
     };
 
     match decision {
@@ -929,11 +910,9 @@ fn maybe_alt_svc<H: ?Sized>(shared: &DohShared<H>, headers: &mut HeaderMap) {
 /// request (bad method/type/base64 or oversized body). Public sources only.
 pub(crate) fn strike_malformed<H: ?Sized>(shared: &DohShared<H>, peer: IpAddr) {
     let now = shared.clock.now();
-    let mut adm = shared
+    shared
         .admission
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    adm.strike(peer, StrikeReason::MalformedFraming, now);
+        .strike(peer, StrikeReason::MalformedFraming, now);
 }
 
 fn empty_parts(status: StatusCode) -> DohHttpParts {
@@ -961,13 +940,7 @@ pub(crate) fn resolve_path_client_id<H: ?Sized>(
     path: &DohPath,
 ) -> Result<ClientIdState, StatusCode> {
     let exposure = shared.listener.exposure;
-    let class = {
-        let adm = shared
-            .admission
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        adm.classify(peer)
-    };
+    let class = { shared.admission.classify(peer) };
     // Private source on a public listener → local path rules.
     let effective = if public_client_id_required(exposure, class) {
         Exposure::Public
@@ -1005,11 +978,11 @@ pub(crate) fn resolve_path_client_id<H: ?Sized>(
                 DohStats::bump(&shared.stats.http_404);
                 DohStats::bump(&shared.stats.path_strikes);
                 {
-                    let mut adm = shared
-                        .admission
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    adm.strike(peer, StrikeReason::UnknownClientId, shared.clock.now());
+                    shared.admission.strike(
+                        peer,
+                        StrikeReason::UnknownClientId,
+                        shared.clock.now(),
+                    );
                 }
                 Err(StatusCode::NOT_FOUND)
             }

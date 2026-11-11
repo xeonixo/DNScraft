@@ -159,7 +159,7 @@ fn bench_udp(c: &mut Criterion) {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     let public = PublicConfig::default();
-    let admission = Arc::new(std::sync::Mutex::new(Admission::new(&limits, &public)));
+    let admission = Arc::new(Admission::new(&limits, &public));
     let handler = Arc::new(FakeHandler::new(answer()));
     let listener = ListenerConfig {
         node_id: None,

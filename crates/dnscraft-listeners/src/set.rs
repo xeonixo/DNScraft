@@ -38,7 +38,7 @@ pub struct ListenerSet<H: QueryHandler + ?Sized = PolicyEngine> {
     sni_gate: Arc<SniGate>,
     clock: Arc<dyn Clock>,
     sink: Arc<dyn QueryEventSink>,
-    admission: Arc<Mutex<Admission>>,
+    admission: Arc<Admission>,
     ddr: Arc<RwLock<DdrEndpoints>>,
     web: Arc<WebSlot>,
     cluster: Arc<ClusterSlot>,
@@ -168,11 +168,11 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
             registry: client_ids,
         });
 
-        let admission = Arc::new(Mutex::new(Admission::with_classifier(
+        let admission = Arc::new(Admission::with_classifier(
             &config.limits,
             &config.public,
             classify,
-        )));
+        ));
         // Endpoints are filled after binding: DDR must advertise the addresses
         // that actually bound, not the configured ones (port 0 / failures).
         let ddr = DdrEndpoints::new(&config.ddr, public_domain.clone(), Vec::new()).shared();
@@ -220,19 +220,13 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
     /// Sources currently banned (strikes from DNS or web), with their ban expiry.
     pub fn banned_sources(&self) -> Vec<(IpAddr, SystemTime)> {
         let now = self.clock.now();
-        self.admission
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .banned_sources(now)
+        self.admission.banned_sources(now)
     }
 
     /// Lifts the ban on `source`; `true` when it was banned.
     pub fn unban(&self, source: IpAddr) -> bool {
         let now = self.clock.now();
-        self.admission
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .unban(source, now)
+        self.admission.unban(source, now)
     }
 
     /// Slot for the web UI / API handler served on local DoH listeners (empty → `404`).
@@ -340,11 +334,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
         };
 
         if rebuild_admission {
-            let mut adm = self
-                .admission
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            adm.reconfigure(&cfg.limits, &cfg.public);
+            self.admission.reconfigure(&cfg.limits, &cfg.public);
         }
 
         if let Some(new_reserved) = reserved {
@@ -372,13 +362,7 @@ impl<H: QueryHandler + 'static> ListenerSet<H> {
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let ban_entries = {
-            let adm = self
-                .admission
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            adm.ban_entry_count() as u64
-        };
+        let ban_entries = { self.admission.ban_entry_count() as u64 };
 
         let mut listeners = Vec::with_capacity(inner.running.len());
         for running in inner.running.values() {

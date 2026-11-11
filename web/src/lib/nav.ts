@@ -103,10 +103,16 @@ export const settingsTabs: { path: StaticRouteId; label: () => string }[] = [
 ];
 
 /**
- * /feedback stays routable but is not in navigation (it is a placeholder). Not listed here, so
- * it has no sidebar, palette or title entry.
+ * /feedback is routable and has a page title, but stays out of the sidebar and
+ * command palette (opened from Help / deep links).
  */
-const routed: NavItem[] = [...navSections.flatMap((section) => section.items), navSettings];
+const navFeedback = item('/feedback', () => m.feedback_title(), 'message-square');
+
+const routed: NavItem[] = [
+	...navSections.flatMap((section) => section.items),
+	navSettings,
+	navFeedback,
+];
 
 /** The nav entry for a route, used for the toolbar title, document title and placeholder icon. */
 export function navItemForPath(pathname: string): NavItem | undefined {

@@ -787,6 +787,7 @@ dependencies = [
  "dnscraft-api",
  "dnscraft-clients",
  "dnscraft-cluster",
+ "dnscraft-common",
  "dnscraft-filtering",
  "dnscraft-listeners",
  "dnscraft-policy",

@@ -14,7 +14,7 @@ use serde_json::json;
 
 use super::alerts_routes::list_alerts;
 use super::audit_routes::list_audit;
-use super::auth::local::local_login;
+use super::auth::local::{auth_bootstrap_status, local_bootstrap, local_login};
 use super::auth::oidc::{oidc_authorize_url, oidc_callback, oidc_status, put_oidc_client_secret};
 use super::auth::session_routes::{list_sessions, revoke_session};
 use super::auth::tokens::{create_token, delete_token, list_tokens};
@@ -290,7 +290,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
         // Token minting is master-only (SPEC-cluster § No cross-node privilege
         // escalation). A sub-node authenticates the replicated tokens but
         // cannot issue credentials of its own; a standalone node is its own
-        // master. Account provisioning has no HTTP route.
+        // master. First-run local admin uses POST /auth/local/bootstrap.
         if !state.is_cluster_sub_node() {
             // Token management (mint, list, revoke) is master-only for the same
             // reason: a sub-node must not manage credentials.
@@ -300,15 +300,19 @@ pub(crate) fn build_router(state: AppState) -> Router {
         }
         // The current principal (role + actor + CSRF token) for the SPA.
         api = api.route("/auth/me", get(auth_me));
+        // First-run probe: whether `/setup` should create the initial admin.
+        api = api.route("/auth/bootstrap", get(auth_bootstrap_status));
         // Logout revokes the cookie session; available whenever sessions exist.
         api = api.route("/auth/logout", post(logout));
         // Session list and revoke (WX8); the handlers enforce ownership.
         api = api
             .route("/auth/sessions", get(list_sessions))
             .route("/auth/sessions/{id}", delete(revoke_session));
-        // Break-glass login is mounted only when local accounts are provisioned.
+        // Break-glass login / one-shot bootstrap when local accounts are enabled.
         if state.local_login_store().is_some() {
-            api = api.route("/auth/local/login", post(local_login));
+            api = api
+                .route("/auth/local/login", post(local_login))
+                .route("/auth/local/bootstrap", post(local_bootstrap));
         }
         // OIDC routes are always mounted with auth so WebUI can enable SSO
         // without a restart; handlers no-op when the relying party is unset.

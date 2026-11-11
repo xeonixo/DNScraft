@@ -79,8 +79,10 @@
 - [x] **GA-W6b** List response includes `query_log_dropped` and `query_log_stream_dropped`.
 - [x] **GA-W6c** List response includes `total`; filter accepts `query_type` (subnet already existed).
 - [x] **GA-W6d** `mcp.*` write/validation codes in web error catalogue + en/de messages.
-- [X] **OWNER** "Dauerhaft blockieren" from the log: custom rules expire at `max_block_rule_lifetime`; decide whether a
-      permanent block belongs in the UI (not built).
+- [x] **OWNER** "Dauerhaft blockieren" from the log: **shipped**. Query-log RuleSheet
+      permanent allow/block writes `custom_rules` via `PUT /api/v1/filter-sets` (no
+      MCP lifetime cap). `max_block_rule_lifetime` applies only to MCP
+      `add_custom_rule` / `mcp_rules`.
 
 ## Found while building policy/clients/filter screens (W8, 2026-10-28)
 

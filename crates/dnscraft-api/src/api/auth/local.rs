@@ -90,6 +90,13 @@ pub struct LocalAccountStore {
 /// Source entries kept before expired ones are pruned (bounds memory).
 const MAX_TRACKED_LOGIN_SOURCES: usize = 10_000;
 
+/// Minimum password length accepted by first-run bootstrap (login itself has
+/// no length floor — existing hashes stay valid).
+const MIN_BOOTSTRAP_PASSWORD_LEN: usize = 8;
+
+/// Audit action for the one-shot first-admin create.
+const BOOTSTRAP_ACTION: &str = "auth.local.bootstrap";
+
 impl LocalAccountStore {
     /// Creates a store over `db` that locks an account after `max_attempts`
     /// failures within `lock_window`.
@@ -184,13 +191,79 @@ impl LocalAccountStore {
             .await
     }
 
+    /// Whether any local account exists. Used by the first-run bootstrap
+    /// surface: the one-shot admin create is public only while this is true.
+    pub async fn is_empty(&self) -> Result<bool, ControlApiError> {
+        self.db
+            .with_conn(|conn| {
+                let count: i64 = conn
+                    .query_row("SELECT COUNT(*) FROM local_accounts", [], |row| row.get(0))
+                    .map_err(db_err)?;
+                Ok(count == 0)
+            })
+            .await
+    }
+
+    /// Creates the first local admin when the store is empty.
+    ///
+    /// Returns [`ControlApiError::Module`] with
+    /// `control_api.auth.bootstrap_taken` when any account already exists, so a
+    /// concurrent second caller cannot race a second admin into place. The
+    /// check and insert share one connection transaction.
+    pub async fn bootstrap_admin(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> Result<(), ControlApiError> {
+        let username = username.trim();
+        if username.is_empty() {
+            return Err(ControlApiError::config(
+                "local account username must not be empty",
+            ));
+        }
+        if password.len() < MIN_BOOTSTRAP_PASSWORD_LEN {
+            return Err(ControlApiError::config(format!(
+                "local account password must be at least {MIN_BOOTSTRAP_PASSWORD_LEN} characters"
+            )));
+        }
+        let username = username.to_owned();
+        let password = Zeroizing::new(password.to_owned());
+        self.db
+            .with_conn(move |conn| {
+                let tx = conn.transaction().map_err(db_err)?;
+                let count: i64 = tx
+                    .query_row("SELECT COUNT(*) FROM local_accounts", [], |row| row.get(0))
+                    .map_err(db_err)?;
+                if count > 0 {
+                    return Err(ControlApiError::Module {
+                        code: "control_api.auth.bootstrap_taken",
+                        params: None,
+                    });
+                }
+                let hash = hash_password(password.as_bytes())?;
+                tx.execute(
+                    "INSERT INTO local_accounts
+                        (username, password_hash, role, failed_attempts, window_started, locked_until)
+                     VALUES (?1, ?2, ?3, 0, NULL, NULL)",
+                    params![username, hash, Role::Admin.as_str()],
+                )
+                .map_err(db_err)?;
+                tx.commit().map_err(db_err)?;
+                Ok(())
+            })
+            .await?;
+        self.epoch.fetch_add(1, Ordering::Relaxed);
+        self.notify();
+        Ok(())
+    }
+
     /// Creates or replaces a local account with `role`, storing only the
     /// Argon2id hash. Replacing an account clears its lockout state and bumps
     /// the session-invalidation epoch, so the change reaches the next
     /// [`AuthSnapshot`](super::AuthSnapshot).
     ///
-    /// Account provisioning is not part of the v1 HTTP surface; the binary (or
-    /// a later config endpoint) seeds accounts through this method.
+    /// First-run HTTP provisioning uses [`Self::bootstrap_admin`]; the binary
+    /// may still seed accounts through this method (`DNSCRAFT_ADMIN_PASSWORD_FILE`).
     pub async fn upsert(
         &self,
         username: &str,
@@ -260,6 +333,7 @@ impl LocalAccountStore {
                 })
                 .await?;
             self.audit(
+                LOGIN_ACTION,
                 username.trim(),
                 "error",
                 Some(ControlApiError::AuthLocked.code().to_owned()),
@@ -406,7 +480,8 @@ impl LocalAccountStore {
             Attempt::Success(_) => ("ok", None),
             Attempt::Failure(err) => ("error", Some(err.code().to_owned())),
         };
-        self.audit(&username, result, error_code).await?;
+        self.audit(LOGIN_ACTION, &username, result, error_code)
+            .await?;
 
         match attempt {
             Attempt::Success(role) => Ok(role),
@@ -415,9 +490,10 @@ impl LocalAccountStore {
         }
     }
 
-    /// Appends one local-login audit record. The password is never included.
+    /// Appends one local-auth audit record. The password is never included.
     async fn audit(
         &self,
+        action: &str,
         username: &str,
         result: &str,
         error_code: Option<String>,
@@ -428,7 +504,7 @@ impl LocalAccountStore {
             node_id: LOCAL_NODE_ID.to_owned(),
             actor_id: username.to_owned(),
             actor_type: "user".to_owned(),
-            action: LOGIN_ACTION.to_owned(),
+            action: action.to_owned(),
             object_type: "auth".to_owned(),
             object_id: username.to_owned(),
             config_version: None,
@@ -453,41 +529,37 @@ pub(crate) struct LocalLoginRequest {
     password: String,
 }
 
-/// `POST /api/v1/auth/local/login`: break-glass login.
-///
-/// On success a cookie session is created for the account's `viewer`/`admin`
-/// role and the synchronizer CSRF token is returned in the body. The public
-/// route is marked so by the RBAC middleware; no bearer token is required.
-pub(crate) async fn local_login(
-    State(state): State<AppState>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    Json(req): Json<LocalLoginRequest>,
+/// `GET /api/v1/auth/bootstrap`: whether the SPA should show the first-run wizard.
+#[derive(Serialize)]
+pub(crate) struct BootstrapStatus {
+    /// True only when local login is enabled and no account exists yet.
+    needs_setup: bool,
+    /// Whether `POST /auth/local/login` (and bootstrap) are mounted.
+    local_login: bool,
+    /// Whether OIDC sign-in is currently enabled.
+    oidc: bool,
+}
+
+/// Builds a cookie session response for a freshly authenticated local principal.
+async fn local_session_response(
+    state: &AppState,
+    peer: SocketAddr,
+    headers: &HeaderMap,
+    actor_id: String,
+    role: Role,
 ) -> Result<Response, ControlApiError> {
-    ensure_same_origin(&headers)?;
-    let local = state
-        .local_login_store()
-        .ok_or_else(|| ControlApiError::Internal {
-            message: "local login is not configured".to_owned(),
-        })?
-        .clone();
     let sessions = state
         .auth_state()
         .map(|auth| auth.sessions().clone())
         .ok_or_else(|| ControlApiError::Internal {
             message: "session authentication is not configured".to_owned(),
         })?;
-
-    let actor_id = req.username.trim().to_owned();
-    let source = crate::api::rate_limit::client_source(&state, peer.ip().to_canonical(), &headers);
-    let role = local
-        .authenticate_from(source, &req.username, req.password)
-        .await?;
+    let source = crate::api::rate_limit::client_source(state, peer.ip().to_canonical(), headers);
     let truncate = state
         .query_log()
         .map(|log| log.config().ip_truncate)
         .unwrap_or_default();
-    let meta = super::session_routes::session_meta(source, &headers, truncate);
+    let meta = super::session_routes::session_meta(source, headers, truncate);
     let created = sessions.create_with_meta(actor_id, role, meta).await?;
 
     // `Secure` follows direct TLS or a terminating reverse proxy's
@@ -511,6 +583,96 @@ pub(crate) async fn local_login(
     .into_response();
     response.headers_mut().insert(header::SET_COOKIE, cookie);
     Ok(response)
+}
+
+/// `GET /api/v1/auth/bootstrap`: public capability probe for `/setup` and `/login`.
+pub(crate) async fn auth_bootstrap_status(
+    State(state): State<AppState>,
+) -> Result<axum::Json<crate::api::response::Success<BootstrapStatus>>, ControlApiError> {
+    let local = state.local_login_store();
+    let needs_setup = match local {
+        Some(store) => store.is_empty().await?,
+        None => false,
+    };
+    let oidc = state
+        .oidc_runtime()
+        .is_some_and(|runtime| runtime.enabled());
+    Ok(crate::api::response::success(BootstrapStatus {
+        needs_setup,
+        local_login: local.is_some(),
+        oidc,
+    }))
+}
+
+/// `POST /api/v1/auth/local/bootstrap`: one-shot first admin when the store is empty.
+///
+/// Creates an `admin` local account, audits `auth.local.bootstrap`, and returns
+/// the same cookie session shape as login. Refused with
+/// `control_api.auth.bootstrap_taken` once any account exists, and unavailable
+/// on cluster sub-nodes (accounts replicate from the master).
+pub(crate) async fn local_bootstrap(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(req): Json<LocalLoginRequest>,
+) -> Result<Response, ControlApiError> {
+    ensure_same_origin(&headers)?;
+    if state.is_cluster_sub_node() {
+        return Err(ControlApiError::NotFound {
+            what: "auth.local.bootstrap".to_owned(),
+        });
+    }
+    let local = state
+        .local_login_store()
+        .ok_or_else(|| ControlApiError::Internal {
+            message: "local login is not configured".to_owned(),
+        })?
+        .clone();
+    let actor_id = req.username.trim().to_owned();
+    match local.bootstrap_admin(&req.username, &req.password).await {
+        Ok(()) => {
+            let _ = local.audit(BOOTSTRAP_ACTION, &actor_id, "ok", None).await;
+        }
+        Err(err) => {
+            let _ = local
+                .audit(
+                    BOOTSTRAP_ACTION,
+                    &actor_id,
+                    "error",
+                    Some(err.code().to_owned()),
+                )
+                .await;
+            return Err(err);
+        }
+    }
+    local_session_response(&state, peer, &headers, actor_id, Role::Admin).await
+}
+
+/// `POST /api/v1/auth/local/login`: break-glass login.
+///
+/// On success a cookie session is created for the account's `viewer`/`admin`
+/// role and the synchronizer CSRF token is returned in the body. The public
+/// route is marked so by the RBAC middleware; no bearer token is required.
+pub(crate) async fn local_login(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(req): Json<LocalLoginRequest>,
+) -> Result<Response, ControlApiError> {
+    ensure_same_origin(&headers)?;
+    let local = state
+        .local_login_store()
+        .ok_or_else(|| ControlApiError::Internal {
+            message: "local login is not configured".to_owned(),
+        })?
+        .clone();
+
+    let actor_id = req.username.trim().to_owned();
+    let source = crate::api::rate_limit::client_source(&state, peer.ip().to_canonical(), &headers);
+    let role = local
+        .authenticate_from(source, &req.username, req.password)
+        .await?;
+    local_session_response(&state, peer, &headers, actor_id, role).await
 }
 
 /// Argon2id hash of `password` as a PHC string (`$argon2id$v=19$…`).
@@ -548,6 +710,26 @@ mod tests {
         let db = Db::open_in_memory(clock()).await.unwrap();
         let store = LocalAccountStore::new(db.clone(), 5, Duration::from_secs(15 * 60));
         (store, db)
+    }
+
+    #[tokio::test]
+    async fn bootstrap_admin_is_one_shot() {
+        let (accounts, _) = store().await;
+        assert!(accounts.is_empty().await.unwrap());
+        accounts
+            .bootstrap_admin("owner", "correct horse battery staple")
+            .await
+            .unwrap();
+        assert!(!accounts.is_empty().await.unwrap());
+        let err = accounts
+            .bootstrap_admin("other", "correct horse battery staple")
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "control_api.auth.bootstrap_taken");
+        // Empty store rejects short passwords before creating anything.
+        let (empty, _) = store().await;
+        let short = empty.bootstrap_admin("x", "short").await.unwrap_err();
+        assert_eq!(short.code(), "control_api.config.invalid");
     }
 
     #[tokio::test]

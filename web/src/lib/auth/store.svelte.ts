@@ -1,5 +1,9 @@
 import { ApiError, getMe } from '$lib/api/client';
-import { loginLocal as requestLocalLogin, logoutRequest } from '$lib/api/auth';
+import {
+	bootstrapLocal as requestBootstrapLocal,
+	loginLocal as requestLocalLogin,
+	logoutRequest,
+} from '$lib/api/auth';
 import { CLIENT_NETWORK } from '$lib/api/error-codes';
 import { endSession, setLoadError, setPrincipal } from './state.svelte';
 
@@ -20,6 +24,11 @@ export async function loadMe(): Promise<void> {
 /** Break-glass sign-in; the caller decides where to go next. */
 export async function loginLocal(username: string, password: string): Promise<void> {
 	setPrincipal(await requestLocalLogin(username, password));
+}
+
+/** First-run admin create; the caller decides where to go next. */
+export async function bootstrapLocal(username: string, password: string): Promise<void> {
+	setPrincipal(await requestBootstrapLocal(username, password));
 }
 
 /** Revokes the server session, then clears the local state either way. */

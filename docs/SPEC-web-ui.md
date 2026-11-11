@@ -495,7 +495,7 @@ test query, settings). Every mutation is admin-only, as listed in
 | Route | Screen | Role | control-api endpoints | Notes (Apple pattern) |
 |---|---|---|---|---|
 | `/login` | Login | public | `GET /api/v1/auth/oidc/authorize-url`, `GET /api/v1/auth/oidc/callback` (browser redirect), `POST /api/v1/auth/local/login` | Centered grouped card on the grouped background; large title; OIDC as the filled primary button, break-glass in a grouped section; lockout is an inline status row |
-| `/setup` | First-run wizard | public → admin | `POST /api/v1/auth/local/login`, `GET /api/v1/status`, `GET /readyz`, `GET /api/v1/config`, `PUT /api/v1/config` | Grouped form, one section per step; toolbar with Back/Continue; progress; local-admin provisioning is a gap (Open questions) |
+| `/setup` | First-run wizard | public → admin | `GET /api/v1/auth/bootstrap`, `POST /api/v1/auth/local/bootstrap`, then links to profiles/rules/dashboard | Creates the first local admin while `needs_setup`; redirects to `/login` once accounts exist; env seed via `DNSCRAFT_ADMIN_PASSWORD_FILE` skips the wizard |
 | `/dashboard` | Dashboard / node status (includes former `/statistics`) | viewer/admin | `GET /api/v1/status`, `GET /api/v1/stats/overview`, `GET /api/v1/stats/timeseries`, `GET /api/v1/stats/top_clients`, `GET /api/v1/stats/top_domains`, `GET /api/v1/stats/top_blocked_domains`, `GET /api/v1/stats/cache`, `GET /api/v1/filtering/pause`, `POST /api/v1/filtering/pause`, `POST /api/v1/filtering/resume`, `GET /readyz` | Stat-tile row (blocked/allowed with semantic color plus text/icon), latency tiles, requests-over-time chart, grouped module-status list, toolbar refresh; pause/resume for the active filter set; persistent self-signed warning banner |
 | `/config` | Full config editor / import-export | admin | `GET /api/v1/config`, `PUT /api/v1/config` | Grouped form sections with explanatory footers; save in the toolbar; diff presented in a sheet; `If-Match` with `config_version`; secrets never returned |
 | `/config/versions` | Config versions and rollback | admin | `GET /api/v1/config/versions`, `POST /api/v1/config/versions/{version}/rollback` | Inset grouped list; version rows with secondary metadata; rollback in a confirmation sheet |
@@ -1243,11 +1243,11 @@ Deliberately not included:
 9. ~~**Filter-list effectiveness.**~~ Resolved for rules and unique contribution: `GET /api/v1/filter-lists`
    returns a per-list `status` object (`rules_parsed`, `rules_skipped`, `unique_contribution`, update
    times, error). Per-list hits are still not exposed.
-10. **First-run local admin provisioning.** The wizard is required, but the endpoint
-    table has no create-local-account route; "local accounts" are listed as editable
-    configuration with no route. Decide: bootstrap the first admin from TOML/env only,
-    or add an admin-account endpoint / expose accounts through `PUT /api/v1/config`
-    with a defined secret-handling rule.
+10. **First-run local admin provisioning — resolved.** `/setup` creates the first
+    local admin via public `POST /api/v1/auth/local/bootstrap` while
+    `GET /api/v1/auth/bootstrap` reports `needs_setup`. The endpoint refuses once
+    any account exists (`control_api.auth.bootstrap_taken`). Env seeding via
+    `DNSCRAFT_ADMIN_PASSWORD_FILE` remains supported and skips the wizard.
 11. **TLS actions — resolved.** The control-api now exposes `/tls/renew`, `/tls/revoke`,
     `/tls/rotate`, `/tls/preflight`, `/tls/dyndns`, `/tls/records`, `/tls/account`,
     `/tls/order` and `/tls/audit`, so the TLS screen offers those actions directly.
@@ -1368,7 +1368,7 @@ GA1–GA4/GA6 in `tasks/todo-spec-gaps.md`):
   TLS screen offers those actions.~~ Resolved: `/tls/renew`, `/tls/revoke`,
   `/tls/rotate`, `/tls/preflight`, `/tls/dyndns`, `/tls/records`, `/tls/account`,
   `/tls/order`, `/tls/audit` exist.
-- A defined first-run/local-admin provisioning path (bootstrap-only or an endpoint).
+- A defined first-run/local-admin provisioning path (`POST /auth/local/bootstrap` + `/setup`, or env seed).
 - A locale-preference mechanism, only if per-user storage is chosen over the
   browser-local cookie.
 - The documented `GET /api/v1/auth/tokens` response shape and scope labels.

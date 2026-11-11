@@ -109,6 +109,77 @@ fn session_cookie(headers: &HeaderMap) -> String {
         .to_owned()
 }
 
+async fn empty_setup(
+    clock: Arc<ManualClock>,
+) -> (axum::Router, LocalAccountStore, SessionStore, Db) {
+    let db = db(clock.clone()).await;
+    let sessions = SessionStore::new(db.clone(), IDLE, ABSOLUTE);
+    let auth = AuthState::new(sessions.clone(), TokenStore::new(db.clone(), MAX_TTL));
+    let local = LocalAccountStore::new(db.clone(), MAX_ATTEMPTS, WINDOW);
+    let limiter =
+        dnscraft_api::RateLimiter::new(dnscraft_api::RateLimitConfig::default(), clock, Vec::new());
+    let app = AppState::new()
+        .with_rate_limiter(Arc::new(limiter))
+        .with_auth(auth)
+        .with_local_login(local.clone());
+    let router = app.router().layer(MockConnectInfo(test_addr()));
+    (router, local, sessions, db)
+}
+
+async fn bootstrap(
+    router: &axum::Router,
+    username: &str,
+    password: &str,
+) -> (StatusCode, HeaderMap, Value) {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/auth/local/bootstrap")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({ "username": username, "password": password }).to_string(),
+        ))
+        .unwrap();
+    send(router.clone(), req).await
+}
+
+#[tokio::test]
+async fn bootstrap_creates_the_first_admin_and_a_session() {
+    let (router, local, sessions, db) = empty_setup(clock()).await;
+
+    let (status, _, body) = send(
+        router.clone(),
+        Request::builder()
+            .uri("/api/v1/auth/bootstrap")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["needs_setup"], true);
+    assert_eq!(body["data"]["local_login"], true);
+
+    let (status, headers, body) = bootstrap(&router, "owner", PASSWORD).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["actor_id"], "owner");
+    assert_eq!(body["data"]["role"], "admin");
+    let cookie = session_cookie(&headers);
+    let principal = sessions.validate(&cookie).await.unwrap();
+    assert_eq!(principal.actor_id, "owner");
+    assert!(!local.is_empty().await.unwrap());
+
+    let (status, _, body) = bootstrap(&router, "other", PASSWORD).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "control_api.auth.bootstrap_taken");
+
+    let records = db.audit_list(10, 0).await.unwrap();
+    assert!(
+        records
+            .iter()
+            .any(|r| r.action == "auth.local.bootstrap" && r.result == "ok"),
+        "{records:?}"
+    );
+}
+
 #[tokio::test]
 async fn correct_password_creates_a_cookie_session() {
     let (router, _, sessions, _) = setup(clock()).await;

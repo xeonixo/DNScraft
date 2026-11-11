@@ -177,6 +177,8 @@ pub fn requirement(method: &Method, path: &str) -> Requirement {
         || path == "/api/v1/auth/oidc/callback"
         || (method == Method::GET && path == "/api/v1/auth/oidc/status")
         || path == "/api/v1/auth/local/login"
+        || path == "/api/v1/auth/local/bootstrap"
+        || (method == Method::GET && path == "/api/v1/auth/bootstrap")
         || path == "/api/v1/auth/logout"
     {
         return Requirement::Public;
@@ -382,6 +384,14 @@ mod tests {
         );
         assert_eq!(
             requirement(&Method::POST, "/api/v1/auth/local/login"),
+            Requirement::Public
+        );
+        assert_eq!(
+            requirement(&Method::GET, "/api/v1/auth/bootstrap"),
+            Requirement::Public
+        );
+        assert_eq!(
+            requirement(&Method::POST, "/api/v1/auth/local/bootstrap"),
             Requirement::Public
         );
         assert_eq!(

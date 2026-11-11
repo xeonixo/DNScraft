@@ -309,7 +309,9 @@ or secret token material. The `CertResolver` is passed to listeners as
 | GET | `/api/v1/stats/cache` | viewer/admin | cache hit ratio | – |
 | GET | `/api/v1/auth/oidc/authorize-url` | public | PKCE authorization URL | `control_api.auth.oidc` |
 | GET | `/api/v1/auth/oidc/callback` | public | code exchange, session | `control_api.auth.oidc` |
+| GET | `/api/v1/auth/bootstrap` | public | `{ needs_setup, local_login, oidc }` for `/setup` | – |
 | POST | `/api/v1/auth/local/login` | public | break-glass login | `control_api.auth.locked` |
+| POST | `/api/v1/auth/local/bootstrap` | public | one-shot first local admin (empty store only) | `control_api.auth.bootstrap_taken` |
 | POST | `/api/v1/auth/logout` | viewer/admin | delete session | – |
 | GET | `/api/v1/auth/me` | viewer/admin | current principal | – |
 | GET/POST | `/api/v1/auth/tokens` | admin | list/create bearer tokens (`viewer`, `admin`, `mcp:read`, `mcp:write`; plaintext shown once) | – |
@@ -996,6 +998,7 @@ tested. Codes are forwarded from module errors where applicable.
 | `control_api.auth.oidc` | OIDC provider/configuration error |
 | `control_api.auth.local` | local login credential failure |
 | `control_api.auth.locked` | local account temporarily locked |
+| `control_api.auth.bootstrap_taken` | first-run local admin already provisioned (HTTP 409) |
 | `control_api.tls.self_signed` | warning (status, not an HTTP error): serving the self-signed bootstrap certificate |
 | `control_api.auth.unknown_token` | token id not found or not owned by actor (token-management calls only) |
 | `control_api.auth.unauthenticated` | missing, malformed, unknown, revoked or expired bearer token (HTTP 401) |

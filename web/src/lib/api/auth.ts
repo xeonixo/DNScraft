@@ -12,6 +12,42 @@ export async function loginLocal(username: string, password: string): Promise<Se
 	return { ...parseSession(data), actorType: 'user' };
 }
 
+/** Public: whether the first-run wizard should create the initial local admin. */
+export interface BootstrapStatus {
+	needs_setup: boolean;
+	local_login: boolean;
+	oidc: boolean;
+}
+
+export async function authBootstrapStatus(): Promise<BootstrapStatus> {
+	const data = await get<unknown>('/auth/bootstrap', { public: true });
+	if (
+		!isRecord(data) ||
+		typeof data.needs_setup !== 'boolean' ||
+		typeof data.local_login !== 'boolean' ||
+		typeof data.oidc !== 'boolean'
+	) {
+		throw new ApiError(0, CLIENT_MALFORMED);
+	}
+	return {
+		needs_setup: data.needs_setup,
+		local_login: data.local_login,
+		oidc: data.oidc,
+	};
+}
+
+/** One-shot first admin. Same session shape as login; refused once any account exists. */
+export async function bootstrapLocal(
+	username: string,
+	password: string,
+): Promise<SessionPrincipal> {
+	const data = await post<unknown>('/auth/local/bootstrap', {
+		body: { username, password },
+		public: true,
+	});
+	return { ...parseSession(data), actorType: 'user' };
+}
+
 export async function logoutRequest(): Promise<void> {
 	await request<unknown>('POST', '/auth/logout');
 }

@@ -93,15 +93,15 @@
 			label={m.feedback_diagnostics_version()}
 			detail={version ? `v${version}` : m.feedback_diagnostics_unknown()}
 		/>
-		<GroupedRow
-			label={m.feedback_diagnostics_locale()}
-			detail={getLocale()}
-		/>
+		<GroupedRow label={m.feedback_diagnostics_locale()} detail={getLocale()} />
 		<GroupedRow
 			label={m.feedback_diagnostics_role()}
 			detail={nodeRole ?? m.feedback_diagnostics_unknown()}
 		/>
-		<GroupedRow label={m.feedback_diagnostics_logs()} detail={m.feedback_diagnostics_logs_omitted()} />
+		<GroupedRow
+			label={m.feedback_diagnostics_logs()}
+			detail={m.feedback_diagnostics_logs_omitted()}
+		/>
 	</GroupedList>
 
 	<p class="hint">{m.feedback_privacy_note()}</p>

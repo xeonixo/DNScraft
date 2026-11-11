@@ -15,10 +15,7 @@ import { fileURLToPath } from 'node:url';
 const webRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const buildDir = join(webRoot, 'build');
 const embedDir = join(webRoot, '..', 'crates', 'dnscraft-api', 'embed-web-ui');
-const PLACEHOLDER_MARKERS = [
-	'Web UI placeholder',
-	'copy output here for release embed',
-];
+const PLACEHOLDER_MARKERS = ['Web UI placeholder', 'copy output here for release embed'];
 
 function fail(message) {
 	console.error(`sync-embed: ${message}`);

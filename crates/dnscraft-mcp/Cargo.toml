@@ -19,7 +19,7 @@ dnscraft-common = { path = "../dnscraft-common" }
 http = { workspace = true }
 http-body-util = { workspace = true }
 idna = { workspace = true }
-rmcp = { version = "=3.7.0", default-features = false, features = ["server", "transport-streamable-http-server", "macros"] }
+rmcp = { version = "=3.9.0", default-features = false, features = ["server", "transport-streamable-http-server", "macros"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

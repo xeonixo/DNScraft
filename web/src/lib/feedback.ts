@@ -3,8 +3,7 @@
 export const FEEDBACK_SCHEMA_VERSION = 1;
 
 /** Public GitHub issues endpoint for pre-filled new-issue links. */
-export const FEEDBACK_GITHUB_NEW_ISSUE =
-	'https://github.com/xeonixo/dnscraft/issues/new';
+export const FEEDBACK_GITHUB_NEW_ISSUE = 'https://github.com/xeonixo/dnscraft/issues/new';
 
 export interface FeedbackDiagnostics {
 	schema_version: number;

@@ -6,7 +6,7 @@ members = ["crates/*"]
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/xeonixo/dnscraft"
-rust-version = "1.88"
+rust-version = "1.89"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -54,7 +54,7 @@ quinn = { version = "0.11.12", default-features = false, features = ["runtime-to
 h3 = "0.0.8"
 h3-quinn = "0.0.10"
 zstd = { version = "0.13.3", default-features = false }
-rusqlite = { version = "0.40.0", features = ["bundled", "functions"] }
+rusqlite = { version = "0.41.0", features = ["bundled", "functions"] }
 axum = { version = "0.8.9", default-features = false, features = ["json", "query", "http1", "tokio", "tracing"] }
 tower-http = { version = "0.6.11", default-features = false, features = ["trace"] }
 argon2 = "0.6.0"

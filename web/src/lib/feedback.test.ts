@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-	FEEDBACK_SCHEMA_VERSION,
-	buildDiagnostics,
-	buildMarkdown,
-} from './feedback';
+import { FEEDBACK_SCHEMA_VERSION, buildDiagnostics, buildMarkdown } from './feedback';
 
 describe('feedback markdown', () => {
 	it('uses fixed English headings and a JSON diagnostics fence', () => {

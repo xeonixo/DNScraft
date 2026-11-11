@@ -44,7 +44,7 @@ Details and resume point: [`tasks/progress.md`](tasks/progress.md). Module index
 
 ### Local (loopback)
 
-Requires Rust **1.88+** (workspace `rust-version`; CI uses `stable`).
+Requires Rust **1.89+** (workspace `rust-version`; CI uses `stable`).
 
 ```bash
 cargo run -p dnscraft -- deploy/dnscraft.example.toml
@@ -179,7 +179,7 @@ cargo test --workspace --locked
 cargo deny check
 ```
 
-MSRV **1.88**. Crypto is **ring-only** (`deny.toml` bans `aws-lc-*` and
+MSRV **1.89**. Crypto is **ring-only** (`deny.toml` bans `aws-lc-*` and
 `openssl*`). Fuzz targets need nightly + `cargo-fuzz` ([`fuzz/`](fuzz/README.md)).
 
 Web UI: `pnpm check`, `pnpm lint`, `pnpm test`, `pnpm test:e2e` under `web/`.

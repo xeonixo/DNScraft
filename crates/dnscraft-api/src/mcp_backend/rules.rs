@@ -6,7 +6,8 @@ use std::time::SystemTime;
 use dnscraft_filtering::{DomainName, FilterEngine, SetId, Verdict};
 use dnscraft_mcp::dto::{
     AnswerRecord, ExplainBlockResult, ExplainReason, ListRulesParams, ListRulesResult, McpRuleInfo,
-    PauseInfo, QType, Selection, SynthesizedAnswer, TempAllowInfo, TestQueryFilter, TestQueryResult,
+    PauseInfo, QType, Selection, SynthesizedAnswer, TempAllowInfo, TestQueryFilter,
+    TestQueryResult,
 };
 use dnscraft_policy::RequestContext;
 use serde_json::{Value, json};
@@ -409,4 +410,3 @@ pub(crate) async fn run_test_query(
     };
     Ok((result, decision))
 }
-

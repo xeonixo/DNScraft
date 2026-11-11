@@ -2,9 +2,7 @@
 
 use std::time::{Duration, SystemTime};
 
-use dnscraft_filtering::{
-    DomainName, RecordTypeSel, RuleAction, RuleSpec, SetId, build_rule,
-};
+use dnscraft_filtering::{DomainName, RecordTypeSel, RuleAction, RuleSpec, SetId, build_rule};
 use dnscraft_mcp::ProtectedDomains;
 use dnscraft_mcp::dto::{AddRuleParams, RemoveRuleParams};
 use dnscraft_resolver::UpstreamState;
@@ -104,7 +102,9 @@ pub(crate) fn prepare_add(
 }
 
 /// Validates the non-snapshot parts of a `remove_rule` request.
-pub(crate) fn prepare_remove(params: &RemoveRuleParams) -> Result<(SetId, DomainName), ControlApiError> {
+pub(crate) fn prepare_remove(
+    params: &RemoveRuleParams,
+) -> Result<(SetId, DomainName), ControlApiError> {
     let set = parse_set(params.filter_set_id.as_deref())?;
     let domain = DomainName::parse(&params.domain).map_err(|_| {
         mcp_error(
@@ -516,4 +516,3 @@ pub(crate) fn remove_rule_from_snapshot(
     *rules = kept;
     Ok(removed)
 }
-

@@ -39,11 +39,11 @@ use crate::query_log_codec::{
     read_answer_source, read_protocol, read_query_class, read_query_type, read_rcode, read_status,
     split_record,
 };
-use crate::storage::{Db, db_err, kv_get, kv_set};
 use crate::query_log_wire::{
     client_json, dnssec_str, filter_json, format_rfc3339_micros, selection_json, status_str,
     step_json, system_time_micros,
 };
+use crate::storage::{Db, db_err, kv_get, kv_set};
 
 /// Columns selected when hydrating a stored row into the wire document.
 const HYDRATE_COLS: &str = "id, node_id, listener_id, protocol, source_ip, source_ip_truncated,
@@ -1868,7 +1868,6 @@ fn like_contains(raw: &str) -> String {
     escaped.push('%');
     escaped
 }
-
 
 pub(crate) use crate::query_log_wire::{decision_record_json, resolve_client};
 

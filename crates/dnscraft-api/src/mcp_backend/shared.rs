@@ -323,7 +323,6 @@ pub(crate) fn backend_error(err: ControlApiError) -> BackendError {
     }
 }
 
-
 /// Parses a stored `created_at`/`expires_at`: unix seconds or RFC 3339.
 pub(crate) fn stored_time(value: &Value) -> Option<SystemTime> {
     match value {
@@ -337,4 +336,3 @@ pub(crate) fn stored_time(value: &Value) -> Option<SystemTime> {
         _ => None,
     }
 }
-

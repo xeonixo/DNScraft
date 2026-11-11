@@ -5,9 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
-use dnscraft_filtering::{
-    DomainName, FilterEngine, TempAllow,
-};
+use dnscraft_filtering::{DomainName, FilterEngine, TempAllow};
 use dnscraft_listeners::ListenersStatus;
 use dnscraft_mcp::ProtectedDomains;
 use dnscraft_mcp::backend::{BackendError, McpBackend};
@@ -15,17 +13,16 @@ use dnscraft_mcp::dto::{
     AddRuleParams, AddRuleResult, AuditEntry, AuditResult, CancelTempAllowParams,
     CancelTempAllowResult, ClassifyDomainResult, ClientListParams, ClientListResult,
     DeleteZoneRecordParams, DeleteZoneRecordResult, DnssecCounts, DomainStatsParams,
-    DomainZoneSummary, ExplainBlockResult, FilterListSummary, FilterSetSummary,
-    FilteringStatus, FlushCacheParams, FlushCacheResult, ListAlertsResult,
-    ListBlockedServicesResult, ListDomainZonesResult, ListFilterListsResult, ListFilterSetsResult,
-    ListListenersResult, ListPolicyRecordsResult, ListPolicyViewsResult,
-    ListResolverUpstreamsResult, ListRulesParams, ListRulesResult, ListZoneRecordsResult, NodeStatus, PauseDuration, PauseParams, PauseResult, PolicyViewSummary,
-    QType, QueryDetail,
-    QueryLogResult, QueryLogSearch, RemoveRuleParams, RemoveRuleResult,
-    ResolveClientParams, ResolverStatus, ResumeResult, Selection, SetBlockedServiceParams,
-    SetBlockedServiceResult, StatsParams, StatsPeriod, StatsResult, StatsTimeseriesParams, TempAllowParams, TempAllowResult,
-    TestQueryResult, TlsStatus, TokenInfo, UpstreamStatusItem, ZoneRecord,
-    ZoneRecordWriteParams, ZoneRecordWriteResult,
+    DomainZoneSummary, ExplainBlockResult, FilterListSummary, FilterSetSummary, FilteringStatus,
+    FlushCacheParams, FlushCacheResult, ListAlertsResult, ListBlockedServicesResult,
+    ListDomainZonesResult, ListFilterListsResult, ListFilterSetsResult, ListListenersResult,
+    ListPolicyRecordsResult, ListPolicyViewsResult, ListResolverUpstreamsResult, ListRulesParams,
+    ListRulesResult, ListZoneRecordsResult, NodeStatus, PauseDuration, PauseParams, PauseResult,
+    PolicyViewSummary, QType, QueryDetail, QueryLogResult, QueryLogSearch, RemoveRuleParams,
+    RemoveRuleResult, ResolveClientParams, ResolverStatus, ResumeResult, Selection,
+    SetBlockedServiceParams, SetBlockedServiceResult, StatsParams, StatsPeriod, StatsResult,
+    StatsTimeseriesParams, TempAllowParams, TempAllowResult, TestQueryResult, TlsStatus, TokenInfo,
+    UpstreamStatusItem, ZoneRecord, ZoneRecordWriteParams, ZoneRecordWriteResult,
 };
 use dnscraft_mcp::tracker_kind::tracker_kind;
 use dnscraft_proto::Name;
@@ -54,18 +51,18 @@ pub(crate) use shared::{rfc3339, stored_time};
 pub(crate) use snapshot::{
     PROPOSAL_LIFETIME, active_rule, add_proposal_to_snapshot, add_rule_to_snapshot,
     append_custom_rule, canonical_allow_domain, canonical_block_rule, duration_error,
-    duration_exceeds, engine_error, exception_rule_text, find_proposal, mcp_error,
-    parse_set, protected_for, reject_protected, remove_rule_from_snapshot, resolve_set_for_write,
-    set_mut, take_proposal, unknown_set,
+    duration_exceeds, engine_error, exception_rule_text, find_proposal, mcp_error, parse_set,
+    protected_for, reject_protected, remove_rule_from_snapshot, resolve_set_for_write, set_mut,
+    take_proposal, unknown_set,
 };
 
 use rules::{find_stored_rule, stored_rule_info};
 use shared::{
     backend_error, client_info, code_err, duration_secs, json_opt_str, json_str, listener_status,
-    map_mcp_scope, non_empty, parse_time, query_entry, query_log_error, query_order, query_order_by,
+    map_mcp_scope, non_empty, parse_time, query_entry, query_log_error, query_order,
+    query_order_by,
 };
 use snapshot::{prepare_add, prepare_remove, upstream_state_str};
-
 
 /// Master broadcast handle shared with [`AppState`](crate::AppState).
 ///
@@ -2062,8 +2059,8 @@ fn json_opt_filter(opt: Option<&Value>) -> Option<dnscraft_mcp::dto::DecisionFil
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::*;
     use super::shared::rdata_str;
+    use super::*;
 
     /// GM14: TXT strings are quoted and escaped; SOA and SRV show every field.
     #[test]

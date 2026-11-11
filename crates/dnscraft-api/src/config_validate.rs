@@ -271,7 +271,10 @@ pub(crate) fn diff_snapshots(previous: Option<&Value>, next: Option<&Value>) -> 
 /// Accepts `*`, `"5"`, `5`, and the weak form `W/"5"`. A missing header means
 /// "no precondition". A malformed header or a mismatch is
 /// `control_api.config.version`.
-pub(crate) fn check_if_match(raw: Option<&str>, current: Option<i64>) -> Result<(), ControlApiError> {
+pub(crate) fn check_if_match(
+    raw: Option<&str>,
+    current: Option<i64>,
+) -> Result<(), ControlApiError> {
     let Some(raw) = raw else {
         return Ok(());
     };
@@ -491,7 +494,10 @@ pub(crate) fn validate_control_api_settings(settings: &Value) -> Result<(), Cont
 
 /// Rejects unknown top-level fields, requires the five applied sections, and
 /// applies the `mcp_rules` merge to every filter set.
-pub(crate) fn merge_mcp_rules(body: Value, stored: Option<&Value>) -> Result<Value, ControlApiError> {
+pub(crate) fn merge_mcp_rules(
+    body: Value,
+    stored: Option<&Value>,
+) -> Result<Value, ControlApiError> {
     let Value::Object(mut snapshot) = body else {
         return Err(config_invalid("config body must be a JSON object"));
     };

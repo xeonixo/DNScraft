@@ -25,8 +25,9 @@ diverging matrices and double-counting strikes.
 
 ## Consequences
 
-- All `serve_*` params share an `Arc<Mutex<Admission>>` (or equivalent) so bans are global per
-  process, not per listener socket.
+- All `serve_*` params share an `Arc<Admission>` so bans are global per process, not per
+  listener socket. Per-source rate buckets are sharded by `source_key` hash under independent
+  mutexes; the ban table and Client-ID buckets stay process-global under their own locks.
 - TLS cert resolution stays cert-presence oriented; Client-ID policy stays in admission / SNI
   helpers (`PolicyClientIds`, `inspect_public_sni` / path parsing).
 - HTTP/3 (N12) and DDR (N10) must reuse the same admission rules when added.

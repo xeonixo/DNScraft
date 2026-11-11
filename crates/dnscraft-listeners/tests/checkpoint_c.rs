@@ -7,7 +7,6 @@ mod support;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
@@ -381,7 +380,7 @@ async fn doq_query(dest: SocketAddr, sni: &str, name: &str, from: Ipv4Addr) -> M
 }
 
 struct EncryptedSet {
-    admission: Arc<Mutex<Admission>>,
+    admission: Arc<Admission>,
     #[allow(dead_code)]
     gate: Arc<SniGate>,
     #[allow(dead_code)]
@@ -408,9 +407,7 @@ impl EncryptedSet {
         certs: Arc<CertResolver>,
     ) -> Self {
         let limits = Limits::default();
-        let admission = Arc::new(Mutex::new(Admission::with_classifier(
-            &limits, &public, classify,
-        )));
+        let admission = Arc::new(Admission::with_classifier(&limits, &public, classify));
         let gate = sni_gate(Arc::clone(&engine));
         let mut shutdowns = Vec::new();
         let mut joins = Vec::new();
@@ -545,10 +542,7 @@ async fn checkpoint_c_same_question_all_transports() {
     let certs = Arc::new(CertResolver::new());
     certs.install(&pem, &key).unwrap();
 
-    let admission = Arc::new(Mutex::new(Admission::new(
-        &Limits::default(),
-        &PublicConfig::default(),
-    )));
+    let admission = Arc::new(Admission::new(&Limits::default(), &PublicConfig::default()));
 
     // Do53 UDP + TCP
     let (udp_tx, udp_rx) = oneshot::channel();
@@ -748,8 +742,6 @@ async fn checkpoint_c_public_admission_matrix_and_shared_ban() {
     poll_until(
         || {
             set.admission
-                .lock()
-                .unwrap()
                 .is_banned(IpAddr::V4(PUBLIC_PEER), SystemTime::now())
         },
         Duration::from_secs(2),
@@ -910,8 +902,6 @@ async fn checkpoint_c_handshake_abort_strikes_shared_ban() {
     poll_until(
         || {
             set.admission
-                .lock()
-                .unwrap()
                 .is_banned(IpAddr::V4(PUBLIC_PEER), SystemTime::now())
         },
         Duration::from_secs(2),

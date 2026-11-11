@@ -23,13 +23,15 @@ Spec: [`SPEC-web-ui.md`](../docs/SPEC-web-ui.md). Control plane contract:
 ## Embed into the binary
 
 1. `pnpm build` (writes `build/csp-script-hashes.json` used by the CSP header).
-2. Replace `crates/dnscraft-api/embed-web-ui/` with the contents of `web/build/`
-   (keep the hashes file). The repo ships a placeholder `index.html` so
-   `--features web-ui` compiles without a UI build.
-3. Build `dnscraft-api` with `--features web-ui`.
+2. `pnpm run verify-embed` — CI gate: fails if `build/` is missing or still looks
+   like the placeholder.
+3. `pnpm run sync-embed` — copies `build/` → `crates/dnscraft-api/embed-web-ui/`
+   (keeps the hashes file). The repo ships a placeholder `index.html` so
+   `--features web-ui` compiles without a UI build; sync before a release image.
+4. Build `dnscraft-api` / `dnscraft` with `--features web-ui`.
 
 Routing when embedded: `/api/*` and `/mcp/*` stay JSON; other `GET`/`HEAD`
-paths get the SPA (see [`tasks/w10-rust-embed-notes.md`](../tasks/w10-rust-embed-notes.md)).
+paths get the SPA (see [`tasks/archive/w10-rust-embed-notes.md`](../tasks/archive/w10-rust-embed-notes.md)).
 
 ## PWA
 

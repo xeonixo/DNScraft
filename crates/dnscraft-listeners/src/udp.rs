@@ -3,7 +3,6 @@
 use std::io::{self, IoSliceMut};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -59,7 +58,7 @@ struct UdpShared<H: ?Sized> {
     listener: ListenerConfig,
     limits: Limits,
     handler: Arc<H>,
-    admission: Arc<Mutex<Admission>>,
+    admission: Arc<Admission>,
     clock: Arc<dyn Clock>,
     stats: Arc<UdpStats>,
     inflight: Arc<Semaphore>,
@@ -80,7 +79,7 @@ pub struct UdpServeParams<H: ?Sized> {
     /// Shared limits (rates, timeouts, in-flight cap).
     pub limits: Limits,
     /// Shared admission (bans / rates) across listeners.
-    pub admission: Arc<Mutex<Admission>>,
+    pub admission: Arc<Admission>,
     /// Policy or test handler.
     pub handler: Arc<H>,
     /// Wall clock (injectable for tests).
@@ -247,11 +246,9 @@ fn spawn_query<H>(
 
     let now = shared.clock.now();
     let decision = {
-        let mut adm = shared
+        shared
             .admission
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        adm.check(&shared.listener, peer.ip(), &ClientIdState::Absent, now)
+            .check(&shared.listener, peer.ip(), &ClientIdState::Absent, now)
     };
     match decision {
         AdmitDecision::Admit => {}

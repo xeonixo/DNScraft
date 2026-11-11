@@ -18,8 +18,8 @@ describe('Einstellungen routes', () => {
 		]);
 	});
 
-	it('does not list the placeholder /feedback route in navigation', () => {
-		expect(navItemForPath('/feedback')).toBeUndefined();
+	it('resolves /feedback for the page title but keeps it out of sidebar sections', () => {
+		expect(navItemForPath('/feedback')?.path).toBe('/feedback');
 		expect(navSections.flatMap((section) => section.items).map((item) => item.path)).not.toContain(
 			'/feedback',
 		);

@@ -133,9 +133,10 @@ impl dnscraft_api::ClientDirectory for EngineDirectory {
                 macs: client.macs.iter().map(ToString::to_string).collect(),
                 vlan: client.vlan.as_ref().map(|vlan| vlan.id),
                 online: client.online,
-                // ponytail: last_seen stays null; dnscraft-api keeps its RFC 3339
-                // helper crate-private. Add it when that helper is exported.
-                last_seen: None,
+                last_seen: client
+                    .last_seen
+                    .map(dnscraft_common::time_fmt::rfc3339)
+                    .filter(|s| !s.is_empty()),
             })
             .collect()
     }

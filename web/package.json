@@ -18,6 +18,8 @@
 		"pretest": "node scripts/gen-inlang.mjs",
 		"postbuild": "node scripts/gen-sw.mjs && node scripts/gen-csp-hashes.mjs",
 		"prebuild": "node scripts/gen-inlang.mjs",
+		"verify-embed": "node scripts/verify-embed-ready.mjs",
+		"sync-embed": "node scripts/sync-embed.mjs",
 		"test:e2e": "playwright test"
 	},
 	"devDependencies": {

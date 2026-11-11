@@ -3,7 +3,7 @@
 - Status: Accepted
 - Date: 2026-10-25
 - Deciders: recorded at map / plan level (CAPABILITY-MAP; policy plan cross-module decisions)
-- Scope: `crates/dnscraft-policy` ↔ `crates/dnscraft-clients` ↔ future `control-api`
+- Scope: `crates/dnscraft-policy` ↔ `crates/dnscraft-clients` ↔ `dnscraft-api` / `dnscraft` binary
 
 ## Context
 
@@ -16,9 +16,10 @@ manual client records (`dnscraft-clients`). Putting a Cargo dependency from `pol
 
 Define a **`ClientDirectory` trait in `dnscraft-policy`** with policy-owned types
 (`addresses` / `reverse` / `local_domains`). `dnscraft-policy` must **not** take a Cargo
-dependency on `dnscraft-clients`. The future `control-api` crate adapts clients'
-lookup surface to `dyn ClientDirectory`. DoH/DoT **Client IDs** remain separate from UniFi
-client records.
+dependency on `dnscraft-clients`. The `dnscraft` binary adapts `ClientEngine` /
+`ClientLookup` to `dyn ClientDirectory` for policy and to
+`dnscraft_api::ClientDirectory` for REST/MCP (`EngineDirectory`). DoH/DoT **Client IDs**
+remain separate from UniFi client records.
 
 Recorded in [CAPABILITY-MAP.md](../../CAPABILITY-MAP.md) ("Decisions recorded at map level") and
 [SPEC-policy.md](../SPEC-policy.md) (objective / ClientDirectory integration). First
@@ -27,8 +28,10 @@ implementation: commit `58d5f52` (policy: P5 ClientDirectory names/PTR, 2026-10-
 ## Consequences
 
 - Policy tests use `NoClients` or a stub directory; no UniFi mocks in the policy crate.
-- `control-api` owns the adapter (not yet implemented; module pending).
-- Changing the trait is a cross-module change (policy + future adapter).
+- The binary owns the adapters (`EngineDirectory` for the API/MCP client list including
+  `last_seen`; a thin policy-side wrapper for local names/PTR). `dnscraft-api` does not
+  depend on `dnscraft-clients` directly.
+- Changing the trait is a cross-module change (policy + binary adapter + API DTO).
 
 ## Alternatives considered
 

@@ -34,7 +34,7 @@ pub struct TcpServeParams<H: ?Sized> {
     /// Shared limits.
     pub limits: Limits,
     /// Shared admission (bans / rates) across listeners.
-    pub admission: Arc<Mutex<Admission>>,
+    pub admission: Arc<Admission>,
     /// Policy or test handler.
     pub handler: Arc<H>,
     /// Wall clock.
@@ -122,13 +122,7 @@ where
 {
     // Do53-only: public sources are closed at accept. Encrypted transports (DoT)
     // use full Admission with Client ID instead of this accept-time close.
-    let class = {
-        let adm = shared
-            .admission
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        adm.classify(peer.ip())
-    };
+    let class = { shared.admission.classify(peer.ip()) };
     if class == SourceClass::Public {
         FramedStats::bump(&shared.stats.dropped_public);
         drop(stream);

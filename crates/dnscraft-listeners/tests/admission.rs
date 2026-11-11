@@ -156,7 +156,7 @@ fn admission_matrix() {
     let clock = ManualClock::new(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000));
     let now = clock.now();
     // High rates so matrix cases are not rate-limited.
-    let mut adm = Admission::new(
+    let adm = Admission::new(
         &limits(10_000, 10_000),
         &public_cfg(1_000, 5, Duration::from_secs(60), Duration::from_secs(900)),
     );
@@ -235,7 +235,7 @@ fn admission_matrix() {
 #[test]
 fn rate_and_ban_with_manual_clock() {
     let clock = ManualClock::new(SystemTime::UNIX_EPOCH + Duration::from_secs(5_000));
-    let mut adm = Admission::new(
+    let adm = Admission::new(
         &limits(2, 2), // burst 4
         &public_cfg(100, 3, Duration::from_secs(10), Duration::from_secs(30)),
     );
@@ -362,7 +362,7 @@ fn rate_and_ban_with_manual_clock() {
 fn flood_keeps_tables_at_cap() {
     const CAP: u32 = 64;
     let now = SystemTime::UNIX_EPOCH + Duration::from_secs(9_000);
-    let mut adm = Admission::new(
+    let adm = Admission::new(
         &limits(1_000, 1_000),
         &public_cfg(CAP, 5, Duration::from_secs(60), Duration::from_secs(60)),
     );

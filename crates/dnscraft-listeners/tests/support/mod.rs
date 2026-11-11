@@ -5,7 +5,7 @@
 pub mod certs;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use dnscraft_filtering::{
@@ -143,16 +143,13 @@ pub fn public_default() -> PublicConfig {
 }
 
 /// Fresh shared admission for a listener harness (default limits / public config).
-pub fn fresh_admission() -> Arc<Mutex<Admission>> {
-    Arc::new(Mutex::new(Admission::new(
-        &Limits::default(),
-        &PublicConfig::default(),
-    )))
+pub fn fresh_admission() -> Arc<Admission> {
+    Arc::new(Admission::new(&Limits::default(), &PublicConfig::default()))
 }
 
 /// Shared admission built from the given limits and public settings.
-pub fn admission_for(limits: &Limits, public: &PublicConfig) -> Arc<Mutex<Admission>> {
-    Arc::new(Mutex::new(Admission::new(limits, public)))
+pub fn admission_for(limits: &Limits, public: &PublicConfig) -> Arc<Admission> {
+    Arc::new(Admission::new(limits, public))
 }
 
 /// Classifies loopback as [`SourceClass::Public`] so public-listener admission
@@ -169,12 +166,12 @@ pub fn loopback_as_public() -> SourceClassifier {
 }
 
 /// Admission for public-listener tests (loopback peers count as public).
-pub fn public_test_admission(limits: &Limits, public: &PublicConfig) -> Arc<Mutex<Admission>> {
-    Arc::new(Mutex::new(Admission::with_classifier(
+pub fn public_test_admission(limits: &Limits, public: &PublicConfig) -> Arc<Admission> {
+    Arc::new(Admission::with_classifier(
         limits,
         public,
         loopback_as_public(),
-    )))
+    ))
 }
 
 pub struct UdpHarness {

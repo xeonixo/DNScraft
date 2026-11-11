@@ -123,7 +123,7 @@ string `"<id>"`, so snapshots written before labels existed stay unchanged.
 |---|---|---|
 | GET | `/api/v1/clients/manual` | Manual IP/CIDR/domain entries. |
 | POST / PUT / DELETE | `/api/v1/clients/manual` | Add / create-or-replace / delete (body `{ "name": … }`) a manual entry. |
-| GET | `/api/v1/clients` | Manual entries + the synced directory (`id`, `name`, `dns_label`, `local_domain`, `source`, `ips`, `macs`, `vlan`, `online`, `last_seen`). The directory is empty until the binary wires a `ClientDirectory` adapter. |
+| GET | `/api/v1/clients` | Manual entries + the synced directory (`id`, `name`, `dns_label`, `local_domain`, `source`, `ips`, `macs`, `vlan`, `online`, `last_seen`). `last_seen` is an RFC 3339 UTC string from UniFi when known; manuals may omit it. Wired via the binary's `EngineDirectory` adapter. |
 | POST | `/api/v1/clients/sync` | Trigger a UniFi sync on the profile `sync_owner` for this node; returns `generation`, `rebuilt`, `client_count`, `ip_conflicts`. `clients.sync.not_configured` without an adapter; `clients.sync.not_owner` when this node is bound but not the owner. |
 | GET | `/api/v1/clients/unifi` | UniFi profiles, bindings, and per-profile `has_api_key` (never the key). |
 | PUT | `/api/v1/clients/unifi-profiles/{id}/api-key` | Write-only API key body `{ "api_key": "…" \| null }` (omit field = keep, `null` = clear). |

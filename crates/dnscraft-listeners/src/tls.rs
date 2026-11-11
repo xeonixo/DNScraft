@@ -209,7 +209,7 @@ pub fn client_id_state_local(sni: Option<&str>, gate: &SniGate) -> ClientIdState
 
 /// Records a ban strike when [`PublicSniOutcome::should_strike`] is true.
 pub fn apply_sni_strike(
-    admission: &mut Admission,
+    admission: &Admission,
     peer: IpAddr,
     outcome: &PublicSniOutcome,
     now: SystemTime,
@@ -221,7 +221,7 @@ pub fn apply_sni_strike(
 
 /// Strike a public source on a public listener for a failed / timed-out handshake.
 pub fn apply_tls_handshake_strike(
-    admission: &mut Admission,
+    admission: &Admission,
     exposure: Exposure,
     peer: IpAddr,
     now: SystemTime,
@@ -426,14 +426,18 @@ fn provider_for(policy: &TlsPolicy) -> Arc<rustls::crypto::CryptoProvider> {
 }
 
 /// Protocol versions for a policy: TLS 1.3 alone, or 1.3 + 1.2.
-fn versions_for(policy: &TlsPolicy) -> &'static [&'static rustls::SupportedProtocolVersion] {
+fn versions_for(
+    policy: &TlsPolicy,
+) -> Result<&'static [&'static rustls::SupportedProtocolVersion], ListenersError> {
     const TLS13_ONLY: &[&rustls::SupportedProtocolVersion] = &[&rustls::version::TLS13];
     const TLS12_PLUS: &[&rustls::SupportedProtocolVersion] =
         &[&rustls::version::TLS13, &rustls::version::TLS12];
     match policy.min_version.as_str() {
-        "1.3" => TLS13_ONLY,
-        "1.2" => TLS12_PLUS,
-        other => panic!("validated TLS policy has unknown min_version `{other}`"),
+        "1.3" => Ok(TLS13_ONLY),
+        "1.2" => Ok(TLS12_PLUS),
+        other => Err(ListenersError::TlsPolicy {
+            reason: format!("unknown min_version `{other}`"),
+        }),
     }
 }
 
@@ -441,40 +445,46 @@ fn versions_for(policy: &TlsPolicy) -> &'static [&'static rustls::SupportedProto
 ///
 /// DoT passes only [`ALPN_DOT`]; DoH passes the policy's `alpn` (default
 /// [`ALPN_H2`] + [`ALPN_HTTP_1_1`]). The policy must have passed
-/// [`validate_tls_policy`].
+/// [`validate_tls_policy`]; a regression still returns [`ListenersError::TlsPolicy`]
+/// instead of panicking so a bad reload cannot kill the process.
 pub fn tcp_server_config(
     resolver: Arc<dyn ResolvesServerCert + 'static>,
     alpn: &[&[u8]],
     policy: &TlsPolicy,
-) -> Arc<ServerConfig> {
+) -> Result<Arc<ServerConfig>, ListenersError> {
     let mut cfg = ServerConfig::builder_with_provider(provider_for(policy))
-        .with_protocol_versions(versions_for(policy))
-        .unwrap_or_else(|e| panic!("validated TLS policy must have usable cipher suites: {e}"))
+        .with_protocol_versions(versions_for(policy)?)
+        .map_err(|e| ListenersError::TlsPolicy {
+            reason: format!("no usable cipher suites for TLS policy: {e}"),
+        })?
         .with_no_client_auth()
         .with_cert_resolver(resolver);
     cfg.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
     // No session tickets: each handshake re-resolves the cert (hot reload visible).
     cfg.session_storage = Arc::new(rustls::server::NoServerSessionStorage {});
-    Arc::new(cfg)
+    Ok(Arc::new(cfg))
 }
 
 /// QUIC-family server config: TLS 1.3 only, policy ciphers, ALPN `doq` / `h3`, 0-RTT off.
 ///
 /// The policy's `min_version` cannot lower this: QUIC requires TLS 1.3.
+/// Returns [`ListenersError::TlsPolicy`] when the cipher filter leaves no TLS 1.3 suite.
 pub fn quic_server_config(
     resolver: Arc<dyn ResolvesServerCert + 'static>,
     policy: &TlsPolicy,
-) -> Arc<ServerConfig> {
+) -> Result<Arc<ServerConfig>, ListenersError> {
     let mut cfg = ServerConfig::builder_with_provider(provider_for(policy))
         .with_protocol_versions(&[&rustls::version::TLS13])
-        .unwrap_or_else(|e| panic!("validated TLS policy must retain a TLS 1.3 cipher suite: {e}"))
+        .map_err(|e| ListenersError::TlsPolicy {
+            reason: format!("TLS 1.3 cipher suite required for QUIC: {e}"),
+        })?
         .with_no_client_auth()
         .with_cert_resolver(resolver);
     cfg.alpn_protocols = vec![ALPN_DOQ.to_vec(), ALPN_H3.to_vec()];
     // 0-RTT disabled (replay risk, RFC 9250 §4.5). Do not copy the spike's u32::MAX.
     cfg.max_early_data_size = 0;
     cfg.session_storage = Arc::new(rustls::server::NoServerSessionStorage {});
-    Arc::new(cfg)
+    Ok(Arc::new(cfg))
 }
 
 /// Runs `handshake` until it completes or `clock` reaches `deadline`.
@@ -540,7 +550,7 @@ pub struct AcceptEncrypted<'a> {
     /// Hot-reloadable cert store (`has_cert` checked before handshake).
     pub certs: &'a CertResolver,
     /// Ban table for public SNI / handshake strikes.
-    pub admission: &'a Mutex<Admission>,
+    pub admission: &'a Admission,
     /// Peer address (strikes are no-op for private sources).
     pub peer: IpAddr,
     /// Clock for handshake deadline and strike timestamps.
@@ -599,12 +609,7 @@ where
 
     let sni_owned = start.client_hello().server_name().map(str::to_owned);
     let sni = sni_owned.as_deref();
-    let source_class = {
-        let adm = admission
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        adm.classify(peer)
-    };
+    let source_class = { admission.classify(peer) };
     let client_id = if public_client_id_required(exposure, source_class) {
         match inspect_public_sni(sni, gate) {
             PublicSniOutcome::Accept { client_id } => ClientIdState::Registered(client_id),
@@ -614,12 +619,7 @@ where
                 } else {
                     TlsStats::bump(&stats.sni_reject_no_strike);
                 }
-                {
-                    let mut adm = admission
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    apply_sni_strike(&mut adm, peer, &outcome, clock.now());
-                }
+                apply_sni_strike(admission, peer, &outcome, clock.now());
                 return Err(ListenersError::AdmissionUnknownClientId);
             }
         }
@@ -640,7 +640,7 @@ where
 }
 
 fn record_handshake_failure(
-    admission: &Mutex<Admission>,
+    admission: &Admission,
     exposure: Exposure,
     peer: IpAddr,
     clock: &dyn Clock,
@@ -652,10 +652,7 @@ fn record_handshake_failure(
     } else {
         TlsStats::bump(&stats.handshake_fail);
     }
-    let mut adm = admission
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    apply_tls_handshake_strike(&mut adm, exposure, peer, clock.now());
+    apply_tls_handshake_strike(admission, exposure, peer, clock.now());
 }
 
 /// Convenience: [`TlsAcceptor`] from a server config (local / already gated).
@@ -683,10 +680,14 @@ mod tests {
     #[test]
     fn min_version_selects_protocol_versions() {
         assert_eq!(
-            versions_for(&policy("1.3", None)),
+            versions_for(&policy("1.3", None)).unwrap(),
             [&rustls::version::TLS13].as_slice()
         );
-        assert_eq!(versions_for(&policy("1.2", None)).len(), 2);
+        assert_eq!(versions_for(&policy("1.2", None)).unwrap().len(), 2);
+        assert_eq!(
+            versions_for(&policy("1.1", None)).unwrap_err().code(),
+            "listeners.tls.policy"
+        );
     }
 
     #[test]
@@ -771,14 +772,21 @@ mod tests {
             "1.3",
             Some(&["TLS13_AES_256_GCM_SHA384", "TLS13_CHACHA20_POLY1305_SHA256"]),
         );
-        let tcp = tcp_server_config(resolver(), &[ALPN_H2, ALPN_HTTP_1_1], &p);
+        let tcp = tcp_server_config(resolver(), &[ALPN_H2, ALPN_HTTP_1_1], &p).unwrap();
         assert_eq!(
             tcp.alpn_protocols,
             vec![b"h2".to_vec(), b"http/1.1".to_vec()]
         );
 
-        let quic = quic_server_config(resolver(), &p);
+        let quic = quic_server_config(resolver(), &p).unwrap();
         assert_eq!(quic.max_early_data_size, 0);
         assert_eq!(quic.alpn_protocols, vec![b"doq".to_vec(), b"h3".to_vec()]);
+    }
+
+    #[test]
+    fn quic_server_config_rejects_tls12_only_ciphers() {
+        let p = policy("1.2", Some(&["TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"]));
+        let err = quic_server_config(resolver(), &p).unwrap_err();
+        assert_eq!(err.code(), "listeners.tls.policy");
     }
 }

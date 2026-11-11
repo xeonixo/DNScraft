@@ -368,7 +368,8 @@ pub(crate) const MIGRATIONS: &[&str] = &[
 /// Applies every migration newer than the recorded version, then records it.
 pub(crate) fn migrate(conn: &mut Connection) -> Result<(), ControlApiError> {
     // Large rebuilds (v13) are page-cache bound; the default 2 MB cache makes them crawl.
-    conn.pragma_update(None, "cache_size", -262_144).map_err(db_err)?;
+    conn.pragma_update(None, "cache_size", -262_144)
+        .map_err(db_err)?;
     let result = migrate_inner(conn);
     // Restore the default so steady-state memory use is unchanged.
     let _ = conn.pragma_update(None, "cache_size", -2_000);

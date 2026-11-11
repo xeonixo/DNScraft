@@ -51,7 +51,7 @@ pub struct DohH3ServeParams<H: ?Sized> {
     /// Shared limits (QUIC stream cap, idle = `tcp_idle_timeout`).
     pub limits: Limits,
     /// Shared admission across listeners.
-    pub admission: Arc<Mutex<Admission>>,
+    pub admission: Arc<Admission>,
     /// Policy or test handler.
     pub handler: Arc<H>,
     /// Wall clock.
@@ -120,7 +120,7 @@ where
 
     let resolver = ListenerCertResolver::local(Arc::clone(&certs), Arc::clone(&tls_stats));
     let tls_policy = listener.tls_policy.clone().unwrap_or_default();
-    let mut rustls_cfg: RustlsServerConfig = (*quic_server_config(resolver, &tls_policy)).clone();
+    let mut rustls_cfg: RustlsServerConfig = (*quic_server_config(resolver, &tls_policy)?).clone();
     rustls_cfg.alpn_protocols = vec![ALPN_H3.to_vec()];
 
     let server_config = quinn_server_config(rustls_cfg, &limits)?;
@@ -305,12 +305,7 @@ where
 
     {
         let now = shared.doh.clock.now();
-        let mut adm = shared
-            .doh
-            .admission
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if adm.is_banned(source, now) {
+        if shared.doh.admission.is_banned(source, now) {
             DohStats::bump(&shared.doh.stats.dropped_banned);
             incoming.refuse();
             return;
@@ -413,12 +408,12 @@ fn strike_handshake<H: ?Sized>(
     exposure: crate::config::Exposure,
     source: IpAddr,
 ) {
-    let mut adm = shared
-        .doh
-        .admission
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    apply_tls_handshake_strike(&mut adm, exposure, source, shared.doh.clock.now());
+    apply_tls_handshake_strike(
+        &shared.doh.admission,
+        exposure,
+        source,
+        shared.doh.clock.now(),
+    );
 }
 
 fn peer_cert_der(conn: &quinn::Connection) -> Option<Vec<u8>> {

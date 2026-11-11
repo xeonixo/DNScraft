@@ -122,10 +122,10 @@ async fn spawn_udp(
 ) {
     let (bound_tx, bound_rx) = oneshot::channel();
     let (sd_tx, sd_rx) = watch::channel(false);
-    let admission = Arc::new(std::sync::Mutex::new(dnscraft_listeners::Admission::new(
+    let admission = Arc::new(dnscraft_listeners::Admission::new(
         &Limits::default(),
         &PublicConfig::default(),
-    )));
+    ));
     let join = tokio::spawn(serve_udp(UdpServeParams {
         listener: ListenerConfig {
             node_id: None,
@@ -161,10 +161,10 @@ async fn spawn_tcp(
 ) {
     let (bound_tx, bound_rx) = oneshot::channel();
     let (sd_tx, sd_rx) = watch::channel(false);
-    let admission = Arc::new(std::sync::Mutex::new(dnscraft_listeners::Admission::new(
+    let admission = Arc::new(dnscraft_listeners::Admission::new(
         &Limits::default(),
         &PublicConfig::default(),
-    )));
+    ));
     let join = tokio::spawn(serve_tcp(TcpServeParams {
         listener: ListenerConfig {
             node_id: None,

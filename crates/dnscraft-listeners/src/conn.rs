@@ -70,7 +70,7 @@ pub(crate) struct FramedShared<H: ?Sized> {
     pub listener: ListenerConfig,
     pub limits: Limits,
     pub handler: Arc<H>,
-    pub admission: Arc<Mutex<Admission>>,
+    pub admission: Arc<Admission>,
     pub clock: Arc<dyn Clock>,
     pub stats: Arc<FramedStats>,
     pub conn_cap: Arc<Semaphore>,
@@ -423,11 +423,9 @@ where
         ddr: shared.ddr.clone(),
     };
     let decision = {
-        let mut adm = shared
+        shared
             .admission
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        adm.check(&shared.listener, peer_ip, &identity.client_id, now)
+            .check(&shared.listener, peer_ip, &identity.client_id, now)
     };
 
     match decision {

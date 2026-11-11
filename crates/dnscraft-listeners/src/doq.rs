@@ -77,7 +77,7 @@ pub struct DoqServeParams<H: ?Sized> {
     /// Shared limits (QUIC stream cap, idle = `tcp_idle_timeout`).
     pub limits: Limits,
     /// Shared admission (bans / rates) across listeners.
-    pub admission: Arc<Mutex<Admission>>,
+    pub admission: Arc<Admission>,
     /// Policy or test handler.
     pub handler: Arc<H>,
     /// Wall clock (admission / strikes / handshake deadline).
@@ -102,7 +102,7 @@ struct DoqShared<H: ?Sized> {
     listener: ListenerConfig,
     limits: Limits,
     handler: Arc<H>,
-    admission: Arc<Mutex<Admission>>,
+    admission: Arc<Admission>,
     clock: Arc<dyn Clock>,
     stats: Arc<DoqStats>,
     tls_stats: Arc<TlsStats>,
@@ -153,7 +153,7 @@ where
     let resolver = ListenerCertResolver::local(Arc::clone(&certs), Arc::clone(&tls_stats));
     let tls_policy = listener.tls_policy.clone().unwrap_or_default();
     // DoQ-only: advertise `doq`, not `h3` (N12 owns HTTP/3 on the same port).
-    let mut rustls_cfg: RustlsServerConfig = (*quic_server_config(resolver, &tls_policy)).clone();
+    let mut rustls_cfg: RustlsServerConfig = (*quic_server_config(resolver, &tls_policy)?).clone();
     rustls_cfg.alpn_protocols = vec![ALPN_DOQ.to_vec()];
 
     let quic_crypto =
@@ -243,16 +243,12 @@ where
     // whether the SNI Client-ID gate applies to this connection.
     let required = {
         let now = shared.clock.now();
-        let mut adm = shared
-            .admission
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if adm.is_banned(source, now) {
+        if shared.admission.is_banned(source, now) {
             DoqStats::bump(&shared.stats.dropped_banned);
             incoming.refuse();
             return;
         }
-        public_client_id_required(shared.listener.exposure, adm.classify(source))
+        public_client_id_required(shared.listener.exposure, shared.admission.classify(source))
     };
 
     // Unvalidated public source: Retry before taking a permit or any per-source state.
@@ -369,7 +365,7 @@ fn connection_server_config<H: ?Sized>(
     resolver: Arc<GatedCertResolver>,
 ) -> Option<ServerConfig> {
     let policy = shared.listener.tls_policy.clone().unwrap_or_default();
-    let mut rustls_cfg: RustlsServerConfig = (*quic_server_config(resolver, &policy)).clone();
+    let mut rustls_cfg: RustlsServerConfig = (*quic_server_config(resolver, &policy).ok()?).clone();
     rustls_cfg.alpn_protocols = vec![ALPN_DOQ.to_vec()];
     let quic_crypto = QuicServerConfig::try_from(rustls_cfg).ok()?;
     let mut config = shared.base_server_config.clone();
@@ -392,11 +388,7 @@ fn record_handshake_failure<H: ?Sized>(
             } else {
                 TlsStats::bump(&shared.tls_stats.sni_reject_no_strike);
             }
-            let mut adm = shared
-                .admission
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            apply_sni_strike(&mut adm, source, &outcome, shared.clock.now());
+            apply_sni_strike(&shared.admission, source, &outcome, shared.clock.now());
         }
         _ => {
             TlsStats::bump(&shared.tls_stats.handshake_fail);
@@ -423,13 +415,7 @@ fn resolve_sni_client_id<H: ?Sized>(
         .flatten();
     let sni_ref = sni.as_deref();
 
-    let class = {
-        let adm = shared
-            .admission
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        adm.classify(peer)
-    };
+    let class = { shared.admission.classify(peer) };
 
     if !public_client_id_required(shared.listener.exposure, class) {
         // Local, or private source on a public listener.
@@ -445,11 +431,7 @@ fn resolve_sni_client_id<H: ?Sized>(
                 TlsStats::bump(&shared.tls_stats.sni_reject_no_strike);
             }
             {
-                let mut adm = shared
-                    .admission
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                apply_sni_strike(&mut adm, peer, &outcome, shared.clock.now());
+                apply_sni_strike(&shared.admission, peer, &outcome, shared.clock.now());
             }
             Err(())
         }
@@ -617,11 +599,9 @@ where
 
     let now = shared.clock.now();
     let decision = {
-        let mut adm = shared
+        shared
             .admission
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        adm.check(&shared.listener, peer.ip(), client_id, now)
+            .check(&shared.listener, peer.ip(), client_id, now)
     };
 
     match decision {
@@ -739,11 +719,7 @@ async fn read_doq_message(recv: &mut RecvStream) -> Result<Vec<u8>, DoqReadError
 }
 
 fn strike_framing<H: ?Sized>(shared: &DoqShared<H>, peer: IpAddr) {
-    let mut adm = shared
-        .admission
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    adm.strike(
+    shared.admission.strike(
         peer.to_canonical(),
         StrikeReason::MalformedFraming,
         shared.clock.now(),
@@ -751,9 +727,5 @@ fn strike_framing<H: ?Sized>(shared: &DoqShared<H>, peer: IpAddr) {
 }
 
 fn strike_tls_handshake<H: ?Sized>(shared: &DoqShared<H>, exposure: Exposure, peer: IpAddr) {
-    let mut adm = shared
-        .admission
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    apply_tls_handshake_strike(&mut adm, exposure, peer, shared.clock.now());
+    apply_tls_handshake_strike(&shared.admission, exposure, peer, shared.clock.now());
 }

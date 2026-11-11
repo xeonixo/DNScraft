@@ -19,6 +19,7 @@ workspace = true
 dnscraft-api = { path = "../dnscraft-api" }
 dnscraft-cluster = { path = "../dnscraft-cluster" }
 dnscraft-clients = { path = "../dnscraft-clients" }
+dnscraft-common = { path = "../dnscraft-common" }
 dnscraft-listeners = { path = "../dnscraft-listeners" }
 dnscraft-policy = { path = "../dnscraft-policy" }
 dnscraft-resolver = { path = "../dnscraft-resolver" }

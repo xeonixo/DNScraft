@@ -88,7 +88,9 @@ Adopted from AdGuard Home and refined; each item belongs to the listed module sp
 
 ### Later (not specified now, but the API must not prevent it)
 
-- Home Assistant integration (pause switch, counters) and Prometheus metrics.
+- Home Assistant integration (pause switch, counters).
+- Richer Prometheus / OTLP (histograms, exemplars). A thin `GET /metrics`
+  text exposition already ships on the control-api (viewer/admin).
 
 ## License
 

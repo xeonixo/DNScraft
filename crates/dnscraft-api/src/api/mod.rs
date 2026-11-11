@@ -13,6 +13,7 @@ pub(crate) mod domain_zones_routes;
 pub(crate) mod filter_routes;
 pub(crate) mod listener_routes;
 pub(crate) mod mcp_endpoints;
+pub(crate) mod metrics_routes;
 pub(crate) mod notifications_routes;
 pub(crate) mod oauth;
 pub(crate) mod pagination;

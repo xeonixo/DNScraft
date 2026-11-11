@@ -85,10 +85,17 @@ pub struct LocalAccountStore {
     notifier: Option<watch::Sender<u64>>,
     /// Failed credential checks per source IP: `(failures, window_started)`.
     sources: Arc<Mutex<HashMap<IpAddr, (u32, i64)>>>,
+    /// Last source that successfully signed in per username. While an account
+    /// is locked, that source may still authenticate with the correct password
+    /// so a multi-IP credential-stuffing attack cannot lock out the owner.
+    success_sources: Arc<Mutex<HashMap<String, IpAddr>>>,
 }
 
 /// Source entries kept before expired ones are pruned (bounds memory).
 const MAX_TRACKED_LOGIN_SOURCES: usize = 10_000;
+
+/// Cap on remembered successful login sources (one IP per username).
+const MAX_SUCCESS_SOURCES: usize = 1_024;
 
 /// Minimum password length accepted by first-run bootstrap (login itself has
 /// no length floor — existing hashes stay valid).
@@ -108,6 +115,7 @@ impl LocalAccountStore {
             epoch: Arc::new(AtomicU64::new(0)),
             notifier: None,
             sources: Arc::new(Mutex::new(HashMap::new())),
+            success_sources: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -188,7 +196,9 @@ impl LocalAccountStore {
                 }
                 Ok(())
             })
-            .await
+            .await?;
+        self.clear_all_success_sources();
+        Ok(())
     }
 
     /// Whether any local account exists. Used by the first-run bootstrap
@@ -282,6 +292,7 @@ impl LocalAccountStore {
             ));
         }
         let username = username.to_owned();
+        let username_for_clear = username.clone();
         let password = Zeroizing::new(password.to_owned());
         // Hashing runs inside `with_conn`, i.e. on the blocking pool, never on
         // an async executor thread.
@@ -304,6 +315,7 @@ impl LocalAccountStore {
                 Ok(())
             })
             .await?;
+        self.clear_success_source(&username_for_clear);
         self.epoch.fetch_add(1, Ordering::Relaxed);
         self.notify();
         Ok(())
@@ -315,7 +327,9 @@ impl LocalAccountStore {
     /// name. The source is the resolved client address.
     ///
     /// Locked attempts answer `control_api.auth.local` like any wrong password;
-    /// the audit row keeps `control_api.auth.locked` as the real reason.
+    /// the audit row keeps `control_api.auth.locked` as the real reason. A
+    /// source that previously signed in successfully for the username may still
+    /// unlock the account with the correct password while it is locked.
     pub async fn authenticate_from(
         &self,
         source: IpAddr,
@@ -341,11 +355,57 @@ impl LocalAccountStore {
             .await?;
             return Err(ControlApiError::AuthLocal);
         }
-        let result = self.authenticate(username, password).await;
-        if matches!(result, Err(ControlApiError::AuthLocal)) {
-            self.note_source_failure(source, now, window);
+        let bypass_account_lock = self.is_trusted_source(username.trim(), source);
+        let result = self
+            .authenticate_inner(username, password, bypass_account_lock)
+            .await;
+        match &result {
+            Ok(_) => self.note_success_source(username.trim(), source),
+            Err(ControlApiError::AuthLocal) => self.note_source_failure(source, now, window),
+            Err(_) => {}
         }
         result
+    }
+
+    fn is_trusted_source(&self, username: &str, source: IpAddr) -> bool {
+        let sources = self
+            .success_sources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        sources.get(username).is_some_and(|ip| *ip == source)
+    }
+
+    fn note_success_source(&self, username: &str, source: IpAddr) {
+        if username.is_empty() {
+            return;
+        }
+        let mut sources = self
+            .success_sources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if sources.len() >= MAX_SUCCESS_SOURCES && !sources.contains_key(username) {
+            // Drop an arbitrary entry so a flooding attacker cannot grow the map.
+            if let Some(key) = sources.keys().next().cloned() {
+                sources.remove(&key);
+            }
+        }
+        sources.insert(username.to_owned(), source);
+    }
+
+    fn clear_success_source(&self, username: &str) {
+        let mut sources = self
+            .success_sources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        sources.remove(username);
+    }
+
+    fn clear_all_success_sources(&self) {
+        let mut sources = self
+            .success_sources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        sources.clear();
     }
 
     fn source_locked(&self, source: IpAddr, now: i64, window: i64) -> bool {
@@ -382,15 +442,22 @@ impl LocalAccountStore {
     /// locks. Each attempt is audited with its real reason (`auth.locked` while
     /// the lock window is active), including locked attempts.
     ///
-    // ponytail: the per-account lock is a known DoS residual: anyone who can reach
-    // this endpoint can lock a known username with max_attempts wrong passwords,
-    // spread over sources to dodge the per-source lock. Upgrade path: back off
-    // instead of hard-locking, or let sources that already succeeded for the
-    // account keep signing in.
+    /// Callers with a peer address should prefer
+    /// [`authenticate_from`](Self::authenticate_from), which remembers the last
+    /// successful source so a locked account can still be unlocked from it.
     pub async fn authenticate(
         &self,
         username: &str,
         password: String,
+    ) -> Result<Role, ControlApiError> {
+        self.authenticate_inner(username, password, false).await
+    }
+
+    async fn authenticate_inner(
+        &self,
+        username: &str,
+        password: String,
+        bypass_account_lock: bool,
     ) -> Result<Role, ControlApiError> {
         let username = username.trim().to_owned();
         let password = Zeroizing::new(password);
@@ -432,10 +499,12 @@ impl LocalAccountStore {
                 let role = Role::parse(&role_str).ok_or_else(|| ControlApiError::Internal {
                     message: format!("unknown local account role in storage: {role_str}"),
                 })?;
-                if locked_until.is_some_and(|until| now < until) {
+                let locked = locked_until.is_some_and(|until| now < until);
+                if locked && !bypass_account_lock {
                     // Run the same Argon2 verification a real attempt would, so a
                     // locked account is not timing-distinguishable. The result is
-                    // ignored: a locked account never succeeds.
+                    // ignored: a locked account never succeeds from an untrusted
+                    // source.
                     let _ = password_matches(password.as_bytes(), &hash);
                     return Ok(Attempt::Failure(ControlApiError::AuthLocked));
                 }
@@ -854,5 +923,39 @@ mod tests {
                 .any(|r| r.error_code.as_deref() == Some("control_api.auth.locked")),
             "the locked attempt must be audited: {records:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn trusted_source_can_unlock_a_locked_account() {
+        let (store, _) = store().await;
+        store
+            .upsert("admin", "correct horse", Role::Admin)
+            .await
+            .unwrap();
+        let home: IpAddr = "192.0.2.10".parse().unwrap();
+        let attacker: IpAddr = "198.51.100.7".parse().unwrap();
+        // Owner signs in once so their source is remembered.
+        let role = store
+            .authenticate_from(home, "admin", "correct horse".into())
+            .await
+            .unwrap();
+        assert_eq!(role, Role::Admin);
+        // Attackers from other IPs lock the account.
+        for i in 0..5 {
+            let src: IpAddr = format!("198.51.100.{i}").parse().unwrap();
+            let _ = store.authenticate_from(src, "admin", "wrong".into()).await;
+        }
+        // An untrusted source stays locked out even with the right password.
+        let err = store
+            .authenticate_from(attacker, "admin", "correct horse".into())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "control_api.auth.local");
+        // The remembered home source unlocks with the correct password.
+        let role = store
+            .authenticate_from(home, "admin", "correct horse".into())
+            .await
+            .unwrap();
+        assert_eq!(role, Role::Admin);
     }
 }

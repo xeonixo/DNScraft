@@ -172,6 +172,10 @@ pub enum Requirement {
 /// re-implementing the route table; pair it with [`authorize`].
 pub fn requirement(method: &Method, path: &str) -> Requirement {
     let path = path.trim_end_matches('/');
+    // Prometheus text exposition: same posture as stats reads (viewer/admin).
+    if method == Method::GET && path == "/metrics" {
+        return Requirement::Api;
+    }
     if path == "/api/v1/status"
         || path == "/api/v1/auth/oidc/authorize-url"
         || path == "/api/v1/auth/oidc/callback"
@@ -378,6 +382,7 @@ mod tests {
     #[test]
     fn requirement_maps_routes_to_roles() {
         assert_eq!(requirement(&Method::GET, "/healthz"), Requirement::Public);
+        assert_eq!(requirement(&Method::GET, "/metrics"), Requirement::Api);
         assert_eq!(
             requirement(&Method::GET, "/api/v1/status"),
             Requirement::Public

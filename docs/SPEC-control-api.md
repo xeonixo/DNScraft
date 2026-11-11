@@ -253,6 +253,7 @@ or secret token material. The `CertResolver` is passed to listeners as
 |---|---|---|---|---|
 | GET | `/healthz` | public | liveness only | – |
 | GET | `/readyz` | public | readiness aggregates resolver/listener/config states | `control_api.not_ready` |
+| GET | `/metrics` | viewer/admin | Prometheus text exposition of process counters | `control_api.auth.unauthenticated` |
 | GET | `/api/v1/status` | public | node status, module status, build version | `control_api.internal` |
 | GET | `/api/v1/config` | admin | full current config export (secrets excluded) | `control_api.config.read` |
 | PUT | `/api/v1/config` | admin | atomic config replace, except `mcp_rules` (carried over when omitted; see § MCP-managed filter rules); returns new version | `control_api.config.invalid`, `control_api.config.apply` |

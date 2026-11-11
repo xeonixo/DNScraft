@@ -835,8 +835,11 @@ async fn rollup_pass_makes_closed_hour_tops_available_without_raw_seed_gap() {
     log.run_rollup().await.unwrap();
     // Leave the raw retention window so a raw-only path would see nothing; rollups remain.
     clock.advance(Duration::from_secs(40 * 86_400));
-    let (status, _, body) =
-        request(&log, "/api/v1/stats/top_domains?from=2023-01-01T00:00:00Z&limit=10").await;
+    let (status, _, body) = request(
+        &log,
+        "/api/v1/stats/top_domains?from=2023-01-01T00:00:00Z&limit=10",
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     let body_json = json(&body);
     let domains = body_json["data"]["domains"].as_array().unwrap();

@@ -431,9 +431,15 @@ fn prune_rollups(
     for (sql, cutoff) in [
         ("DELETE FROM stats_hourly WHERE hour < ?1", hour_cutoff),
         ("DELETE FROM stats_daily WHERE day < ?1", day_cutoff),
-        ("DELETE FROM stats_domain_hourly WHERE hour < ?1", hour_cutoff),
+        (
+            "DELETE FROM stats_domain_hourly WHERE hour < ?1",
+            hour_cutoff,
+        ),
         ("DELETE FROM stats_domain_daily WHERE day < ?1", day_cutoff),
-        ("DELETE FROM stats_client_hourly WHERE hour < ?1", hour_cutoff),
+        (
+            "DELETE FROM stats_client_hourly WHERE hour < ?1",
+            hour_cutoff,
+        ),
         ("DELETE FROM stats_client_daily WHERE day < ?1", day_cutoff),
     ] {
         tx.execute(sql, params![cutoff]).map_err(db_err)?;
@@ -602,9 +608,7 @@ impl QueryLog {
                          GROUP BY 1, 2, 3, 4, 5",
                     )
                     .map_err(db_err)?;
-                let until_us = until_hour
-                    .saturating_add(1)
-                    .saturating_mul(MICROS_PER_HOUR);
+                let until_us = until_hour.saturating_add(1).saturating_mul(MICROS_PER_HOUR);
                 let hourly: Vec<DimBucket> = dim_stmt
                     .query_map(params![since_us, MICROS_PER_HOUR, until_us], |row| {
                         Ok((
@@ -1664,7 +1668,11 @@ fn merge_client_ranks(
     let mut rows: Vec<TopClient> = map.into_values().collect();
     match by {
         TopBy::Queries => {
-            rows.sort_by(|a, b| b.queries.cmp(&a.queries).then(a.client_id.cmp(&b.client_id)));
+            rows.sort_by(|a, b| {
+                b.queries
+                    .cmp(&a.queries)
+                    .then(a.client_id.cmp(&b.client_id))
+            });
         }
         TopBy::Blocked => {
             rows.sort_by(|a, b| {
@@ -1940,7 +1948,12 @@ async fn cache_stats_with_rollups(
                  WHERE hour >= ?1 AND hour <= ?2
                    AND (?3 IS NULL OR node_id = ?3)
                    AND (?4 IS NULL OR profile_id = ?4)",
-                params![from_hour, open_hour - 1, scope_c.node_id, scope_c.profile_id],
+                params![
+                    from_hour,
+                    open_hour - 1,
+                    scope_c.node_id,
+                    scope_c.profile_id
+                ],
                 |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
             )
             .map_err(db_err)

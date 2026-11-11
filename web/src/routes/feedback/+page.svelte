@@ -184,7 +184,7 @@
 	}
 
 	.status.err {
-		color: var(--danger, #b42318);
+		color: var(--danger);
 	}
 
 	.preview {

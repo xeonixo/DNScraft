@@ -62,6 +62,12 @@ are viewer-readable (public Split-DNS side; no config secrets).
 | GET | `/healthz` | Liveness only. `{ "ok": true }` |
 | GET | `/readyz` | Readiness aggregates module state. `503 control_api.not_ready` with the failing `modules` when not ready. |
 
+### Metrics (viewer/admin)
+
+| Method | Path | Summary |
+|---|---|---|
+| GET | `/metrics` | Prometheus text exposition of process counters (`dnscraft_up`, resolver, filter, listener, query-log dropped). Missing engines omit their families. `401` without a viewer/admin session or bearer token. |
+
 ### Status (public)
 
 | Method | Path | Summary |

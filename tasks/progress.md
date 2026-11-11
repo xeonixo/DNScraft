@@ -2,6 +2,15 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-11-11 — P2: Prometheus `/metrics` + local-auth lockout harden
+
+- **Metrics:** `GET /metrics` Prometheus text on the control-api (viewer/admin);
+  resolver / filter / listener / query-log counters; `dnscraft_up`.
+- **Lockout:** remember last successful login source per username; that source
+  can still unlock a locked account with the correct password (multi-IP DoS
+  residual from the local-auth ponytail).
+- Docs: API-REFERENCE, SPEC.md / SPEC-control-api / SPEC-tls notes.
+
 ## 2026-11-11 — P1 product gaps: setup bootstrap, docs/UX, public-web e2e
 
 - **Setup:** `GET /api/v1/auth/bootstrap` + one-shot `POST /api/v1/auth/local/bootstrap`

@@ -441,7 +441,9 @@ codes, DynDNS last IPv4/IPv6 and last change time. `TlsEngine` additionally
 exposes `acme_account_status()`, `order_status()`, `rate_limit_status()`,
 `record_inventory()`, `dyndns_audit()`, `preflight()` and `export_cert()`.
 Metrics: days to expiry (gauge), renew success/fail counters, exposed in-process via
-`TlsEngine::metrics() -> TlsMetrics` (no exporter yet; Prometheus output stays under SPEC.md "Later"). Web UI alert when
+`TlsEngine::metrics() -> TlsMetrics`. Control-api `GET /metrics` exports resolver /
+filter / listener / query-log counters today; TLS gauges may join that surface later.
+Web UI alert when
 `tls.cert.expiring` / `tls.cert.revoked` / `tls.dyndns.update` / ACME failures
 are set.
 

@@ -46,6 +46,7 @@ use super::mcp_endpoints::{
     list_mcp_proposals, list_mcp_rules, pause_filter_set, reject_mcp_proposal, remove_custom_rule,
     remove_temporary_allow, resume_filter_set, test_query,
 };
+use super::metrics_routes::metrics;
 use super::notifications_routes::{get_notifications, post_notification_test, put_notifications};
 use super::oauth;
 use super::policy_routes::{
@@ -326,6 +327,8 @@ pub(crate) fn build_router(state: AppState) -> Router {
     let mut router = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
+        // Process counters for scrapers; RBAC requires a viewer/admin principal.
+        .route("/metrics", get(metrics))
         .nest("/api/v1", api)
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)

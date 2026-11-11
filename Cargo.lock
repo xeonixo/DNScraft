@@ -782,7 +782,7 @@ dependencies = [
 
 [[package]]
 name = "dnscraft"
-version = "0.3.12"
+version = "0.4.0"
 dependencies = [
  "dnscraft-api",
  "dnscraft-clients",
@@ -804,7 +804,7 @@ dependencies = [
 
 [[package]]
 name = "dnscraft-api"
-version = "0.3.12"
+version = "0.4.0"
 dependencies = [
  "argon2",
  "async-trait",
@@ -848,7 +848,7 @@ dependencies = [
 
 [[package]]
 name = "dnscraft-clients"
-version = "0.3.12"
+version = "0.4.0"
 dependencies = [
  "dnscraft-common",
  "idna",
@@ -871,7 +871,7 @@ dependencies = [
 
 [[package]]
 name = "dnscraft-cluster"
-version = "0.3.12"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -907,7 +907,7 @@ dependencies = [
 
 [[package]]
 name = "dnscraft-common"
-version = "0.3.12"
+version = "0.4.0"
 dependencies = [
  "idna",
  "ring",
@@ -919,7 +919,7 @@ dependencies = [
 
 [[package]]
 name = "dnscraft-filtering"
-version = "0.3.12"
+version = "0.4.0"
 dependencies = [
  "criterion",
  "dnscraft-common",
@@ -941,7 +941,7 @@ dependencies = [
 
 [[package]]
 name = "dnscraft-listeners"
-version = "0.3.12"
+version = "0.4.0"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -978,7 +978,7 @@ dependencies = [
 
 [[package]]
 name = "dnscraft-mcp"
-version = "0.3.12"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -1003,7 +1003,7 @@ dependencies = [
 
 [[package]]
 name = "dnscraft-policy"
-version = "0.3.12"
+version = "0.4.0"
 dependencies = [
  "criterion",
  "dnscraft-common",
@@ -1022,7 +1022,7 @@ dependencies = [
 
 [[package]]
 name = "dnscraft-proto"
-version = "0.3.12"
+version = "0.4.0"
 dependencies = [
  "hickory-proto",
  "proptest",
@@ -1032,7 +1032,7 @@ dependencies = [
 
 [[package]]
 name = "dnscraft-resolver"
-version = "0.3.12"
+version = "0.4.0"
 dependencies = [
  "criterion",
  "dnscraft-common",
@@ -1050,7 +1050,7 @@ dependencies = [
 
 [[package]]
 name = "dnscraft-testkit"
-version = "0.3.12"
+version = "0.4.0"
 dependencies = [
  "dnscraft-proto",
  "hickory-proto",
@@ -1062,7 +1062,7 @@ dependencies = [
 
 [[package]]
 name = "dnscraft-tls"
-version = "0.3.12"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "bytes",

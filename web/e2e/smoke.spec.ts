@@ -68,6 +68,7 @@ test.describe('locale de', () => {
 			globalThis.localStorage.setItem('dnscraft_locale', 'de');
 		});
 		await page.goto('/login');
-		await expect(page.getByRole('heading', { level: 1 })).toContainText('Anmelden');
+		await expect(page.getByRole('heading', { level: 1 })).toContainText('DNScraft');
+		await expect(page.getByRole('button', { name: 'Anmelden' })).toBeVisible();
 	});
 });

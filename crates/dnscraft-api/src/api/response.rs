@@ -103,6 +103,8 @@ impl ControlApiError {
             ControlApiError::Module { code, .. } => match *code {
                 // Plan/SPEC: DoH+cluster same bind:port is a conflict, not a soft 400.
                 "cluster.listen.collision" => S::CONFLICT,
+                // First-run admin already provisioned (or raced).
+                "control_api.auth.bootstrap_taken" => S::CONFLICT,
                 _ => S::BAD_REQUEST,
             },
         }

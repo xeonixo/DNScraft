@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { resolve } from '$app/paths';
 	import ErrorNotice from '$lib/components/ErrorNotice.svelte';
 	import GroupedList from '$lib/components/GroupedList.svelte';
 	import GroupedRow from '$lib/components/GroupedRow.svelte';
@@ -167,6 +168,9 @@
 			{/each}
 		</GroupedList>
 	{/if}
+	<p class="ban-link">
+		<a href={resolve('/listeners')}>{m.settings_web_access_ban_link()}</a>
+	</p>
 {/if}
 
 <style>
@@ -209,5 +213,15 @@
 		font-family: var(--font-mono);
 		font-size: 0.875rem;
 		resize: vertical;
+	}
+
+	.ban-link {
+		margin: 0.25rem 1rem 0;
+		font-size: 0.8125rem;
+	}
+
+	.ban-link a {
+		color: var(--accent);
+		text-decoration: none;
 	}
 </style>

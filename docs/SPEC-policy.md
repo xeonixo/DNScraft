@@ -511,8 +511,9 @@ rebind_exceptions = ["*.example.com"]
 
 ## Open Questions
 
-Schedule time zones: ship UTC-only (current) or add a profile/timezone field later
-(see Schedules). All other defaults locked 2026-10-25 (owner asked to decide reasonably).
+Schedule time zones: **UTC-only for v1** (owner default). A profile/timezone field
+may land later; the UI states that start/end are Monday-00:00-UTC week offsets.
+All other defaults locked 2026-10-25.
 
 ## Decisions (2026-10-25)
 
@@ -524,8 +525,8 @@ Schedule time zones: ship UTC-only (current) or add a profile/timezone field lat
 3. **View records:** exact names, plus a single leading `*` label
    (`*.example.com`). Embedded `*` labels stay rejected. Lookup is exact first,
    then walk-up `*.<parent>` (synthesised owner = qname).
-4. **Schedules / SafeSearch:** evaluated (P13/P14). Remaining open question:
-   schedule local time zones (UTC offsets only today; see Schedules).
+4. **Schedules / SafeSearch:** evaluated (P13/P14). Schedule time zones stay
+   UTC-only in v1 (see Open Questions).
 5. **Forward-zone allow-list:** **yes** — extend resolver `RequestFlags` (or
    equivalent) for a per-query allow-list.
 6. **Pause:** **both** global and per-profile in MVP.

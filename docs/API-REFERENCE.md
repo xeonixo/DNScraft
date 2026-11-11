@@ -313,7 +313,9 @@ Protocol v2 Prefer-QUIC → HTTP/2 fallback, optional zstd, reverse RPC. See
 | POST | `/api/v1/auth/tokens` | admin | Create a bearer token (`viewer`/`admin`/`mcp:read`/`mcp:write`); plaintext shown once, hash stored. |
 | GET | `/api/v1/auth/tokens` | admin | List tokens (`id`, `name`, `scope`, `actor_id`, RFC 3339 `created_at`/`expires_at`); never the plaintext. |
 | DELETE | `/api/v1/auth/tokens/{id}` | admin | Revoke a token; `control_api.auth.unknown_token` (404) if absent. Audited. |
+| GET | `/api/v1/auth/bootstrap` | public | `{ needs_setup, local_login, oidc }`. `needs_setup` is true only when local login is enabled and no local account exists yet (first-run `/setup`). |
 | POST | `/api/v1/auth/local/login` | public | Break-glass login with a provisioned local account. `control_api.auth.locked` on lockout, per account and per source IP. |
+| POST | `/api/v1/auth/local/bootstrap` | public | One-shot first local admin when the store is empty. Body `{ username, password }` (password ≥ 8). Returns a cookie session like login. `409 control_api.auth.bootstrap_taken` once any account exists; unavailable on cluster sub-nodes. Audited as `auth.local.bootstrap`. |
 | POST | `/api/v1/auth/logout` | viewer/admin | Ends the cookie session. Audited. |
 | GET | `/api/v1/auth/me` | viewer/admin | Current principal: `role`, `actor_id`, `actor_type`, `csrf_token` (cookie sessions). |
 | GET | `/api/v1/auth/sessions` | viewer/admin | Live sessions: own by default, `scope=all` for admins. Rows carry `id` (not the cookie), `client_label`, truncated `ip`, `created_at`, `last_seen`, `expires_at`, `current`. |

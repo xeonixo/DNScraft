@@ -33,6 +33,7 @@ export const CONTROL_API_ERROR_CODES = [
 	'control_api.audit.read',
 	'control_api.not_ready',
 	'control_api.web_access.bootstrap_auth',
+	'control_api.auth.bootstrap_taken',
 ] as const;
 
 /** Raised by the client when no valid envelope arrived (`status` is 0 for failed fetches). */

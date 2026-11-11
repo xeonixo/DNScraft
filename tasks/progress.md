@@ -2,6 +2,18 @@
 
 Resume point for interrupted sessions. Newest entry first.
 
+## 2026-11-11 — P1 product gaps: setup bootstrap, docs/UX, public-web e2e
+
+- **Setup:** `GET /api/v1/auth/bootstrap` + one-shot `POST /api/v1/auth/local/bootstrap`
+  (empty local store only); SPA `/setup` wizard; login redirects when `needs_setup`.
+- **Permanent block:** OWNER closed — query-log RuleSheet already writes permanent
+  rules via `PUT /filter-sets` `custom_rules`; archive note + SPEC aligned.
+- **Schedules:** keep UTC-only; honest UI hint (Monday 00:00 UTC week offsets).
+- **Ban UI:** already on Listeners advanced; Settings web-access links there.
+- **Public-web e2e:** `web/e2e/public-web.spec.ts` (toggle, CIDRs, unban); mock
+  persists `allowed_cidrs`.
+- Env seed `DNSCRAFT_ADMIN_PASSWORD_FILE` unchanged.
+
 ## 2026-11-02 — Cluster v2 harden: fallback/CONNECT/DoH/UI/fuzz
 
 - Fault-injection `tests/fallback_rpc.rs`: UDP occupied → Prefer-QUIC falls back to

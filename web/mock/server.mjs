@@ -328,10 +328,13 @@ function groupCounts(rows, keyOf) {
 }
 
 let webAccessPublic = false;
+let webAccessCidrs = [];
 let webBans = [
 	{ ip: '198.51.100.7', until: new Date(Date.now() + 40 * 60_000).toISOString() },
 	{ ip: '2001:db8::42', until: new Date(Date.now() + 3 * 3_600_000).toISOString() },
 ];
+/** Mock first-run flag; flipped after a successful bootstrap POST. */
+let needsSetup = false;
 
 function readJsonBody(request) {
 	return new Promise((resolveBody, reject) => {
@@ -757,7 +760,11 @@ function normalizeOwnerName(name) {
 		.replace(/\.+$/, '');
 }
 
-const PUBLIC_ROUTES = new Set(['POST /api/v1/auth/local/login']);
+const PUBLIC_ROUTES = new Set([
+	'POST /api/v1/auth/local/login',
+	'POST /api/v1/auth/local/bootstrap',
+	'GET /api/v1/auth/bootstrap',
+]);
 /** Writes a viewer may send: the sign-out, and the dry-run reads that are POSTs by path. */
 const VIEWER_POSTS = new Set([
 	'POST /api/v1/auth/logout',
@@ -795,6 +802,12 @@ async function route(request, response, options) {
 	switch (key) {
 		case 'GET /api/v1/auth/me':
 			return sendData(response, { ...principal, csrf_token: MOCK_CSRF_TOKEN });
+		case 'GET /api/v1/auth/bootstrap':
+			return sendData(response, {
+				needs_setup: needsSetup,
+				local_login: true,
+				oidc: false,
+			});
 		case 'POST /api/v1/auth/local/login': {
 			const body = await readJsonBody(request);
 			if (typeof body.username !== 'string' || body.username === '') {
@@ -802,6 +815,28 @@ async function route(request, response, options) {
 			}
 			return sendData(response, {
 				role: options.role,
+				actor_id: body.username,
+				csrf_token: MOCK_CSRF_TOKEN,
+			});
+		}
+		case 'POST /api/v1/auth/local/bootstrap': {
+			const body = await readJsonBody(request);
+			if (!needsSetup) {
+				throw new ApiFailure(409, 'control_api.auth.bootstrap_taken');
+			}
+			if (typeof body.username !== 'string' || body.username === '') {
+				throw new ApiFailure(400, 'control_api.config.invalid', {
+					reason: 'local account username must not be empty',
+				});
+			}
+			if (typeof body.password !== 'string' || body.password.length < 8) {
+				throw new ApiFailure(400, 'control_api.config.invalid', {
+					reason: 'local account password must be at least 8 characters',
+				});
+			}
+			needsSetup = false;
+			return sendData(response, {
+				role: 'admin',
 				actor_id: body.username,
 				csrf_token: MOCK_CSRF_TOKEN,
 			});
@@ -1267,11 +1302,19 @@ async function route(request, response, options) {
 		case 'GET /api/v1/web-bans':
 			return sendData(response, { items: webBans });
 		case 'GET /api/v1/web-access':
-			return sendData(response, { public_enabled: webAccessPublic });
+			return sendData(response, {
+				public_enabled: webAccessPublic,
+				allowed_cidrs: webAccessCidrs,
+			});
 		case 'PUT /api/v1/web-access': {
 			const body = await readJsonBody(request);
 			webAccessPublic = body.public_enabled === true;
-			return sendData(response, { version: 2, public_enabled: webAccessPublic });
+			webAccessCidrs = Array.isArray(body.allowed_cidrs) ? body.allowed_cidrs.map(String) : [];
+			return sendData(response, {
+				version: 2,
+				public_enabled: webAccessPublic,
+				allowed_cidrs: webAccessCidrs,
+			});
 		}
 		case 'GET /api/v1/update/check': {
 			const enabled = currentOf(options.store).config.control_api_settings?.update_check === true;

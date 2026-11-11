@@ -5,7 +5,7 @@
 	import { resolve } from '$app/paths';
 	import type { Pathname } from '$app/types';
 	import { ApiError } from '$lib/api/client';
-	import { oidcAuthorizeUrl, oidcStatusPublic } from '$lib/api/auth';
+	import { authBootstrapStatus, oidcAuthorizeUrl, oidcStatusPublic } from '$lib/api/auth';
 	import Button from '$lib/components/Button.svelte';
 	import ErrorNotice from '$lib/components/ErrorNotice.svelte';
 	import GroupedList from '$lib/components/GroupedList.svelte';
@@ -45,6 +45,15 @@
 			oidcFailure = { code: 'control_api.auth.oidc', params: {} };
 			void goto(resolve('/login'), { replaceState: true });
 		}
+		void authBootstrapStatus()
+			.then((status) => {
+				if (status.needs_setup) {
+					void goto(resolve('/setup'), { replaceState: true });
+				}
+			})
+			.catch(() => {
+				// Login still works when the probe fails; OIDC check continues below.
+			});
 		void oidcStatusPublic()
 			.then((status) => {
 				oidcEnabled = status.enabled;

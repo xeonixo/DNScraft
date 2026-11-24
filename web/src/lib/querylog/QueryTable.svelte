@@ -107,7 +107,7 @@
 						>
 					</td>
 					<td class="domain">
-						<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- burstDetailHref resolves -->
+						<!-- eslint-disable svelte/no-navigation-without-resolve -- burstDetailHref resolves -->
 						<a
 							class="name"
 							href={burstDetailHref(record.id, burst?.ids)}
@@ -126,6 +126,7 @@
 									>×{burst.count}</span
 								>{/if}
 						</a>
+						<!-- eslint-enable svelte/no-navigation-without-resolve -->
 						<a
 							class="stats"
 							href={resolve('/dashboard/domains/[name]', { name: record.query.name })}

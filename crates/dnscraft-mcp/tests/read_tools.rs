@@ -817,7 +817,7 @@ async fn explain_and_test_query_definitions_are_static_and_match_spec() {
     let explain = find("explain_block");
     assert_eq!(
         explain["description"],
-        "Explain why a domain is currently blocked for a given profile. Returns the matching filter rule, its source list, and priority. Does not perform a live DNS query."
+        "Explain why a domain is currently blocked for a given profile. Prefer diagnose for app names or pasted links. Accepts full URLs. Does not perform a live DNS query."
     );
     assert_eq!(explain["annotations"]["readOnlyHint"], true);
     assert_eq!(explain["annotations"]["idempotentHint"], true);
@@ -1530,8 +1530,8 @@ async fn list_mcp_rules_definition_and_read_scope_listing() {
     let tools = body["result"]["tools"].as_array().unwrap();
     assert_eq!(
         tools.len(),
-        22,
-        "a read-scope token sees exactly the 22 read tools"
+        25,
+        "a read-scope token sees exactly the 25 read tools"
     );
     let names: Vec<&str> = tools
         .iter()
@@ -1546,6 +1546,9 @@ async fn list_mcp_rules_definition_and_read_scope_listing() {
         "list_clients",
         "get_status",
         "list_mcp_rules",
+        "diagnose",
+        "network_health",
+        "list_mcp_proposals",
     ] {
         assert!(names.contains(&name), "{name} missing from {names:?}");
     }

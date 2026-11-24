@@ -61,7 +61,7 @@ pub fn tool_definitions() -> Vec<Tool> {
         .with_annotations(ToolAnnotations::new().destructive(true).idempotent(false)),
         Tool::new(
             "set_blocked_service",
-            "Enable or disable a blocked-service category in a filter set.",
+            "Enable or disable a blocked-service category in a filter set. Often the next step after diagnose.suggested_next when an app category is enabled.",
             schema(json!({
                 "type": "object",
                 "properties": {

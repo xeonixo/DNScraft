@@ -32,13 +32,13 @@ use crate::sanitize::{
 };
 
 /// Static description for `allow_temporarily`.
-const ALLOW_DESCRIPTION: &str = "Temporarily allow a domain that is currently blocked, for a specified duration. The allow expires automatically. Call classify_domain first; for tracking/ad domains the user must explicitly consent and you must pass acknowledge_tracking: true. Requires mcp:write scope and write_tools_enabled. The client will ask you to confirm this action. This affects every client using this filter set.";
+const ALLOW_DESCRIPTION: &str = "Temporarily allow a domain that is currently blocked, for a specified duration (full URLs accepted). The allow expires automatically. Prefer diagnose first, or call classify_domain; for tracking/ad domains the user must explicitly consent and you must pass acknowledge_tracking: true. Requires mcp:write scope and write_tools_enabled. The client will ask you to confirm this action. This affects every client using this filter set.";
 
 /// Static description for `add_rule`.
 const ADD_RULE_DESCRIPTION: &str = "Add a custom block rule to a filter set. The rule is built from structured input; no raw AdGuard syntax is accepted via MCP. Requires mcp:write scope and write_tools_enabled. The client will ask you to confirm. This affects every client using this filter set.";
 
 /// Static description for `propose_exception`.
-const PROPOSE_DESCRIPTION: &str = "Propose a permanent exception (allow) for a domain that a list blocks wrongly. Call classify_domain first; tracking domains need acknowledge_tracking after explicit user consent. This changes nothing by itself: the owner must confirm the proposal in the DNScraft web UI, and it lapses after 7 days if they do not. Requires mcp:write scope and write_tools_enabled.";
+const PROPOSE_DESCRIPTION: &str = "Propose a permanent exception (allow) for a domain that a list blocks wrongly (full URLs accepted). Call classify_domain first; tracking domains need acknowledge_tracking after explicit user consent. This changes nothing by itself: the owner must confirm the proposal in the DNScraft web UI (check status with list_mcp_proposals), and it lapses after 7 days if they do not. Requires mcp:write scope and write_tools_enabled.";
 
 /// Static description for `remove_rule`.
 const REMOVE_RULE_DESCRIPTION: &str = "Remove a custom block rule that was previously added via MCP. Only rules created via MCP can be removed; web UI rules and downloaded list rules cannot. Requires mcp:write scope.";
@@ -947,7 +947,7 @@ pub(crate) async fn check_tracking_gate(
 }
 
 pub(crate) fn validate_domain(raw: &str) -> Result<String, CallToolResult> {
-    let canonical = crate::protected::canonicalize(raw).map_err(|code| {
+    let canonical = crate::input::canonicalize_user_domain(raw).map_err(|code| {
         if code == "filter_build.pattern_not_allowed" {
             tool_error(code, json!({}))
         } else {

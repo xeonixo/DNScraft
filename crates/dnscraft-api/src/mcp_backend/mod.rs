@@ -16,13 +16,14 @@ use dnscraft_mcp::dto::{
     DomainZoneSummary, ExplainBlockResult, FilterListSummary, FilterSetSummary, FilteringStatus,
     FlushCacheParams, FlushCacheResult, ListAlertsResult, ListBlockedServicesResult,
     ListDomainZonesResult, ListFilterListsResult, ListFilterSetsResult, ListListenersResult,
-    ListPolicyRecordsResult, ListPolicyViewsResult, ListResolverUpstreamsResult, ListRulesParams,
-    ListRulesResult, ListZoneRecordsResult, NodeStatus, PauseDuration, PauseParams, PauseResult,
-    PolicyViewSummary, QType, QueryDetail, QueryLogResult, QueryLogSearch, RemoveRuleParams,
-    RemoveRuleResult, ResolveClientParams, ResolverStatus, ResumeResult, Selection,
-    SetBlockedServiceParams, SetBlockedServiceResult, StatsParams, StatsPeriod, StatsResult,
-    StatsTimeseriesParams, TempAllowParams, TempAllowResult, TestQueryResult, TlsStatus, TokenInfo,
-    UpstreamStatusItem, ZoneRecord, ZoneRecordWriteParams, ZoneRecordWriteResult,
+    ListMcpProposalsResult, ListPolicyRecordsResult, ListPolicyViewsResult,
+    ListResolverUpstreamsResult, ListRulesParams, ListRulesResult, ListZoneRecordsResult,
+    NodeStatus, PauseDuration, PauseParams, PauseResult, PolicyViewSummary, QType, QueryDetail,
+    QueryLogResult, QueryLogSearch, RemoveRuleParams, RemoveRuleResult, ResolveClientParams,
+    ResolverStatus, ResumeResult, Selection, SetBlockedServiceParams, SetBlockedServiceResult,
+    StatsParams, StatsPeriod, StatsResult, StatsTimeseriesParams, TempAllowParams, TempAllowResult,
+    TestQueryResult, TlsStatus, TokenInfo, UpstreamStatusItem, ZoneRecord, ZoneRecordWriteParams,
+    ZoneRecordWriteResult,
 };
 use dnscraft_mcp::tracker_kind::tracker_kind;
 use dnscraft_proto::Name;
@@ -49,8 +50,8 @@ mod snapshot;
 pub(crate) use rules::{explain, list_mcp_rules, run_test_query};
 pub(crate) use shared::{rfc3339, stored_time};
 pub(crate) use snapshot::{
-    PROPOSAL_LIFETIME, active_rule, add_proposal_to_snapshot, add_rule_to_snapshot,
-    append_custom_rule, canonical_allow_domain, canonical_block_rule, duration_error,
+    PROPOSAL_LIFETIME, add_proposal_to_snapshot, add_rule_to_snapshot, append_custom_rule,
+    canonical_allow_domain, canonical_block_rule, collect_live_proposals, duration_error,
     duration_exceeds, engine_error, exception_rule_text, find_proposal, mcp_error, parse_set,
     protected_for, reject_protected, remove_rule_from_snapshot, resolve_set_for_write, set_mut,
     take_proposal, unknown_set,
@@ -784,6 +785,15 @@ impl McpBackend for ControlMcpBackend {
             &params,
         )
         .map_err(backend_error)
+    }
+
+    async fn list_mcp_proposals(&self) -> Result<ListMcpProposalsResult, BackendError> {
+        let snapshot = self.current_snapshot().await?;
+        let proposals = snapshot
+            .as_ref()
+            .map(|snap| collect_live_proposals(snap, self.inner.clock.now()))
+            .unwrap_or_default();
+        Ok(ListMcpProposalsResult { proposals })
     }
 
     async fn allow_temporarily(

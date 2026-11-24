@@ -2,7 +2,7 @@
 
 Every API function DNScraft exposes, in one place. Covers the two surfaces the
 control plane offers: the **REST control API** (`/api/v1`, implemented in
-`crates/dnscraft-api`) and the **MCP tool API** (36 tools implemented in
+`crates/dnscraft-api`) and the **MCP tool API** (39 tools implemented in
 `crates/dnscraft-mcp`, mounted under `/mcp/v1` when
 `[control_api.mcp] enabled = true`).
 
@@ -352,7 +352,7 @@ above. Sessions are under Auth; domain stats under Stats.
 
 ## MCP tools
 
-The `dnscraft-mcp` crate implements all 36 tools (22 read, 14 write) and exposes a
+The `dnscraft-mcp` crate implements all 39 tools (25 read, 14 write) and exposes a
 stateless `service()` mounted by `control-api` under `/mcp/v1` when
 `[control_api.mcp] enabled = true`. OAuth sign-in and server
 instructions/prompts/resources are part of the v2 surface. Tools use the same
@@ -362,7 +362,7 @@ tokens/roles/audit family as the REST API; write tools are additionally gated by
 v2 adds inventory reads (`classify_domain`, `list_alerts`, filter/policy/zone
 lists, `resolve_client`, stats extras), writes (`cancel_temporary_allow`,
 `flush_cache`, `set_blocked_service`, zone record CRUD), static prompts/resources,
-and server instructions. See [`crates/dnscraft-mcp/README.md`](../crates/dnscraft-mcp/README.md) for the full alphabetical catalog (36 tools).
+and server instructions. See [`crates/dnscraft-mcp/README.md`](../crates/dnscraft-mcp/README.md) for the full alphabetical catalog (39 tools).
 
 ### Read tools (`mcp:read` or `mcp:write`)
 

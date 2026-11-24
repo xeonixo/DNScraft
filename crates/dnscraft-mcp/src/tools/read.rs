@@ -32,7 +32,6 @@ use crate::dto::{
     TestQueryParams, TestQueryResult, TopClient, TopDomain,
 };
 use crate::error::McpError;
-use crate::protected::canonicalize;
 use crate::result::{tool_error, tool_ok};
 use crate::sanitize::{CAP_CLIENT_NAME, CAP_DOMAIN, CAP_LIST_ID, CAP_RULE_TEXT, sanitize};
 
@@ -41,7 +40,7 @@ pub const TOP_LIST_LIMIT: usize = 10;
 
 const SEARCH_QUERY_LOG_DESCRIPTION: &str = "Search the DNS query log with filters. Returns recent queries with client names, queried domains, filtering verdicts, and timestamps. Use this to answer 'what queries did device X make?' or 'when was Y blocked?'";
 const GET_QUERY_DESCRIPTION: &str = "Retrieve a single query-log entry by ID with full decision record (why blocked, which rule, DNSSEC status, timings). Use this after searching to get details.";
-const EXPLAIN_BLOCK_DESCRIPTION: &str = "Explain why a domain is currently blocked for a given profile. Returns the matching filter rule, its source list, and priority. Does not perform a live DNS query.";
+const EXPLAIN_BLOCK_DESCRIPTION: &str = "Explain why a domain is currently blocked for a given profile. Prefer diagnose for app names or pasted links. Accepts full URLs. Does not perform a live DNS query.";
 const TEST_QUERY_DESCRIPTION: &str = "Dry-run a DNS query through the policy engine as if it came from a specific client. Returns what the answer would be and why, without polluting the query log or cache. Use this to verify 'what would device X get for domain Y?'";
 const GET_STATS_DESCRIPTION: &str = "Retrieve DNS statistics: total queries, blocked ratio, top domains, top clients, cache hit ratio, DNSSEC outcomes. Specify a time range or use defaults (last 24 hours).";
 const LIST_CLIENTS_DESCRIPTION: &str = "List known clients (devices) with their names, IPs, VLANs, and source (UniFi, manual). Use this to find a client_id for other queries.";
@@ -404,10 +403,11 @@ async fn list_mcp_rules(
     }
 }
 
-/// Canonical form of a read-tool domain. A name that does not parse is
-/// answered with the forwarded `filter_name.*` or `filter_build.*` code.
+/// Canonical form of a read-tool domain. Accepts bare hosts and full URLs.
+/// A name that does not parse is answered with the forwarded `filter_name.*`
+/// or `filter_build.*` code.
 fn read_domain(raw: &str) -> Result<String, CallToolResult> {
-    canonicalize(raw)
+    crate::input::canonicalize_user_domain(raw)
         .map_err(|code| tool_error(code, json!({ "domain": sanitize(raw, CAP_DOMAIN) })))
 }
 
@@ -797,7 +797,7 @@ fn query_log_json(result: &QueryLogResult) -> Value {
     })
 }
 
-fn query_entry_json(entry: &QueryLogEntry) -> Value {
+pub(crate) fn query_entry_json(entry: &QueryLogEntry) -> Value {
     json!({
         "id": sanitize(&entry.id, CAP_LIST_ID),
         "time": sanitize(&entry.time, CAP_CLIENT_NAME),
@@ -886,7 +886,7 @@ fn timings_json(timings: &DecisionTimings) -> Value {
     })
 }
 
-fn explain_json(result: &ExplainBlockResult) -> Value {
+pub(crate) fn explain_json(result: &ExplainBlockResult) -> Value {
     json!({
         "domain": sanitize(&result.domain, CAP_DOMAIN),
         "profile_id": sanitize(&result.profile_id, CAP_LIST_ID),

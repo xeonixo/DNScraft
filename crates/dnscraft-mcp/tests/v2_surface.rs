@@ -292,7 +292,7 @@ async fn prompts_list_and_get_expose_clarify_workflows() {
     assert_eq!(status, 200, "{body}");
     let blob = body.to_string();
     assert!(
-        blob.contains("classify_domain") && blob.contains("acknowledge_tracking"),
+        blob.contains("diagnose") && blob.contains("acknowledge_tracking"),
         "{body}"
     );
 }

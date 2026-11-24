@@ -14,7 +14,6 @@ use crate::dto::{
     StatsTimeseriesParams,
 };
 use crate::error::McpError;
-use crate::protected::canonicalize;
 use crate::result::{tool_error, tool_ok};
 use crate::sanitize::{CAP_CLIENT_NAME, CAP_DOMAIN, CAP_LIST_ID, sanitize};
 
@@ -43,43 +42,43 @@ pub fn tool_definitions() -> Vec<Tool> {
     vec![
         tool(
             "classify_domain",
-            "Classify a domain using the tracker database (tracking vs functional). Call before allow_temporarily or propose_exception.",
+            "Classify a domain using the tracker database (tracking vs functional). Prefer diagnose for app/URL questions; call this before allow_temporarily or propose_exception when acting on a bare domain. Accepts full URLs.",
             json!({
                 "type": "object",
                 "properties": {
-                    "domain": { "type": "string", "description": "Canonical domain" }
+                    "domain": { "type": "string", "description": "Domain or URL" }
                 },
                 "required": ["domain"]
             }),
         ),
         tool(
             "list_alerts",
-            "List active operational alerts (TLS, resolver, cluster, listeners, etc.).",
+            "List active operational alerts. Prefer network_health for a combined health check.",
             json!({ "type": "object" }),
         ),
         tool(
             "list_filter_lists",
-            "List configured filter lists and their update status.",
+            "List configured filter lists and their update status (inventory).",
             json!({ "type": "object" }),
         ),
         tool(
             "list_filter_sets",
-            "List filter sets defined in configuration.",
+            "List filter sets from configuration (inventory).",
             json!({ "type": "object" }),
         ),
         tool(
             "list_policy_views",
-            "List policy views and their profile bindings.",
+            "List policy views and their profile bindings (inventory).",
             json!({ "type": "object" }),
         ),
         tool(
             "list_resolver_upstreams",
-            "List configured resolver upstreams and health state.",
+            "Resolver upstream health. Prefer network_health for a combined health check.",
             json!({ "type": "object" }),
         ),
         tool(
             "list_blocked_services",
-            "List the blocked-services catalog and which are enabled per filter set.",
+            "Blocked-services catalog and per–filter-set toggles. diagnose already matches app names against this catalog.",
             json!({
                 "type": "object",
                 "properties": {
@@ -309,7 +308,8 @@ struct DomainArgs {
 
 impl DomainArgs {
     fn domain(self) -> Result<String, CallToolResult> {
-        canonicalize(&self.domain).map_err(|_| invalid_input("domain is not valid"))
+        crate::input::canonicalize_user_domain(&self.domain)
+            .map_err(|_| invalid_input("domain is not valid"))
     }
 }
 
@@ -409,8 +409,8 @@ struct DomainStatsArgs {
 
 impl DomainStatsArgs {
     fn into_params(self) -> Result<DomainStatsParams, CallToolResult> {
-        let domain =
-            canonicalize(&self.domain).map_err(|_| invalid_input("domain is not valid"))?;
+        let domain = crate::input::canonicalize_user_domain(&self.domain)
+            .map_err(|_| invalid_input("domain is not valid"))?;
         Ok(DomainStatsParams {
             domain,
             from: self.from,
@@ -535,7 +535,7 @@ fn client_json(client: &crate::dto::ClientInfo) -> Value {
     })
 }
 
-fn classify_json(result: &ClassifyDomainResult) -> Value {
+pub(crate) fn classify_json(result: &ClassifyDomainResult) -> Value {
     json!({
         "domain": sanitize(&result.domain, CAP_DOMAIN),
         "kind": sanitize(&result.kind, CAP_LIST_ID),
@@ -545,7 +545,7 @@ fn classify_json(result: &ClassifyDomainResult) -> Value {
     })
 }
 
-fn alerts_json(result: ListAlertsResult) -> Value {
+pub(crate) fn alerts_json(result: ListAlertsResult) -> Value {
     json!({
         "active_count": result.active_count,
         "items": result.items,

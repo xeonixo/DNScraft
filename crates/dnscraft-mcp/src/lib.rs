@@ -15,6 +15,7 @@ pub mod backend;
 pub mod config;
 pub mod dto;
 pub mod error;
+pub mod input;
 pub mod protected;
 pub mod result;
 pub mod sanitize;
@@ -41,6 +42,7 @@ pub use dto::{
     VlanInfo,
 };
 pub use error::McpError;
+pub use input::{canonicalize_user_domain, extract_host, looks_like_domain_or_url};
 pub use protected::ProtectedDomains;
 pub use result::{tool_error, tool_ok};
 pub use sanitize::{CAP_CLIENT_NAME, CAP_DOMAIN, CAP_LIST_ID, CAP_REASON, CAP_RULE_TEXT, sanitize};

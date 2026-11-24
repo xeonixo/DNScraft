@@ -18,7 +18,7 @@ use crate::dto::{
     DeletePolicyRecordResult, DeleteZoneRecordParams, DeleteZoneRecordResult, DomainStatsParams,
     ExplainBlockResult, FlushCacheParams, FlushCacheResult, ListAlertsResult,
     ListBlockedServicesResult, ListDomainZonesResult, ListFilterListsResult, ListFilterSetsResult,
-    ListListenersResult, ListPolicyRecordsResult, ListPolicyViewsResult,
+    ListListenersResult, ListMcpProposalsResult, ListPolicyRecordsResult, ListPolicyViewsResult,
     ListResolverUpstreamsResult, ListRulesParams, ListRulesResult, ListZoneRecordsResult,
     McpRuleInfo, NodeStatus, PauseParams, PauseResult, ProposeExceptionParams,
     ProposeExceptionResult, QType, QueryDetail, QueryLogResult, QueryLogSearch, RemoveRuleParams,
@@ -190,6 +190,9 @@ pub trait McpBackend: Send + Sync {
         &self,
         params: ListRulesParams,
     ) -> Result<ListRulesResult, BackendError>;
+
+    /// List live MCP exception proposals awaiting owner confirmation.
+    async fn list_mcp_proposals(&self) -> Result<ListMcpProposalsResult, BackendError>;
 
     /// Create a temporary allow with a mandatory fixed-set duration.
     async fn allow_temporarily(

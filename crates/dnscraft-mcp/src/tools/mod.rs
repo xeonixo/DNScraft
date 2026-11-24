@@ -15,6 +15,7 @@ pub mod write;
 
 mod v2_read;
 mod v2_write;
+mod workflow;
 
 use std::borrow::Cow;
 use std::future::Future;
@@ -22,9 +23,9 @@ use std::future::Future;
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, GetPromptRequestParams,
     GetPromptResponse, Implementation, JsonObject, ListPromptsResult, ListResourcesResult,
-    ListToolsResult, PaginatedRequestParams, Prompt, PromptMessage, ProtocolVersion,
-    ReadResourceRequestParams, ReadResourceResponse, Resource, ResourceContents, ResultType, Role,
-    ServerCapabilities, ServerConfig, Tool,
+    ListToolsResult, PaginatedRequestParams, Prompt, PromptArgument, PromptMessage,
+    ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, Resource, ResourceContents,
+    ResultType, Role, ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler, tool_handler};
@@ -37,6 +38,7 @@ use crate::dto::TokenInfo;
 use crate::error::McpError;
 use crate::protected::ProtectedDomains;
 use crate::result::tool_error;
+use crate::sanitize::{CAP_CLIENT_NAME, CAP_DOMAIN, sanitize};
 
 /// Shared state cloned into every per-request server instance.
 ///
@@ -63,11 +65,12 @@ impl McpServer {
         }
     }
 
-    /// All tools: macro `get_status`, read/write catalog and v2 extensions.
+    /// All tools: macro `get_status`, read/write catalog, v2 and workflow.
     fn catalog(&self) -> Vec<Tool> {
         let mut tools = Self::tool_router().list_all();
         tools.extend(read::tool_definitions());
         tools.extend(v2_read::tool_definitions());
+        tools.extend(workflow::tool_definitions());
         tools.extend(write::tool_definitions());
         tools.extend(v2_write::tool_definitions());
         tools.sort_by(|a, b| a.name.cmp(&b.name));
@@ -123,6 +126,9 @@ pub fn parse_mcp_tool_input(tool: &str, json: &[u8]) -> Result<(), McpError> {
         name if read::is_read_tool(name) => read::validate_arguments(name, Some(arguments)),
         name if v2_read::is_v2_read_tool(name) => {
             v2_read::validate_arguments(name, Some(arguments))
+        }
+        name if workflow::is_workflow_tool(name) => {
+            workflow::validate_arguments(name, Some(arguments))
         }
         name if write::is_write_tool(name) => write::validate_arguments(name, Some(arguments)),
         name if v2_write::is_v2_write_tool(name) => {
@@ -214,11 +220,14 @@ pub(crate) fn require_token(token: Option<&TokenInfo>) -> Result<(), CallToolRes
 
 const INSTRUCTIONS_TEXT: &str = "\
 1. Never invent domains, clients, filter sets, or DNS answers — use tools or ask the user.\n\
-2. Prefer DNScraft tools over assumptions.\n\
-3. If input is incomplete or ambiguous, ask the user or return a clarification error.\n\
-4. Read tools are safe; confirm with the user before any write tool.\n\
-5. Call classify_domain before allow_temporarily or propose_exception; tracking domains need acknowledge_tracking after explicit user consent.\n\
-6. When multiple clients or filter sets match, disambiguate before acting.";
+2. If the user names an app (Instagram, YouTube, …) or pastes a website URL/link, call diagnose with that string first.\n\
+3. For general DNS/network health questions, call network_health.\n\
+4. Prefer diagnose / network_health over chaining low-level list/explain tools yourself.\n\
+5. Read tools are safe; confirm with the user before any write tool. Follow diagnose.suggested_next.\n\
+6. Call classify_domain (or trust diagnose.classification) before allow_temporarily or propose_exception; tracking domains need acknowledge_tracking after explicit user consent.\n\
+7. Domain fields accept full URLs — pass links through as-is.\n\
+8. When multiple clients, services, or filter sets match, disambiguate before acting.\n\
+9. After propose_exception, use list_mcp_proposals to check pending status; owners confirm in the web UI only.";
 
 #[tool_handler(name = "dnscraft-mcp")]
 impl ServerHandler for McpServer {
@@ -286,6 +295,8 @@ impl ServerHandler for McpServer {
             read::call(name, request.arguments, self, context).await
         } else if v2_read::is_v2_read_tool(name) {
             v2_read::call(name, request.arguments, self, context).await
+        } else if workflow::is_workflow_tool(name) {
+            workflow::call(name, request.arguments, self, context).await
         } else {
             tool_error(
                 McpError::ToolNotFound { tool: name.into() }.code(),
@@ -322,23 +333,32 @@ impl ServerHandler for McpServer {
                 Prompt::from_raw(
                     "diagnose_block",
                     Some(
-                        "Workflow: resolve the client, explain_block or test_query, then summarize for the user. Ask when inputs are missing.",
+                        "User named an app or pasted a link that does not work. Call diagnose with query (and optional client).",
                     ),
-                    None,
+                    Some(vec![
+                        PromptArgument::new("query")
+                            .with_description("App name or website URL from the user")
+                            .with_required(true),
+                        PromptArgument::new("client")
+                            .with_description("Optional device/client name or IP")
+                            .with_required(false),
+                    ]),
                 ),
                 Prompt::from_raw(
                     "network_health_check",
-                    Some(
-                        "Workflow: get_status, list_alerts, list_resolver_upstreams. Report issues without guessing.",
-                    ),
+                    Some("Check whether DNScraft/DNS is healthy. Call network_health once."),
                     None,
                 ),
                 Prompt::from_raw(
                     "temporary_access",
                     Some(
-                        "Workflow: classify_domain first; if tracking, get explicit user consent before allow_temporarily with acknowledge_tracking.",
+                        "Temporarily unblock after diagnose. Follow suggested_next; tracking needs user consent + acknowledge_tracking.",
                     ),
-                    None,
+                    Some(vec![
+                        PromptArgument::new("query")
+                            .with_description("App name or URL to unblock")
+                            .with_required(true),
+                    ]),
                 ),
             ],
             meta: None,
@@ -353,15 +373,35 @@ impl ServerHandler for McpServer {
         request: GetPromptRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<GetPromptResponse, rmcp::ErrorData> {
+        let arg = |key: &str| -> Option<String> {
+            request
+                .arguments
+                .as_ref()
+                .and_then(|m| m.get(key))
+                .and_then(|v| v.as_str())
+                .map(|s| sanitize(s, CAP_DOMAIN.max(CAP_CLIENT_NAME)))
+        };
+        let query = arg("query");
+        let client = arg("client");
         let text = match request.name.as_str() {
             "diagnose_block" => {
-                "Use resolve_client, explain_block, and test_query. Ask for domain and device when unknown."
+                let q = query.as_deref().unwrap_or("<app name or URL from the user>");
+                let c = client
+                    .as_deref()
+                    .map(|c| format!(" Pass client={c} when the device is known."))
+                    .unwrap_or_default();
+                format!(
+                    "Call diagnose with query={q}.{c} Summarize classification, explain, recent_blocks, and follow suggested_next. Do not invent domains."
+                )
             }
             "network_health_check" => {
-                "Use get_status, list_alerts, and list_resolver_upstreams. Do not invent health data."
+                "Call network_health once. Report summary.ok and issues only from the tool result. Do not invent health data.".to_owned()
             }
             "temporary_access" => {
-                "Use classify_domain before allow_temporarily. Tracking domains require acknowledge_tracking after the user explicitly agrees."
+                let q = query.as_deref().unwrap_or("<app name or URL>");
+                format!(
+                    "Call diagnose with query={q}. If suggested_next is allow_temporarily, confirm with the user then call allow_temporarily using args_hint (URLs allowed). If kind is tracking, get explicit consent and set acknowledge_tracking=true. If suggested_next is set_blocked_service, confirm before disabling the service."
+                )
             }
             other => {
                 return Err(rmcp::ErrorData::invalid_params(
@@ -371,8 +411,11 @@ impl ServerHandler for McpServer {
             }
         };
         Ok(GetPromptResponse::Complete(
-            rmcp::model::GetPromptResult::new(vec![PromptMessage::new_text(Role::Assistant, text)])
-                .with_description(text),
+            rmcp::model::GetPromptResult::new(vec![PromptMessage::new_text(
+                Role::Assistant,
+                text.clone(),
+            )])
+            .with_description(text),
         ))
     }
 
@@ -527,6 +570,9 @@ mod tests {
                 "create_zone_record",
                 r#"{"zone_id":"z1","name":"www","type":"A","content":"192.0.2.1"}"#,
             ),
+            ("diagnose", r#"{"query":"https://instagram.com/p/1"}"#),
+            ("network_health", "{}"),
+            ("list_mcp_proposals", "{}"),
         ];
         for (tool, json) in cases {
             assert!(

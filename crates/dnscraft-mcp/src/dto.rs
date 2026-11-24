@@ -1083,3 +1083,10 @@ pub struct DeleteZoneRecordResult {
     pub zone_id: String,
     pub record_id: String,
 }
+
+/// Live MCP exception proposals awaiting owner confirmation.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListMcpProposalsResult {
+    /// Pending proposals (filter-set scoped).
+    pub proposals: Vec<Value>,
+}

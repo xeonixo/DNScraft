@@ -189,37 +189,7 @@ pub(crate) async fn list_mcp_proposals(
 ) -> Result<impl IntoResponse, ControlApiError> {
     let snapshot = stored_snapshot(service(&state)?).await?;
     let now = state.clock().now();
-    let mut proposals = Vec::new();
-    let sets = snapshot
-        .get("filtering")
-        .and_then(|f| f.get("sets"))
-        .and_then(Value::as_array);
-    for set in sets.into_iter().flatten() {
-        let set_id = set.get("id").and_then(Value::as_str).unwrap_or_default();
-        let stored = set.get("mcp_proposals").and_then(Value::as_array);
-        for p in stored.into_iter().flatten() {
-            if !mcp_backend::active_rule(p, now) {
-                continue;
-            }
-            let text = |key: &str| p.get(key).and_then(Value::as_str).unwrap_or_default();
-            let include = p
-                .get("include_subdomains")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            let time = |key: &str| p.get(key).and_then(stored_time).map(rfc3339);
-            proposals.push(json!({
-                "id": text("id"),
-                "filter_set_id": set_id,
-                "domain": text("domain"),
-                "include_subdomains": include,
-                "reason": text("reason"),
-                "token_id": text("token_id"),
-                "rule_text": exception_rule_text(text("domain"), include).ok(),
-                "created_at": time("created_at"),
-                "expires_at": time("expires_at"),
-            }));
-        }
-    }
+    let proposals = mcp_backend::collect_live_proposals(&snapshot, now);
     Ok(success(json!({ "proposals": proposals })))
 }
 

@@ -187,8 +187,8 @@ async fn smoke_list_tools_exposes_static_read_only_status_tool() {
 
     assert_eq!(status, 200, "tools/list: {body}");
     let tools = body["result"]["tools"].as_array().expect("tools array");
-    // Write gate defaults to false: only the 22 read tools are listed.
-    assert_eq!(tools.len(), 22);
+    // Write gate defaults to false: only the 25 read tools are listed.
+    assert_eq!(tools.len(), 25);
     let tool = tools
         .iter()
         .find(|tool| tool["name"] == "get_status")

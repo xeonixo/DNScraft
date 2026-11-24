@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use crate::api::config_routes::array;
 use crate::error::ControlApiError;
 
-use super::shared::stored_time;
+use super::shared::{rfc3339, stored_time};
 
 pub(crate) fn mcp_error(code: &'static str, params: Value) -> ControlApiError {
     ControlApiError::Module {
@@ -431,6 +431,42 @@ pub(crate) fn take_proposal(
     Err(ControlApiError::NotFound {
         what: "mcp proposal".to_owned(),
     })
+}
+
+/// Live (non-expired) MCP exception proposals across every filter set.
+pub(crate) fn collect_live_proposals(snapshot: &Value, now: SystemTime) -> Vec<Value> {
+    let mut proposals = Vec::new();
+    let sets = snapshot
+        .get("filtering")
+        .and_then(|f| f.get("sets"))
+        .and_then(Value::as_array);
+    for set in sets.into_iter().flatten() {
+        let set_id = set.get("id").and_then(Value::as_str).unwrap_or_default();
+        let stored = set.get("mcp_proposals").and_then(Value::as_array);
+        for p in stored.into_iter().flatten() {
+            if !active_rule(p, now) {
+                continue;
+            }
+            let text = |key: &str| p.get(key).and_then(Value::as_str).unwrap_or_default();
+            let include = p
+                .get("include_subdomains")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let time = |key: &str| p.get(key).and_then(stored_time).map(rfc3339);
+            proposals.push(json!({
+                "id": text("id"),
+                "filter_set_id": set_id,
+                "domain": text("domain"),
+                "include_subdomains": include,
+                "reason": text("reason"),
+                "token_id": text("token_id"),
+                "rule_text": exception_rule_text(text("domain"), include).ok(),
+                "created_at": time("created_at"),
+                "expires_at": time("expires_at"),
+            }));
+        }
+    }
+    proposals
 }
 
 /// The allow rule text a confirmed proposal adds to the set's custom rules.

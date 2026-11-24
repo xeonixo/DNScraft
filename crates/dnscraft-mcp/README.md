@@ -17,7 +17,7 @@ control-api
    │  implements McpBackend (all I/O: log, policy, filtering, audit)
    ▼
 dnscraft-mcp
-   ├── tools/       36 tool definitions + handlers (read and write)
+   ├── tools/       39 tool definitions + handlers (read, write, workflow)
    ├── transport     pure request pre-checks + rmcp Streamable HTTP wrapper
    ├── auth         bearer-token extraction and scope checks
    ├── protected    protected-domain matching
@@ -41,21 +41,25 @@ write-tools gate. The dependency decision is recorded in
 
 ## Tools
 
-All 36 tools are listed when `write_tools_enabled = true`; with the gate off,
-`tools/list` returns only the 22 read tools and every write tool call fails
+All 39 tools are listed when `write_tools_enabled = true`; with the gate off,
+`tools/list` returns only the 25 read tools and every write tool call fails
 with `mcp.write_tools_disabled`. Rows are in the order returned by `tools/list`
 (alphabetical).
+
+**Primary path:** when the user names an app or pastes a link, call `diagnose`
+with that string. Domain arguments on other tools also accept full URLs.
 
 | Tool | Scope | Description |
 |---|---|---|
 | `add_rule` | `mcp:write` | Add a structured custom block rule to a filter set (no raw syntax, no wildcards). |
-| `allow_temporarily` | `mcp:write` | Temporarily allow a blocked domain; call `classify_domain` first; tracking domains need `acknowledge_tracking`. |
-| `cancel_temporary_allow` | `mcp:write` | Remove an active temporary allow for a domain. |
-| `classify_domain` | `mcp:read` | Classify a domain using the tracker database (tracking / functional / unknown). |
+| `allow_temporarily` | `mcp:write` | Temporarily allow a blocked domain (URLs accepted); prefer diagnose first; tracking domains need acknowledge_tracking. |
+| `cancel_temporary_allow` | `mcp:write` | Remove an active temporary allow for a domain (URLs accepted). |
+| `classify_domain` | `mcp:read` | Classify a domain using the tracker database (tracking / functional / unknown). Prefer diagnose for apps/links. |
 | `create_zone_record` | `mcp:write` | Create a DNS record in an attached public zone. |
 | `delete_policy_record` | `mcp:write` | Delete a local Split-DNS policy record by name and type. |
 | `delete_zone_record` | `mcp:write` | Delete a DNS record from an attached public zone. |
-| `explain_block` | `mcp:read` | Explain why a domain is currently blocked for a profile, without a live DNS query. |
+| `diagnose` | `mcp:read` | Primary entry: app name or website URL → classification, explain, recent blocks, suggested_next. |
+| `explain_block` | `mcp:read` | Explain why a domain is currently blocked for a profile, without a live DNS query (URLs accepted). |
 | `flush_cache` | `mcp:write` | Flush the resolver cache for one domain or entirely. |
 | `get_domain_stats` | `mcp:read` | Per-domain query statistics from the query log. |
 | `get_query` | `mcp:read` | Retrieve one query-log entry with its full decision record. |
@@ -69,13 +73,15 @@ with `mcp.write_tools_disabled`. Rows are in the order returned by `tools/list`
 | `list_filter_lists` | `mcp:read` | List configured filter lists. |
 | `list_filter_sets` | `mcp:read` | List filter sets from configuration. |
 | `list_listeners` | `mcp:read` | List listener definitions from configuration. |
+| `list_mcp_proposals` | `mcp:read` | List pending permanent-exception proposals awaiting owner confirmation. |
 | `list_mcp_rules` | `mcp:read` | List MCP-created rules, active temporary allows or active pauses for a filter set. |
 | `list_policy_records` | `mcp:read` | List local Split-DNS policy records (incl. overrides, comment, tags). |
 | `list_policy_views` | `mcp:read` | List policy views and profile bindings. |
 | `list_resolver_upstreams` | `mcp:read` | Resolver upstream health. |
 | `list_zone_records` | `mcp:read` | List DNS records in one attached zone. |
+| `network_health` | `mcp:read` | One-shot health: status + alerts + upstreams with summary.ok. |
 | `pause_filter_set` | `mcp:write` | Pause filtering for a filter set for a fixed short duration. |
-| `propose_exception` | `mcp:write` | Propose a permanent exception; classify first; owner confirms in the web UI. |
+| `propose_exception` | `mcp:write` | Propose a permanent exception; classify first; owner confirms in the web UI (URLs accepted). |
 | `remove_rule` | `mcp:write` | Remove a custom block rule that was previously created via MCP. |
 | `resolve_client` | `mcp:read` | Resolve a client by exact display name or IP. |
 | `resume_filter_set` | `mcp:write` | Resume filtering for a paused filter set. |
@@ -87,6 +93,7 @@ with `mcp.write_tools_disabled`. Rows are in the order returned by `tools/list`
 
 Read tools carry `readOnlyHint: true`; write tools carry `destructiveHint: true`.
 Tool descriptions are static and are never built from runtime data.
+Successful tool results put JSON in both `content[0].text` and `structuredContent`.
 
 ## Limits and defaults
 
@@ -151,8 +158,8 @@ and `control_api.rate_limited` (429).
 
 ## Security model
 
-- **Least privilege.** Tokens use dedicated MCP scopes: `mcp:read` for the eight
-  read tools and `mcp:write` for the five write tools. Browser/API tokens
+- **Least privilege.** Tokens use dedicated MCP scopes: `mcp:read` for the
+  read tools and `mcp:write` for the write tools. Browser/API tokens
   (`viewer`, `admin`) are rejected on `/mcp/v1`, and MCP tokens are rejected on
   `/api/v1`. The write tools have a second, independent configuration gate
   (`write_tools_enabled`, default `false`).
@@ -227,8 +234,8 @@ AS advertises RFC 9207 `iss` support.
      -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
    ```
 
-   Expect `200 OK` with `application/json` and a `result.tools` array of 22
-   read tools (36 with the write gate on).
+   Expect `200 OK` with `application/json` and a `result.tools` array of 25
+   read tools (39 with the write gate on).
 
 3. Call `get_status` (not run):
 

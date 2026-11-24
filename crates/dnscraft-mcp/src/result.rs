@@ -1,18 +1,21 @@
 //! Tool-result constructors.
 //!
-//! Every tool returns structured JSON in a `text` content item. Failures use
-//! the single tool-error shape from SPEC-mcp.md § Common patterns:
-//! `isError: true`, a `text` item carrying only the stable code, and
-//! `structuredContent.error.{code,params}`. These helpers always produce a
-//! [`CallToolResult`], so a tool-level failure can never become an HTTP status
-//! or a JSON-RPC error.
+//! Successful tools put structured JSON in a `text` content item and mirror it
+//! in `structuredContent`. Failures use the single tool-error shape from
+//! SPEC-mcp.md § Common patterns: `isError: true`, a `text` item carrying only
+//! the stable code, and `structuredContent.error.{code,params}`. These helpers
+//! always produce a [`CallToolResult`], so a tool-level failure can never
+//! become an HTTP status or a JSON-RPC error.
 
 use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::{Value, json};
 
-/// A successful tool result carrying `value` as JSON in one `text` item.
+/// A successful tool result carrying `value` as JSON in one `text` content item
+/// and mirrored into `structuredContent` for clients that prefer structured data.
 pub fn tool_ok(value: Value) -> CallToolResult {
-    CallToolResult::success(vec![ContentBlock::text(value.to_string())])
+    let mut result = CallToolResult::success(vec![ContentBlock::text(value.to_string())]);
+    result.structured_content = Some(value);
+    result
 }
 
 /// A tool-level failure with the single documented shape.
@@ -45,7 +48,7 @@ mod tests {
         let value = json!({ "node_id": "node1", "uptime_seconds": 5 });
         let result = tool_ok(value.clone());
         assert_eq!(result.is_error, Some(false));
-        assert_eq!(result.structured_content, None);
+        assert_eq!(result.structured_content, Some(value.clone()));
         assert_eq!(result.content.len(), 1);
         assert_eq!(
             serde_json::from_str::<Value>(text_of(&result)).unwrap(),

@@ -216,7 +216,7 @@ Justification: Tools remain the primary “search, explain, act” path. Safe re
 
 ## Tools
 
-Each tool is a JSON-RPC method under the `tools/call` request. Input is validated against the tool's `inputSchema` (JSON Schema draft 2020-12); successful output is MCP `content` (array of `text` or `resource` content items). Every tool returns structured JSON in a `text` content item, never freeform prose built from log data. Tool-level errors additionally set `isError: true` and carry the error in `structuredContent` (one shape, defined below).
+Each tool is a JSON-RPC method under the `tools/call` request. Input is validated against the tool's `inputSchema` (JSON Schema draft 2020-12); successful output is MCP `content` (array of `text` or `resource` content items). Every tool returns structured JSON in a `text` content item **and** mirrors the same JSON object in `structuredContent` (for clients that prefer structured payloads). Never freeform prose built from log data. Tool-level errors additionally set `isError: true` and carry the error in `structuredContent` (one shape, defined below). Domain fields accept bare hosts and full URLs (host extracted server-side). Prefer the workflow tools `diagnose` and `network_health` for app-name / link / health utterances.
 
 **Tool count:** 14 tools total: **8 read tools** (viewer, `mcp:read` scope), **6 write tools** (admin, `mcp:write` scope).
 

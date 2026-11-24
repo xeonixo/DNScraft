@@ -17,7 +17,7 @@ use dnscraft_mcp::dto::{
     DeletePolicyRecordResult, DeleteZoneRecordParams, DeleteZoneRecordResult, DomainStatsParams,
     ExplainBlockResult, FlushCacheParams, FlushCacheResult, ListAlertsResult,
     ListBlockedServicesResult, ListDomainZonesResult, ListFilterListsResult, ListFilterSetsResult,
-    ListListenersResult, ListPolicyRecordsResult, ListPolicyViewsResult,
+    ListListenersResult, ListMcpProposalsResult, ListPolicyRecordsResult, ListPolicyViewsResult,
     ListResolverUpstreamsResult, ListRulesParams, ListRulesResult, ListZoneRecordsResult,
     McpRuleInfo, NodeStatus, PauseInfo, PauseParams, PauseResult, ProposeExceptionParams,
     ProposeExceptionResult, QType, QueryDetail, QueryLogEntry, QueryLogResult, QueryLogSearch,
@@ -163,6 +163,8 @@ pub struct MockBackend {
     pub flush_calls: AtomicUsize,
     /// Most recent `set_blocked_service` params.
     pub last_blocked_service: Mutex<Option<SetBlockedServiceParams>>,
+    blocked_services: Mutex<ListBlockedServicesResult>,
+    proposals: Mutex<ListMcpProposalsResult>,
 }
 
 /// Decrements the active counter even when the tool future is cancelled.
@@ -249,6 +251,16 @@ impl MockBackend {
     /// Set the `explain_block` result.
     pub fn set_explain(&self, value: Result<ExplainBlockResult, BackendError>) {
         *slot(&self.explain_result) = Some(value);
+    }
+
+    /// Seed the blocked-services catalog returned by `list_blocked_services`.
+    pub fn set_blocked_services(&self, value: ListBlockedServicesResult) {
+        *slot(&self.blocked_services) = value;
+    }
+
+    /// Seed pending MCP proposals.
+    pub fn set_proposals(&self, value: ListMcpProposalsResult) {
+        *slot(&self.proposals) = value;
     }
 
     /// Arguments of the most recent `explain_block` call.
@@ -762,7 +774,11 @@ impl McpBackend for MockBackend {
         &self,
         _locale: Option<&str>,
     ) -> Result<ListBlockedServicesResult, BackendError> {
-        Ok(ListBlockedServicesResult::default())
+        Ok(slot(&self.blocked_services).clone())
+    }
+
+    async fn list_mcp_proposals(&self) -> Result<ListMcpProposalsResult, BackendError> {
+        Ok(slot(&self.proposals).clone())
     }
 
     async fn list_domain_zones(&self) -> Result<ListDomainZonesResult, BackendError> {

@@ -201,7 +201,7 @@ describe('filters and the URL', () => {
 		serve();
 		render(Page);
 
-		// No period in the URL means the default 24 h window, sent as a relative `from`.
+		// No period in the URL means the default 15 m window, sent as a relative `from`.
 		await waitFor(() =>
 			expect(
 				requested('/api/v1/query-log').some((url) =>

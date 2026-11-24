@@ -13,7 +13,7 @@ export const ORDERS = ['asc', 'desc'] as const;
 export const PAGE_SIZES = ['25', '50', '100', '200'] as const;
 export const PERIODS = ['15m', '1h', '24h', '7d', '30d', 'custom'] as const;
 /** Applied when neither a period nor an explicit from/to is in the URL. */
-export const DEFAULT_PERIOD = '24h';
+export const DEFAULT_PERIOD = '15m';
 
 const PERIOD_DAYS: Record<string, number> = {
 	'15m': 15 / 1440,

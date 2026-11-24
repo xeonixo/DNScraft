@@ -10,6 +10,7 @@ no-default-features = false
 ignore = [
     { id = "RUSTSEC-2026-0387", reason = "crypto-bigint timing side channel concerns private-key operations; the control API only verifies public-key (JWKS) signatures and never performs private-key operations" },
     { id = "RUSTSEC-2023-0071", reason = "rsa Marvin timing side channel concerns private-key decryption/signing; the control API only verifies public-key (JWKS) signatures and never performs private-key operations" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono is transitive-only via oauth2/openidconnect/rmcp/schemars; no direct use and no upstream drop yet (alternatives jiff/time require those crates to migrate)" },
 ]
 
 [licenses]

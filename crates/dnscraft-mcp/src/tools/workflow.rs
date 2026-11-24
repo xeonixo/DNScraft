@@ -479,6 +479,15 @@ fn suggested_next(
             "domain": sanitize(domain, CAP_DOMAIN),
             "duration": "PT15M",
         });
+        // Pass the filter set explain already resolved so allow_temporarily does
+        // not bounce with mcp.needs_clarification when several sets exist.
+        if let Some(set) = explain
+            .and_then(|e| e.get("filter_set_id"))
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        {
+            args["filter_set_id"] = json!(sanitize(set, CAP_LIST_ID));
+        }
         if kind == "tracking" {
             args["acknowledge_tracking"] = json!(true);
         }

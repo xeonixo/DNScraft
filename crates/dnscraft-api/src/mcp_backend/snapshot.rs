@@ -48,6 +48,10 @@ pub(crate) fn parse_set(id: Option<&str>) -> Result<SetId, ControlApiError> {
 }
 
 /// Resolves a write target set, asking for clarification when several exist.
+///
+/// When the id is omitted and several sets exist, prefer the set named
+/// `default` (same as the REST temporary-allow path / SPEC wording). Only ask
+/// when there is no `default` among the candidates.
 pub(crate) fn resolve_set_for_write(
     snapshot: Option<&Value>,
     filter_set_id: Option<&str>,
@@ -64,6 +68,7 @@ pub(crate) fn resolve_set_for_write(
     match ids.len() {
         0 => parse_set(None),
         1 => parse_set(Some(&ids[0])),
+        _ if ids.iter().any(|id| id == "default") => parse_set(Some("default")),
         _ => Err(mcp_error(
             "mcp.needs_clarification",
             json!({

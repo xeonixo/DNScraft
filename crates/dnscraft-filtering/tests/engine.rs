@@ -425,3 +425,34 @@ fn stats_increment_once_per_match_call() {
     assert_eq!(list.blocks, 2, "{list:?}");
     assert_eq!(list.allows, 0, "{list:?}");
 }
+
+#[test]
+fn temp_allow_exact_beats_parent_list_block() {
+    let eng = engine(&[("a", "||bblcdn.eu^\n")], "");
+    eng.allow_temporarily(
+        &sid("s"),
+        TempAllow {
+            domain: dn("store.bblcdn.eu"),
+            include_subdomains: false,
+            until: t(100),
+            created_at: t(0),
+        },
+    )
+    .unwrap();
+    let v = eng
+        .match_name(&sid("s"), &dn("store.bblcdn.eu"), 1, t(1))
+        .unwrap();
+    assert!(
+        matches!(v, Verdict::Allowed(_)),
+        "exact temp allow must beat ||parent^ block, got {v:?}"
+    );
+    let parent = eng.match_name(&sid("s"), &dn("bblcdn.eu"), 1, t(1)).unwrap();
+    assert!(matches!(parent, Verdict::Blocked(_)), "parent still blocked: {parent:?}");
+    let sibling = eng
+        .match_name(&sid("s"), &dn("other.bblcdn.eu"), 1, t(1))
+        .unwrap();
+    assert!(
+        matches!(sibling, Verdict::Blocked(_)),
+        "sibling without allow still blocked: {sibling:?}"
+    );
+}

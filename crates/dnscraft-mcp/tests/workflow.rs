@@ -84,6 +84,11 @@ async fn diagnose_accepts_url_and_suggests_temp_allow() {
     assert_eq!(structured["domain"], "www.instagram.com");
     assert_eq!(structured["explain"]["verdict"], "blocked");
     assert_eq!(structured["suggested_next"]["action"], "allow_temporarily");
+    assert_eq!(
+        structured["suggested_next"]["args_hint"]["filter_set_id"],
+        "default",
+        "diagnose must pass explain's filter_set_id so allow_temporarily does not need clarification"
+    );
     assert!(
         structured.is_object(),
         "success should carry structuredContent"

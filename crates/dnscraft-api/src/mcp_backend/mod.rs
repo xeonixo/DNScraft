@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
-use dnscraft_filtering::{DomainName, FilterEngine, TempAllow};
+use dnscraft_filtering::{DomainName, FilterEngine, TempAllow, Verdict};
 use dnscraft_listeners::ListenersStatus;
 use dnscraft_mcp::ProtectedDomains;
 use dnscraft_mcp::backend::{BackendError, McpBackend};
@@ -846,6 +846,73 @@ impl McpBackend for ControlMcpBackend {
         filter
             .allow_temporarily(&set, rule)
             .map_err(|err| backend_error(engine_error(err, set.as_str())))?;
+
+        // Confirm the overlay is visible to match_name before reporting success.
+        // Historical incident: audit said ok while live queries stayed filter_block.
+        let verify_now = self.inner.clock.now();
+        let verified = filter
+            .match_name(&set, &domain, 1, verify_now)
+            .map_err(|err| backend_error(engine_error(err, set.as_str())))?;
+        let temps_after = filter
+            .list_temporary_allows(&set, verify_now)
+            .map(|list| list.len())
+            .unwrap_or(0);
+        // #region agent log
+        {
+            use std::io::Write;
+            let payload = json!({
+                "sessionId": "77730a",
+                "runId": "pre-fix",
+                "hypothesisId": "C",
+                "location": "mcp_backend/mod.rs:allow_temporarily",
+                "message": "temp allow inserted; match_name verification",
+                "data": {
+                    "domain": domain.as_str(),
+                    "filter_set_id": set.as_str(),
+                    "include_subdomains": params.include_subdomains,
+                    "expires_at": rfc3339(until),
+                    "temps_after": temps_after,
+                    "verdict": match &verified {
+                        Verdict::Pass => "pass",
+                        Verdict::Allowed(_) => "allowed",
+                        Verdict::Blocked(_) => "blocked",
+                        Verdict::Rewrite(_, _) => "rewrite",
+                    },
+                    "still_blocked": matches!(verified, Verdict::Blocked(_)),
+                },
+                "timestamp": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0),
+            });
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/Users/barner/projects/dnscraft/.cursor/debug-77730a.log")
+            {
+                let _ = writeln!(f, "{payload}");
+            }
+            tracing::info!(
+                domain = %domain.as_str(),
+                filter_set_id = %set.as_str(),
+                temps_after,
+                still_blocked = matches!(verified, Verdict::Blocked(_)),
+                "mcp.allow_temporarily verified"
+            );
+        }
+        // #endregion
+        if matches!(verified, Verdict::Blocked(_)) {
+            return Err(backend_error(mcp_error(
+                "control_api.internal",
+                json!({
+                    "reason": "temporary_allow_not_effective",
+                    "domain": domain.as_str(),
+                    "filter_set_id": set.as_str(),
+                    "temps_after": temps_after,
+                }),
+            )));
+        }
+
         self.inner.broadcast_runtime_command(
             "temporary_allow",
             &json!({
@@ -2116,11 +2183,29 @@ mod tests {
     }
 
     #[test]
-    fn resolve_set_for_write_asks_when_multiple_sets_and_id_omitted() {
+    fn resolve_set_for_write_prefers_default_when_multiple_sets_and_id_omitted() {
         let snapshot = json!({
             "filtering": {
                 "sets": [
                     { "id": "default", "name": "Default" },
+                    { "id": "kids", "name": "Kids" }
+                ]
+            }
+        });
+        assert_eq!(
+            resolve_set_for_write(Some(&snapshot), None)
+                .unwrap()
+                .as_str(),
+            "default"
+        );
+    }
+
+    #[test]
+    fn resolve_set_for_write_asks_when_multiple_sets_without_default() {
+        let snapshot = json!({
+            "filtering": {
+                "sets": [
+                    { "id": "home", "name": "Home" },
                     { "id": "kids", "name": "Kids" }
                 ]
             }

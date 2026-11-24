@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { DecisionStep, QueryRecord } from '$lib/api/query-log';
 import { m } from '$lib/paraglide/messages';
 import {
+	burstDetailHref,
 	collapseBursts,
 	dnssecLabel,
 	statusOf,
@@ -254,6 +255,7 @@ describe('collapseBursts', () => {
 			count: 4,
 			types: ['A', 'AAAA', 'HTTPS'],
 			worstUs: 4_000_000,
+			ids: ['a', 'b', 'c', 'd'],
 		});
 	});
 
@@ -266,5 +268,16 @@ describe('collapseBursts', () => {
 		]);
 		expect(rows.map((r) => r.id)).toEqual(['a', 'b', 'c', 'd']);
 		expect(bursts.size).toBe(0);
+	});
+});
+
+describe('burstDetailHref', () => {
+	it('returns the bare path for a single record', () => {
+		expect(burstDetailHref('q1')).toBe('/query-log/q1');
+		expect(burstDetailHref('q1', ['q1'])).toBe('/query-log/q1');
+	});
+
+	it('appends sibling ids as repeated with params', () => {
+		expect(burstDetailHref('a', ['a', 'b', 'c'])).toBe('/query-log/a?with=b&with=c');
 	});
 });

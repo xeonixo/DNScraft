@@ -1767,5 +1767,8 @@
 	"test_query_type_mx": "MX",
 	"test_query_type_txt": "TXT",
 	"test_query_type_srv": "SRV",
-	"querylog_burst_count": "{count} gleiche Abfragen zusammengefasst"
+	"querylog_burst_count": "{count} gleiche Abfragen zusammengefasst",
+	"querylog_section_lookup": "Abfrage",
+	"querylog_lookup_footer": "{count} Anfragen zu diesem Namen in einem Lookup",
+	"querylog_lookup_choose": "Anfragetyp auswählen"
 }

@@ -1,3 +1,4 @@
+import { resolve } from '$app/paths';
 import type { IconName, StatusTone } from '$lib/components/icons';
 import {
 	cnameChainOf,
@@ -345,6 +346,8 @@ export interface Burst {
 	types: string[];
 	/** Slowest member, so a hidden slow lookup still shows. */
 	worstUs: number;
+	/** Member record ids, newest (head) first, then absorbed in walk order. */
+	ids: string[];
 }
 
 /** Rows closer than this, for the same name, client and outcome, belong to one burst. */
@@ -379,10 +382,12 @@ export function collapseBursts(records: QueryRecord[]): {
 				count: 1,
 				types: [head.query.type],
 				worstUs: head.timings.total_us,
+				ids: [head.id],
 			};
 			burst.count += 1;
 			if (!burst.types.includes(record.query.type)) burst.types.push(record.query.type);
 			burst.worstUs = Math.max(burst.worstUs, record.timings.total_us);
+			burst.ids.push(record.id);
 			bursts.set(head.id, burst);
 			last = at;
 			continue;
@@ -392,4 +397,19 @@ export function collapseBursts(records: QueryRecord[]): {
 		last = at;
 	}
 	return { rows, bursts };
+}
+
+/**
+ * Detail href for a list row. When the row is a burst, sibling ids ride along as repeated `with`
+ * params so the detail page can show the whole lookup.
+ */
+export function burstDetailHref(headId: string, ids?: string[]): string {
+	const base = resolve('/query-log/[id]', { id: headId });
+	if (!ids || ids.length <= 1) return base;
+	const params = new URLSearchParams();
+	for (const id of ids) {
+		if (id !== headId) params.append('with', id);
+	}
+	const search = params.toString();
+	return search === '' ? base : `${base}?${search}`;
 }

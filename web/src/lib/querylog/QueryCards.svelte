@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { resolve } from '$app/paths';
 	import GroupedList from '$lib/components/GroupedList.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import StatusMark from './StatusMark.svelte';
@@ -12,6 +11,7 @@
 	import TrackerBadge from './TrackerBadge.svelte';
 	import {
 		answerSummary,
+		burstDetailHref,
 		microsToMilliseconds,
 		statusOf,
 		statusStyle,
@@ -46,7 +46,8 @@
 			record.client?.display_name ?? record.client_id ?? record.source_ip,
 			32,
 		).text}
-		<a class="card" href={resolve('/query-log/[id]', { id: record.id })}>
+		<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- burstDetailHref resolves -->
+		<a class="card" href={burstDetailHref(record.id, burst?.ids)}>
 			<StatusMark icon={style.icon} tone={style.tone} label={style.label} compact />
 			<span class="body">
 				<span class="domain mono"><Value value={unicode} mono /></span>

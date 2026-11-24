@@ -25,6 +25,7 @@
 	import { unicodeName } from '$lib/querylog/domain-display';
 	import {
 		answerLabel,
+		answerSummary,
 		dnssecLabel,
 		microsToMilliseconds,
 		provenanceLabel,
@@ -46,8 +47,15 @@
 	const locale = getLocale();
 	const isAdmin = $derived(auth.role === 'admin');
 	const id = $derived(page.params.id ?? '');
+	/** Sibling record ids from the list burst link (`?with=` repeated). */
+	const withIds = $derived(
+		page.url.searchParams.getAll('with').filter((value) => value !== '' && value !== id),
+	);
 
 	let result = $state<Result<QueryRecord>>({ kind: 'loading' });
+	/** Head plus successfully loaded siblings, newest-first when the link order matches. */
+	let members = $state<QueryRecord[]>([]);
+	let selectedId = $state('');
 	let nodeNames = $state<Record<string, string>>({});
 	let ruleOpen = $state(false);
 	// The rule sheet's name and default action: the query's own name, or one CNAME hop's name.
@@ -56,15 +64,39 @@
 	let outcome = $state<RuleOutcome | null>(null);
 	let runs = 0;
 
-	async function load(recordId: string): Promise<void> {
+	const selected = $derived(
+		members.find((member) => member.id === selectedId) ??
+			(result.kind === 'ok' ? result.data : null),
+	);
+
+	async function load(recordId: string, siblingIds: string[]): Promise<void> {
 		const run = ++runs;
+		selectedId = recordId;
+		members = [];
 		const next = await settle(getQueryRecord(recordId));
-		if (run === runs) result = next;
+		if (run !== runs) return;
+		result = next;
+		if (next.kind !== 'ok') return;
+
+		if (siblingIds.length === 0) {
+			members = [next.data];
+			return;
+		}
+
+		const siblings = await Promise.all(
+			siblingIds.map(async (siblingId) => {
+				const settled = await settle(getQueryRecord(siblingId));
+				return settled.kind === 'ok' ? settled.data : null;
+			}),
+		);
+		if (run !== runs) return;
+		members = [next.data, ...siblings.filter((row): row is QueryRecord => row !== null)];
 	}
 
 	$effect(() => {
 		const current = id;
-		void load(current);
+		const siblings = withIds;
+		void load(current, siblings);
 	});
 
 	onMount(() => {
@@ -94,8 +126,13 @@
 	}
 
 	function openQueryRule(): void {
-		if (result.kind !== 'ok') return;
-		openRule(result.data.query.name, defaultRuleAction(statusOf(result.data)));
+		if (!selected) return;
+		openRule(selected.query.name, defaultRuleAction(statusOf(selected)));
+	}
+
+	function memberSummary(member: QueryRecord): string {
+		const answers = answerSummary(answersOf(member));
+		return answers === '' ? member.rcode : `${member.rcode} · ${answers}`;
 	}
 
 	function openHopRule(name: string, verdict: string): void {
@@ -148,34 +185,76 @@
 	</p>
 {/if}
 
-{#if result.kind === 'ok'}
-	{@const record = result.data}
+{#if result.kind === 'ok' && selected}
+	{@const record = selected}
+	{@const head = result.data}
 	{@const answers = answersOf(record)}
 	{@const tracker = trackerOf(record.tracker)}
-	{@const style = statusStyle(statusOf(record))}
-	{@const unicode = unicodeName(record.query.name)}
-	{@const device = record.client?.display_name ?? record.client_id ?? record.source_ip}
+	{@const style = statusStyle(statusOf(head))}
+	{@const unicode = unicodeName(head.query.name)}
+	{@const device = head.client?.display_name ?? head.client_id ?? head.source_ip}
+	{@const burstTypes = members.map((member) => member.query.type)}
 	<div class="detail">
 		<header class="head">
 			<div class="title-row">
 				<h2 class="domain"><Value value={unicode} limit={FULL_LIMIT} /></h2>
 				<StatusMark icon={style.icon} tone={style.tone} label={style.label} />
 			</div>
-			{#if unicode !== record.query.name}
-				<p class="ascii"><Value value={record.query.name} mono limit={FULL_LIMIT} /></p>
+			{#if unicode !== head.query.name}
+				<p class="ascii"><Value value={head.query.name} mono limit={FULL_LIMIT} /></p>
 			{/if}
 			<p class="meta">
-				<span class="item">{record.query.type}</span>
+				<span class="item mono"
+					>{members.length > 1 ? burstTypes.join(' · ') : head.query.type}</span
+				>
 				<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- clientsHref resolves -->
-				<a class="item link" href={clientsHref(record)}>{displayText(device, 60).text}</a>
-				<span class="item">{formatDateTime(new Date(record.time), locale)}</span>
+				<a class="item link" href={clientsHref(head)}>{displayText(device, 60).text}</a>
+				<span class="item">{formatDateTime(new Date(head.time), locale)}</span>
 				<span class="item"
-					>{record.filter
-						? displayText(provenanceLabel(record.filter.reason), 60).text
+					>{head.filter
+						? displayText(provenanceLabel(head.filter.reason), 60).text
 						: m.querylog_meta_no_rule()}</span
 				>
 			</p>
 		</header>
+
+		{#if members.length > 1}
+			<GroupedList
+				header={m.querylog_section_lookup()}
+				footer={m.querylog_lookup_footer({ count: String(members.length) })}
+			>
+				<div
+					class="members"
+					role="listbox"
+					tabindex="0"
+					aria-label={m.querylog_lookup_choose()}
+					aria-activedescendant={`lookup-${selectedId}`}
+				>
+					{#each members as member (member.id)}
+						<button
+							type="button"
+							id={`lookup-${member.id}`}
+							class="member"
+							class:active={member.id === selectedId}
+							role="option"
+							aria-selected={member.id === selectedId}
+							onclick={() => (selectedId = member.id)}
+						>
+							<span class="member-type mono">{member.query.type}</span>
+							<span class="member-summary mono"
+								>{displayText(memberSummary(member), 80).text}</span
+							>
+							<span class="member-latency mono"
+								>{formatMilliseconds(
+									microsToMilliseconds(member.timings.total_us),
+									locale,
+								)}</span
+							>
+						</button>
+					{/each}
+				</div>
+			</GroupedList>
+		{/if}
 
 		<div class="columns">
 			<div class="column">
@@ -325,7 +404,7 @@
 		<GroupedRow label={m.querylog_unavailable_title()} detail={m.querylog_unavailable_body()} />
 	</GroupedList>
 {:else}
-	<ResultNotice {result} onretry={() => void load(id)} />
+	<ResultNotice {result} onretry={() => void load(id, withIds)} />
 {/if}
 
 <style>
@@ -409,6 +488,55 @@
 
 	.item + .item::before {
 		content: '· ';
+	}
+
+	.members {
+		display: flex;
+		flex-direction: column;
+	}
+
+	.member {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: 0.25rem 0.75rem;
+		width: 100%;
+		min-height: 2.75rem;
+		padding: 0.625rem 1rem;
+		border: none;
+		background: transparent;
+		font: inherit;
+		color: var(--label);
+		text-align: start;
+		cursor: pointer;
+	}
+
+	.member:hover {
+		background: var(--surface-2);
+	}
+
+	.member.active {
+		background: var(--surface-2);
+	}
+
+	.member-type {
+		min-width: 4.5rem;
+		font-size: 0.875rem;
+	}
+
+	.member-summary {
+		flex: 1 1 10rem;
+		min-width: 0;
+		font-size: 0.8125rem;
+		color: var(--label-2);
+		overflow-wrap: anywhere;
+	}
+
+	.member-latency {
+		margin-inline-start: auto;
+		font-size: 0.8125rem;
+		color: var(--label-2);
+		font-variant-numeric: tabular-nums;
 	}
 
 	.columns {

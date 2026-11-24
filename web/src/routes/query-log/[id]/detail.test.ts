@@ -9,11 +9,14 @@ import { endSession, setPrincipal } from '$lib/auth/state.svelte';
 import { live } from '$lib/live.svelte';
 import { m } from '$lib/paraglide/messages';
 
-const pageState = vi.hoisted(() => ({ params: { id: 'q1' } as Record<string, string> }));
+const pageState = vi.hoisted(() => ({
+	params: { id: 'q1' } as Record<string, string>,
+	search: '',
+}));
 vi.mock('$app/state', () => ({
 	page: {
 		get url() {
-			return new URL('http://localhost/query-log/q1');
+			return new URL(`http://localhost/query-log/${pageState.params.id}${pageState.search}`);
 		},
 		get params() {
 			return pageState.params;
@@ -99,6 +102,7 @@ beforeEach(() => {
 	endSession();
 	setPrincipal({ role: 'admin', actorId: 'alice', actorType: 'user', csrfToken: 'tok' });
 	pageState.params = { id: 'q1' };
+	pageState.search = '';
 	live.message = '';
 });
 
@@ -651,5 +655,79 @@ describe('resolved answers', () => {
 
 		await screen.findByText('||ads.example.com^');
 		expect(screen.queryByRole('heading', { name: m.query_log_answers_title() })).toBeNull();
+	});
+});
+
+describe('burst lookup overview', () => {
+	it('stays a single-record view without with params', async () => {
+		serve({ 'GET /api/v1/query-log/q1': () => ok(record()) });
+		render(Page);
+
+		await screen.findByText('||ads.example.com^');
+		expect(screen.queryByRole('heading', { name: m.querylog_section_lookup() })).toBeNull();
+		expect(screen.queryByRole('listbox', { name: m.querylog_lookup_choose() })).toBeNull();
+	});
+
+	it('lists sibling query types and switches the detail view', async () => {
+		pageState.search = '?with=q2&with=q3';
+		serve({
+			'GET /api/v1/query-log/q1': () =>
+				ok(
+					record({
+						id: 'q1',
+						query: { name: 'ads.example.com', type: 'A', class: 'IN' },
+						answers: [],
+					}),
+				),
+			'GET /api/v1/query-log/q2': () =>
+				ok(
+					record({
+						id: 'q2',
+						query: { name: 'ads.example.com', type: 'AAAA', class: 'IN' },
+						rcode: 'NXDOMAIN',
+						answers: [],
+						timings: { select_us: 1000, filter_us: 2000, resolve_us: 0, total_us: 3000 },
+					}),
+				),
+			'GET /api/v1/query-log/q3': () =>
+				ok(
+					record({
+						id: 'q3',
+						query: { name: 'ads.example.com', type: 'HTTPS', class: 'IN' },
+						filter: null,
+						rcode: 'NOERROR',
+						answer_source: 'resolver',
+						answers: [{ type: 'HTTPS', data: '1 . alpn="h2"', ttl: 300 }],
+						timings: { select_us: 1000, filter_us: 1000, resolve_us: 5000, total_us: 7000 },
+						steps: [
+							{ stage: 'select', verdict: 'selected', selection: { cause: 'default' } },
+							{ stage: 'resolve', verdict: 'resolved', source: 'recursion' },
+						],
+					}),
+				),
+		});
+		const user = userEvent.setup();
+		render(Page);
+
+		expect(await screen.findByRole('heading', { name: m.querylog_section_lookup() })).toBeInTheDocument();
+		const chooser = screen.getByRole('listbox', { name: m.querylog_lookup_choose() });
+		const options = within(chooser).getAllByRole('option');
+		expect(options.map((option) => option.querySelector('.member-type')?.textContent)).toEqual([
+			'A',
+			'AAAA',
+			'HTTPS',
+		]);
+		expect(options[0]).toHaveAttribute('aria-selected', 'true');
+		expect(screen.getByText(m.querylog_stage_filter_qname())).toBeInTheDocument();
+
+		await user.click(options[2]);
+		expect(options[2]).toHaveAttribute('aria-selected', 'true');
+		expect(await screen.findByText('1 . alpn="h2"')).toBeInTheDocument();
+		const decision = screen.getByRole('heading', { name: m.querylog_section_decision() }).closest(
+			'section',
+		);
+		expect(decision).not.toBeNull();
+		expect(within(decision!).getByText(m.querylog_stage_resolve())).toBeInTheDocument();
+		expect(within(decision!).queryByText(m.querylog_stage_filter_qname())).toBeNull();
 	});
 });

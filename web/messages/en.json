@@ -1767,5 +1767,8 @@
 	"test_query_type_mx": "MX",
 	"test_query_type_txt": "TXT",
 	"test_query_type_srv": "SRV",
-	"querylog_burst_count": "{count} identical lookups combined"
+	"querylog_burst_count": "{count} identical lookups combined",
+	"querylog_section_lookup": "Lookup",
+	"querylog_lookup_footer": "{count} queries for this name in one request",
+	"querylog_lookup_choose": "Choose a query type"
 }

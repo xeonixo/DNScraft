@@ -9,6 +9,7 @@
 	import {
 		answerLabel,
 		answerSummary,
+		burstDetailHref,
 		dnssecLabel,
 		microsToMilliseconds,
 		provenanceLabel,
@@ -106,9 +107,10 @@
 						>
 					</td>
 					<td class="domain">
+						<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- burstDetailHref resolves -->
 						<a
 							class="name"
-							href={resolve('/query-log/[id]', { id: record.id })}
+							href={burstDetailHref(record.id, burst?.ids)}
 							aria-label={m.querylog_open_row({ domain: neutralize(unicode) })}
 							aria-describedby={tip?.record.id === record.id ? 'query-tip' : undefined}
 							onmouseenter={(event) => showTip(record, event.currentTarget)}

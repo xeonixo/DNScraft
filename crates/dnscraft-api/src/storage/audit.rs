@@ -121,6 +121,7 @@ impl Db {
         limit: u32,
         offset: u32,
     ) -> Result<Vec<AuditRecord>, ControlApiError> {
-        self.with_conn(move |conn| list(conn, limit, offset)).await
+        self.with_read_conn(move |conn| list(conn, limit, offset))
+            .await
     }
 }

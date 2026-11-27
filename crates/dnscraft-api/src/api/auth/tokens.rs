@@ -240,51 +240,58 @@ impl TokenStore {
     /// Validates a plaintext token, returning its principal.
     ///
     /// A missing hash, a revoked token and an expired token all yield
-    /// [`ControlApiError::AuthUnauthenticated`]; an expired row is deleted.
+    /// [`ControlApiError::AuthUnauthenticated`]; the lookup runs on a reader
+    /// connection and only an expired row touches the writer, to delete it.
     pub async fn authenticate(&self, plaintext: &str) -> Result<TokenPrincipal, ControlApiError> {
         let id = sha256_hex(plaintext.as_bytes());
         let now = self.db.now_unix();
-        self.db
-            .with_conn(move |conn| {
-                let row = conn
-                    .query_row(
-                        "SELECT actor_id, scope, expires_at FROM tokens WHERE id_hash = ?1",
-                        params![id],
-                        |row| {
-                            Ok((
-                                row.get::<_, String>(0)?,
-                                row.get::<_, String>(1)?,
-                                row.get::<_, Option<i64>>(2)?,
-                            ))
-                        },
-                    )
-                    .optional()
-                    .map_err(db_err)?;
-                let Some((actor_id, scope_str, expires_at)) = row else {
-                    return Err(ControlApiError::AuthUnauthenticated);
-                };
-                if expires_at.is_some_and(|expires| now >= expires) {
+        let id_for_read = id.clone();
+        let row = self
+            .db
+            .with_read_conn(move |conn| {
+                conn.query_row(
+                    "SELECT actor_id, scope, expires_at FROM tokens WHERE id_hash = ?1",
+                    params![id_for_read],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<i64>>(2)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(db_err)
+            })
+            .await?;
+        let Some((actor_id, scope_str, expires_at)) = row else {
+            return Err(ControlApiError::AuthUnauthenticated);
+        };
+        if expires_at.is_some_and(|expires| now >= expires) {
+            self.db
+                .with_conn(move |conn| {
                     conn.execute("DELETE FROM tokens WHERE id_hash = ?1", params![id])
                         .map_err(db_err)?;
-                    return Err(ControlApiError::AuthUnauthenticated);
-                }
-                let scope = Scope::parse(&scope_str).ok_or_else(|| ControlApiError::Internal {
-                    message: format!("unknown token scope in storage: {scope_str}"),
-                })?;
-                Ok(TokenPrincipal {
-                    actor_id,
-                    scope,
-                    id,
+                    Ok(())
                 })
-            })
-            .await
+                .await?;
+            return Err(ControlApiError::AuthUnauthenticated);
+        }
+        let scope = Scope::parse(&scope_str).ok_or_else(|| ControlApiError::Internal {
+            message: format!("unknown token scope in storage: {scope_str}"),
+        })?;
+        Ok(TokenPrincipal {
+            actor_id,
+            scope,
+            id,
+        })
     }
 
     /// Lists every stored token (hash and metadata, never plaintext) for an
     /// [`AuthSnapshot`](super::AuthSnapshot).
     pub async fn snapshot_entries(&self) -> Result<Vec<TokenSnapshot>, ControlApiError> {
         self.db
-            .with_conn(|conn| {
+            .with_read_conn(|conn| {
                 let mut stmt = conn
                     .prepare(
                         "SELECT id_hash, name, scope, actor_id, created_at, expires_at

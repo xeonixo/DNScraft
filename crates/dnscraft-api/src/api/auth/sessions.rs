@@ -19,6 +19,10 @@ use crate::Secret;
 use crate::error::ControlApiError;
 use crate::storage::{Db, db_err};
 
+/// A successful validation refreshes `last_active` at most once per this many
+/// seconds, so the common authenticated request stays a pure read.
+const LAST_ACTIVE_UPDATE_SECS: i64 = 60;
+
 /// A browser-session role. Cookie sessions are `viewer` or `admin` only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
@@ -170,55 +174,78 @@ impl SessionStore {
 
     /// Validates a session cookie, returning its principal, or
     /// [`ControlApiError::AuthSessionExpired`] when absent or expired. A
-    /// successful validation refreshes the idle deadline.
+    /// successful validation refreshes the idle deadline at most once per
+    /// [`LAST_ACTIVE_UPDATE_SECS`]; the read runs on a reader connection, and
+    /// the writer is touched only for the rare refresh or expiry delete.
+    /// Because the decision is made from the reader snapshot, a request that
+    /// raced a concurrent logout by milliseconds may still validate once; the
+    /// epoch check below covers global sign-outs from the next request on.
     pub async fn validate(&self, cookie: &str) -> Result<Principal, ControlApiError> {
         let id_hash = hash_session_id(cookie);
         let idle_secs = self.idle.as_secs() as i64;
         let now = self.db.now_unix();
         let current_epoch = self.epoch.load(Ordering::Relaxed);
-        self.db
-            .with_conn(move |conn| {
-                let row = conn
-                    .query_row(
-                        "SELECT actor_id, role, last_active, expires_at, epoch FROM sessions WHERE id_hash = ?1",
-                        params![id_hash],
-                        |row| {
-                            Ok((
-                                row.get::<_, String>(0)?,
-                                row.get::<_, String>(1)?,
-                                row.get::<_, i64>(2)?,
-                                row.get::<_, i64>(3)?,
-                                row.get::<_, i64>(4)?,
-                            ))
-                        },
-                    )
-                    .optional()
-                    .map_err(db_err)?;
-                let Some((actor_id, role_str, last_active, expires_at, epoch)) = row else {
-                    return Err(ControlApiError::AuthSessionExpired);
-                };
-                // A session is valid only at or after the epoch it was created
-                // under: bumping the epoch (global sign-out/revocation)
-                // invalidates every older session.
-                if now >= expires_at
-                    || now >= last_active.saturating_add(idle_secs)
-                    || epoch < i64::try_from(current_epoch).unwrap_or(i64::MAX)
-                {
+        let id_hash_for_read = id_hash.clone();
+        let row = self
+            .db
+            .with_read_conn(move |conn| {
+                conn.query_row(
+                    "SELECT actor_id, role, last_active, expires_at, epoch FROM sessions WHERE id_hash = ?1",
+                    params![id_hash_for_read],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)?,
+                            row.get::<_, i64>(3)?,
+                            row.get::<_, i64>(4)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(db_err)
+            })
+            .await?;
+        let Some((actor_id, role_str, last_active, expires_at, epoch)) = row else {
+            return Err(ControlApiError::AuthSessionExpired);
+        };
+        // A session is valid only at or after the epoch it was created
+        // under: bumping the epoch (global sign-out/revocation)
+        // invalidates every older session.
+        if now >= expires_at
+            || now >= last_active.saturating_add(idle_secs)
+            || epoch < i64::try_from(current_epoch).unwrap_or(i64::MAX)
+        {
+            self.db
+                .with_conn(move |conn| {
                     conn.execute("DELETE FROM sessions WHERE id_hash = ?1", params![id_hash])
                         .map_err(db_err)?;
-                    return Err(ControlApiError::AuthSessionExpired);
-                }
-                let role = Role::parse(&role_str).ok_or_else(|| ControlApiError::Internal {
-                    message: format!("unknown session role in storage: {role_str}"),
-                })?;
-                conn.execute(
-                    "UPDATE sessions SET last_active = ?1 WHERE id_hash = ?2",
-                    params![now, id_hash],
-                )
-                .map_err(db_err)?;
-                Ok(Principal { actor_id, role })
-            })
-            .await
+                    Ok(())
+                })
+                .await?;
+            return Err(ControlApiError::AuthSessionExpired);
+        }
+        let role = Role::parse(&role_str).ok_or_else(|| ControlApiError::Internal {
+            message: format!("unknown session role in storage: {role_str}"),
+        })?;
+        // Throttled idle refresh: only touch the writer when the stored
+        // `last_active` is older than LAST_ACTIVE_UPDATE_SECS. The `WHERE`
+        // guard keeps the update idempotent when a concurrent validation
+        // refreshed the row in the meantime.
+        if now >= last_active.saturating_add(LAST_ACTIVE_UPDATE_SECS) {
+            let refresh_before = now - LAST_ACTIVE_UPDATE_SECS;
+            self.db
+                .with_conn(move |conn| {
+                    conn.execute(
+                        "UPDATE sessions SET last_active = ?1 WHERE id_hash = ?2 AND last_active <= ?3",
+                        params![now, id_hash, refresh_before],
+                    )
+                    .map_err(db_err)?;
+                    Ok(())
+                })
+                .await?;
+        }
+        Ok(Principal { actor_id, role })
     }
 
     /// Invalidates a session immediately (unknown ids are a no-op).
@@ -309,7 +336,7 @@ impl SessionStore {
         let now = self.db.now_unix();
         let offset = i64::try_from(offset).unwrap_or(i64::MAX);
         self.db
-            .with_conn(move |conn| {
+            .with_read_conn(move |conn| {
                 let mut stmt = conn
                     .prepare(
                         "SELECT id_hash, actor_id, role, ip, client_label, created_at, last_active, expires_at
@@ -332,7 +359,7 @@ impl SessionStore {
         let id = id.to_owned();
         let now = self.db.now_unix();
         self.db
-            .with_conn(move |conn| {
+            .with_read_conn(move |conn| {
                 use rusqlite::OptionalExtension as _;
                 conn.query_row(
                     "SELECT id_hash, actor_id, role, ip, client_label, created_at, last_active, expires_at
@@ -397,6 +424,36 @@ mod tests {
 
     fn clock() -> Arc<ManualClock> {
         Arc::new(ManualClock::new(SystemTime::UNIX_EPOCH))
+    }
+
+    #[tokio::test]
+    async fn validate_throttles_last_active_refresh_to_once_per_60s() {
+        let clock = clock();
+        let store = SessionStore::new(
+            Db::open_in_memory(clock.clone()).await.unwrap(),
+            Duration::from_secs(3600),
+            Duration::from_secs(12 * 3600),
+        );
+        let created = store.create("u1".into(), Role::Admin).await.unwrap();
+        let cookie = created.cookie().expose().to_owned();
+        let session_id = session_id_for_cookie(&cookie);
+
+        // Validate at t = 59 s: last_active (0) is not yet 60 s old, so the
+        // throttle must leave it untouched.
+        clock.advance(Duration::from_secs(59));
+        store.validate(&cookie).await.unwrap();
+        let row = store.find(&session_id).await.unwrap().unwrap();
+        assert_eq!(
+            row.last_active, 0,
+            "last_active must not refresh within 60 s of the stored value"
+        );
+
+        // Validate at t = 120 s: last_active is now older than 60 s, so the
+        // refresh runs and stores the current time.
+        clock.advance(Duration::from_secs(61));
+        store.validate(&cookie).await.unwrap();
+        let row = store.find(&session_id).await.unwrap().unwrap();
+        assert_eq!(row.last_active, 120);
     }
 
     #[tokio::test]

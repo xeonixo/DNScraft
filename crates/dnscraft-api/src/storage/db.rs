@@ -135,7 +135,7 @@ impl Db {
         &self,
         version: i64,
     ) -> Result<Option<String>, ControlApiError> {
-        self.with_conn(move |conn| {
+        self.with_read_conn(move |conn| {
             conn.query_row(
                 "SELECT snapshot FROM config_versions WHERE version = ?1",
                 params![version],
@@ -149,7 +149,7 @@ impl Db {
 
     /// Highest stored config version, or `None` when no snapshot has been stored.
     pub async fn config_version_max(&self) -> Result<Option<i64>, ControlApiError> {
-        self.with_conn(move |conn| {
+        self.with_read_conn(move |conn| {
             conn.query_row("SELECT MAX(version) FROM config_versions", [], |row| {
                 row.get::<_, Option<i64>>(0)
             })
@@ -165,7 +165,7 @@ impl Db {
         offset: u64,
     ) -> Result<Vec<(i64, i64)>, ControlApiError> {
         let offset = i64::try_from(offset).unwrap_or(i64::MAX);
-        self.with_conn(move |conn| {
+        self.with_read_conn(move |conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT version, created_at FROM config_versions

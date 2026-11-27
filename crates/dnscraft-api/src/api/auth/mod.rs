@@ -229,12 +229,7 @@ impl AuthState {
         scope: &str,
     ) -> Result<bool, ControlApiError> {
         match actor_type {
-            "token" => Ok(self
-                .tokens
-                .snapshot_entries()
-                .await?
-                .iter()
-                .any(|token| token.actor_id == actor_id && token.scope == scope)),
+            "token" => self.tokens.actor_scope_exists(actor_id, scope).await,
             "user" => Ok(true),
             _ => Ok(false),
         }

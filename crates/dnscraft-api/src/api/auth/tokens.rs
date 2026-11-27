@@ -292,6 +292,31 @@ impl TokenStore {
         })
     }
 
+    /// Whether a token row for `(actor_id, scope)` exists.
+    ///
+    /// Point check for relayed cluster writes: revocation deletes the row, so
+    /// existence is the liveness test. Never loads the token table.
+    pub async fn actor_scope_exists(
+        &self,
+        actor_id: &str,
+        scope: &str,
+    ) -> Result<bool, ControlApiError> {
+        let actor_id = actor_id.to_owned();
+        let scope = scope.to_owned();
+        self.db
+            .with_read_conn(move |conn| {
+                conn.query_row(
+                    "SELECT EXISTS(
+                         SELECT 1 FROM tokens WHERE actor_id = ?1 AND scope = ?2
+                     )",
+                    params![actor_id, scope],
+                    |row| row.get(0),
+                )
+                .map_err(db_err)
+            })
+            .await
+    }
+
     /// Lists every stored token (hash and metadata, never plaintext) for an
     /// [`AuthSnapshot`](super::AuthSnapshot).
     pub async fn snapshot_entries(&self) -> Result<Vec<TokenSnapshot>, ControlApiError> {

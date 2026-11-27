@@ -212,6 +212,18 @@ pub(crate) fn unix_now(state: &AppState) -> i64 {
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
+/// Runs a passive WAL checkpoint on the state's database, when one is mounted.
+///
+/// Part of the hourly maintenance tick: long-lived readers (exports, rollup
+/// scans) keep pushing SQLite's automatic checkpoints back, so the WAL is
+/// folded here explicitly while the writer is otherwise idle.
+pub async fn wal_checkpoint_if_present(state: &AppState) -> Result<(), ControlApiError> {
+    match state.db() {
+        Some(db) => db.wal_checkpoint_passive().await,
+        None => Ok(()),
+    }
+}
+
 /// Runs one backup into `dir` and prunes beyond `retention`. Returns the file name.
 pub(crate) async fn run_backup(
     db: &Db,
@@ -231,12 +243,41 @@ pub(crate) async fn run_backup(
         });
     }
     let target_text = target.to_string_lossy().into_owned();
-    db.with_conn(move |conn| {
-        conn.execute("VACUUM INTO ?1", [target_text])
-            .map(|_| ())
-            .map_err(db_err)
-    })
-    .await?;
+    match db.path() {
+        // File-backed: VACUUM INTO from a dedicated side connection, so the
+        // copy never holds the single writer mutex (it blocks WAL checkpoints
+        // for its duration, but the API and the query-log ingest keep running).
+        Some(path) => {
+            let path = path.to_owned();
+            tokio::task::spawn_blocking(move || -> Result<(), ControlApiError> {
+                let conn = rusqlite::Connection::open_with_flags(
+                    &path,
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                        | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                )
+                .map_err(db_err)?;
+                conn.execute_batch("PRAGMA busy_timeout = 5000;")
+                    .map_err(db_err)?;
+                conn.execute("VACUUM INTO ?1", [target_text])
+                    .map(|_| ())
+                    .map_err(db_err)
+            })
+            .await
+            .map_err(|err| ControlApiError::Internal {
+                message: err.to_string(),
+            })??;
+        }
+        // In-memory (tests): the writer connection is the only way to see the
+        // database at all.
+        None => {
+            db.with_conn(move |conn| {
+                conn.execute("VACUUM INTO ?1", [target_text])
+                    .map(|_| ())
+                    .map_err(db_err)
+            })
+            .await?;
+        }
+    }
     // Sessions are ephemeral bearer state: drop them from the copy. Credential
     // hashes stay, so a restored backup can still sign in.
     strip_sessions(&target)?;
@@ -410,6 +451,45 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(mode.mode() & 0o777, 0o600);
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn file_backed_backup_uses_a_side_connection_and_sees_committed_writes() {
+        use std::sync::Arc;
+        use std::time::{Duration, UNIX_EPOCH};
+        let clock = Arc::new(dnscraft_common::clock::ManualClock::new(
+            UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+        ));
+        let dir = std::env::temp_dir().join(format!(
+            "dnscraft-backup-file-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let db = Db::open(&dir.join("data.db"), clock).await.unwrap();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO tokens (id_hash, name, scope, actor_id, created_at, expires_at)
+                 VALUES ('t1', 'ci', 'api:read', 'alice', 1, NULL)",
+                [],
+            )
+            .map_err(db_err)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        // The backup must not need the writer mutex: it runs while the
+        // writer connection is alive and WAL frames may be un-checkpointed.
+        let name = run_backup(&db, &dir, 3, 1_700_000_000).await.unwrap();
+        let copy = rusqlite::Connection::open(dir.join(&name)).unwrap();
+        let tokens: i64 = copy
+            .query_row("SELECT COUNT(*) FROM tokens", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(tokens, 1, "committed WAL frames must be in the copy");
+        drop(db);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

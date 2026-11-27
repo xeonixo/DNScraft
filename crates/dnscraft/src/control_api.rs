@@ -13,7 +13,7 @@ use dnscraft_api::{
     ControlApiTls, Db, EngineStatusProvider, EngineTlsAdmin, ListenersStatusProvider,
     LocalAccountStore, OfflineWriteQueue, OidcRuntime, QueryLog, Readiness, ServiceCatalogProvider,
     SessionStore, SystemClock, TlsStatusProvider, TokenStore, cluster_db_path, dispatch_alerts,
-    mcp_backend_inner, run_backup_if_due,
+    mcp_backend_inner, run_backup_if_due, wal_checkpoint_if_present,
 };
 use dnscraft_cluster::{ClusterConfig, Role};
 use dnscraft_filtering::{FilterEngine, ServiceCatalog};
@@ -301,6 +301,11 @@ pub(crate) async fn start(
             ticker.tick().await;
             if let Err(error) = rollup_log.run_rollup().await {
                 tracing::warn!(code = error.code(), "stats rollup failed");
+            }
+            // Fold the WAL back while the writer is idle: long-lived readers
+            // keep pushing SQLite's automatic checkpoints back.
+            if let Err(error) = wal_checkpoint_if_present(&backup_state).await {
+                tracing::warn!(code = error.code(), "wal checkpoint failed");
             }
             if let Err(error) = run_backup_if_due(&backup_state).await {
                 tracing::warn!(code = error.code(), "scheduled backup failed");

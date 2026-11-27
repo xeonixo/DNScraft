@@ -106,6 +106,7 @@ pub use storage::{
     config_db_path, database_dir, ensure_database_layout,
 };
 pub use system::run_backup_if_due;
+pub use system::wal_checkpoint_if_present;
 pub use system::{BannedSource, WebBans};
 pub use unifi_secrets::get_api_key;
 

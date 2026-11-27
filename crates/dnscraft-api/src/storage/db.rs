@@ -26,6 +26,9 @@ pub struct Db {
     readers: Arc<Vec<Mutex<Connection>>>,
     next_reader: Arc<AtomicUsize>,
     clock: Arc<dyn Clock>,
+    /// File path of a file-backed database; `None` for in-memory databases.
+    /// Used to open side connections (backups) that never touch the writer.
+    path: Option<Arc<PathBuf>>,
 }
 
 /// Read-only connections kept next to the writer, so dashboard queries neither queue behind each
@@ -36,6 +39,7 @@ impl Db {
     /// Opens (and migrates) a database file at `path`.
     pub async fn open(path: &Path, clock: Arc<dyn Clock>) -> Result<Self, ControlApiError> {
         let path = path.to_owned();
+        let path_for_handle = Arc::new(path.clone());
         let (conn, readers) = tokio::task::spawn_blocking(move || -> Result<_, ControlApiError> {
             let existed = path.exists();
             prepare_path(&path).map_err(io_err)?;
@@ -59,7 +63,11 @@ impl Db {
                 )
                 .map_err(db_err)?;
                 reader
-                    .execute_batch("PRAGMA busy_timeout = 5000; PRAGMA query_only = ON;")
+                    .execute_batch(
+                        "PRAGMA busy_timeout = 5000;
+                         PRAGMA query_only = ON;
+                         PRAGMA cache_size = -8192;",
+                    )
                     .map_err(db_err)?;
                 crate::query_log::register_sql_functions(&reader).map_err(db_err)?;
                 readers.push(Mutex::new(reader));
@@ -73,7 +81,13 @@ impl Db {
             readers: Arc::new(readers),
             next_reader: Arc::new(AtomicUsize::new(0)),
             clock,
+            path: Some(path_for_handle),
         })
+    }
+
+    /// File path of a file-backed database, or `None` for in-memory databases.
+    pub(crate) fn path(&self) -> Option<&Path> {
+        self.path.as_deref().map(std::path::PathBuf::as_path)
     }
 
     /// Opens a fresh in-memory database (tests).
@@ -92,12 +106,25 @@ impl Db {
             readers: Arc::new(Vec::new()),
             next_reader: Arc::new(AtomicUsize::new(0)),
             clock,
+            path: None,
         })
     }
 
     /// Current unix seconds according to the injected clock.
     pub fn now_unix(&self) -> i64 {
         unix_seconds(self.clock.now())
+    }
+
+    /// Runs a passive WAL checkpoint: folds the WAL back into the database
+    /// file when no reader holds frames busy, keeping the WAL small between
+    /// SQLite's automatic checkpoints. Called from the hourly maintenance
+    /// tick; never blocks readers and gives up quietly when busy.
+    pub(crate) async fn wal_checkpoint_passive(&self) -> Result<(), ControlApiError> {
+        self.with_conn(|conn| {
+            conn.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_row| Ok(()))
+                .map_err(db_err)
+        })
+        .await
     }
 
     /// Current schema version (`PRAGMA user_version`).
@@ -336,7 +363,7 @@ fn join_err(err: tokio::task::JoinError) -> ControlApiError {
     }
 }
 
-/// Applies the control-api SQLite durability and integrity pragmas.
+/// Applies the control-api SQLite durability, integrity and cache pragmas.
 ///
 /// WAL is file-only: an in-memory database keeps its `memory` journal mode.
 /// `synchronous=NORMAL` (safe under WAL), a 5 s `busy_timeout`, and enforced
@@ -347,7 +374,9 @@ fn apply_pragmas(conn: &mut Connection, wal: bool) -> Result<(), ControlApiError
          PRAGMA synchronous = NORMAL;
          PRAGMA busy_timeout = 5000;
          PRAGMA journal_size_limit = 67108864;
-         PRAGMA foreign_keys = ON;"
+         PRAGMA foreign_keys = ON;
+         PRAGMA cache_size = -65536;
+         PRAGMA mmap_size = 268435456;"
     } else {
         "PRAGMA synchronous = NORMAL;
          PRAGMA busy_timeout = 5000;
@@ -482,7 +511,7 @@ mod tests {
     async fn file_db_sets_wal_and_durability_pragmas() {
         let path = temp_db_path();
         let db = Db::open(&path, Arc::new(SystemClock)).await.unwrap();
-        let (journal, synchronous, busy_timeout, foreign_keys) = db
+        let (journal, synchronous, busy_timeout, foreign_keys, cache_size, mmap_size) = db
             .with_conn(|conn| {
                 let journal: String = conn
                     .query_row("PRAGMA journal_mode", [], |row| row.get(0))
@@ -496,7 +525,20 @@ mod tests {
                 let foreign_keys: i64 = conn
                     .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
                     .map_err(db_err)?;
-                Ok((journal, synchronous, busy_timeout, foreign_keys))
+                let cache_size: i64 = conn
+                    .query_row("PRAGMA cache_size", [], |row| row.get(0))
+                    .map_err(db_err)?;
+                let mmap_size: i64 = conn
+                    .query_row("PRAGMA mmap_size", [], |row| row.get(0))
+                    .map_err(db_err)?;
+                Ok((
+                    journal,
+                    synchronous,
+                    busy_timeout,
+                    foreign_keys,
+                    cache_size,
+                    mmap_size,
+                ))
             })
             .await
             .unwrap();
@@ -504,6 +546,8 @@ mod tests {
         assert_eq!(synchronous, 1); // NORMAL
         assert_eq!(busy_timeout, 5000);
         assert_eq!(foreign_keys, 1);
+        assert_eq!(cache_size, -65536); // 64 MiB writer page cache
+        assert_eq!(mmap_size, 268_435_456);
         let _ = std::fs::remove_file(&path);
     }
 

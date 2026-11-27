@@ -54,7 +54,12 @@ pub const TOP_DOMAINS_MAX: u32 = 10_000;
 /// Rollup retention in days (the spec's 365-day dashboard window).
 pub const ROLLUP_RETENTION_DAYS: i64 = 365;
 /// Hours re-read after the watermark for late cluster arrivals.
-const ROLLUP_LATE_HOURS: i64 = 24;
+///
+/// Normal shipping (and a reconnecting node's backfill) lands within minutes,
+/// so two hours cover routine lateness. A backfill older than this window
+/// rolls the watermark back instead ([`lower_rollup_watermark`]), so no
+/// arrived row is ever skipped by the rollup.
+const ROLLUP_LATE_HOURS: i64 = 2;
 /// Domains kept per hour/day and node in the top-N rollup tables.
 const ROLLUP_DOMAIN_TOP_K: i64 = 200;
 /// Clients kept per hour/day and node in the top-N rollup tables.
@@ -635,6 +640,9 @@ impl QueryLog {
 
         let from_day = since_hour.div_euclid(HOURS_PER_DAY);
         let to_day = until_hour.div_euclid(HOURS_PER_DAY);
+        // Copied for the writer closure: the watermark clamp below must not
+        // move the binding other closures use.
+        let since_for_watermark = since_hour;
 
         self.db()
             .with_conn(move |conn| {
@@ -664,15 +672,31 @@ impl QueryLog {
                 }
                 drop(dim_ins);
 
-                // Top-N tables: replace the recomputed hours so fallen-out keys disappear.
+                // Top-N tables: replace the recomputed hours so fallen-out keys
+                // disappear — but only hours the raw log can still answer for.
+                // A late backfill rolled the scan window back beyond the raw
+                // retention window; deleting top-N rows for hours whose raw
+                // rows are gone would lose data no rebuild can restore.
+                let oldest_raw_hour: Option<i64> = tx
+                    .query_row("SELECT MIN(time) FROM query_log", [], |row| {
+                        row.get::<_, Option<i64>>(0)
+                    })
+                    .map_err(db_err)?
+                    .map(|time| time.div_euclid(MICROS_PER_HOUR));
+                let delete_from = match oldest_raw_hour {
+                    Some(hour) => since_for_watermark.max(hour),
+                    // No raw rows at all: rewrite nothing (an empty scan has
+                    // nothing to replace the deleted rows with).
+                    None => until_hour.saturating_add(1),
+                };
                 tx.execute(
                     "DELETE FROM stats_domain_hourly WHERE hour >= ?1 AND hour <= ?2",
-                    params![since_hour, until_hour],
+                    params![delete_from, until_hour],
                 )
                 .map_err(db_err)?;
                 tx.execute(
                     "DELETE FROM stats_client_hourly WHERE hour >= ?1 AND hour <= ?2",
-                    params![since_hour, until_hour],
+                    params![delete_from, until_hour],
                 )
                 .map_err(db_err)?;
 
@@ -709,7 +733,15 @@ impl QueryLog {
                 rebuild_daily_clients(&tx, from_day, to_day)?;
 
                 prune_rollups(&tx, hour_cutoff, day_cutoff)?;
-                crate::storage::kv_set(&tx, ROLLUP_THROUGH_HOUR_KEY, &until_hour.to_string())?;
+                // Advance the watermark, but never clobber a rollback: an
+                // `ingest_remote` commit between this pass's read phase and
+                // here may have lowered the watermark below this pass's scan
+                // window (late backfill). Those hours were not part of this
+                // scan and must stay behind the watermark for the next pass.
+                let stored: Option<i64> = crate::storage::kv_get(&tx, ROLLUP_THROUGH_HOUR_KEY)?
+                    .and_then(|value| value.parse().ok());
+                let next = advance_watermark(stored, since_for_watermark, until_hour);
+                crate::storage::kv_set(&tx, ROLLUP_THROUGH_HOUR_KEY, &next.to_string())?;
                 tx.commit().map_err(db_err)?;
                 Ok(())
             })
@@ -973,10 +1005,16 @@ impl QueryLog {
         })
     }
 
-    /// Query counts grouped by hour or day over the raw log for `[from_us, to_us]`.
+    /// Query counts grouped by hour or day over `[from_us, to_us]`.
     ///
     /// `bucket` is `hour` or `day`; any other value is read as `hour` (the HTTP
-    /// route rejects those before calling this).
+    /// route rejects those before calling this). Closed buckets come from the
+    /// precomputed rollups, so a long window does not scan the raw log; the
+    /// still-open bucket is stitched from `query_log` directly, and before the
+    /// first rollup pass the whole series falls back to the raw log. Like the
+    /// other rollup-backed reads, a closed bucket that the window only partly
+    /// overlaps is counted in full, and a closed hour is served as of the last
+    /// rollup pass (roughly hourly), so its newest rows may not be folded yet.
     pub async fn timeseries_scoped(
         &self,
         from_us: Option<i64>,
@@ -992,36 +1030,11 @@ impl QueryLog {
         } else {
             ("hour", MICROS_PER_HOUR)
         };
-        let buckets = db
-            .with_read_conn(move |conn| {
-                let mut stmt = conn
-                    .prepare(
-                        "SELECT (time / ?5) * ?5,
-                                COUNT(*),
-                                COALESCE(SUM(CASE WHEN status = 2 THEN 1 ELSE 0 END), 0)
-                         FROM query_log
-                         WHERE time >= ?1 AND time <= ?2
-                           AND (?3 IS NULL OR node_id = ?3)
-                           AND (?4 IS NULL OR profile_id = ?4)
-                         GROUP BY time / ?5
-                         ORDER BY 1",
-                    )
-                    .map_err(db_err)?;
-                let rows = stmt
-                    .query_map(
-                        params![from, to, scope.node_id, scope.profile_id, width],
-                        |row| {
-                            Ok(TimeSeriesBucket {
-                                bucket_start: format_micros(row.get(0)?),
-                                total: row.get(1)?,
-                                blocked: row.get(2)?,
-                            })
-                        },
-                    )
-                    .map_err(db_err)?;
-                rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
-            })
-            .await?;
+        let buckets = if !hourly_rollups_seeded(db).await? {
+            timeseries_raw(db, from, to, &scope, width).await?
+        } else {
+            timeseries_with_rollups(db, from, to, &scope, width).await?
+        };
         Ok(TimeSeries {
             from: format_micros(from),
             to: format_micros(to),
@@ -1589,6 +1602,128 @@ async fn ranked_clients_raw(
     .await
 }
 
+/// Whether at least one `stats_hourly` row exists (the rollup pass has run).
+async fn hourly_rollups_seeded(db: &Db) -> Result<bool, ControlApiError> {
+    db.with_read_conn(|conn| {
+        conn.query_row("SELECT EXISTS(SELECT 1 FROM stats_hourly)", [], |row| {
+            row.get(0)
+        })
+        .map_err(db_err)
+    })
+    .await
+}
+
+/// Timeseries buckets grouped straight from the raw log: the pre-rollup
+/// fallback and the open-bucket tail of the rollup path.
+async fn timeseries_raw(
+    db: &Db,
+    from: i64,
+    to: i64,
+    scope: &Scope,
+    width: i64,
+) -> Result<Vec<TimeSeriesBucket>, ControlApiError> {
+    let scope = scope.clone();
+    db.with_read_conn(move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT (time / ?5) * ?5,
+                        COUNT(*),
+                        COALESCE(SUM(CASE WHEN status = 2 THEN 1 ELSE 0 END), 0)
+                 FROM query_log
+                 WHERE time >= ?1 AND time <= ?2
+                   AND (?3 IS NULL OR node_id = ?3)
+                   AND (?4 IS NULL OR profile_id = ?4)
+                 GROUP BY time / ?5
+                 ORDER BY 1",
+            )
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map(
+                params![from, to, scope.node_id, scope.profile_id, width],
+                |row| {
+                    Ok(TimeSeriesBucket {
+                        bucket_start: format_micros(row.get(0)?),
+                        total: row.get(1)?,
+                        blocked: row.get(2)?,
+                    })
+                },
+            )
+            .map_err(db_err)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+    })
+    .await
+}
+
+/// Timeseries buckets from the rollups: closed buckets pre-aggregated from
+/// `stats_hourly`/`stats_daily`, the still-open bucket from the raw log.
+async fn timeseries_with_rollups(
+    db: &Db,
+    from: i64,
+    to: i64,
+    scope: &Scope,
+    width: i64,
+) -> Result<Vec<TimeSeriesBucket>, ControlApiError> {
+    let (bucket_col, bucket_width) = if width == MICROS_PER_DAY {
+        ("day", MICROS_PER_DAY)
+    } else {
+        ("hour", MICROS_PER_HOUR)
+    };
+    let table = if bucket_col == "day" {
+        "stats_daily"
+    } else {
+        "stats_hourly"
+    };
+    let from_bucket = from.div_euclid(bucket_width);
+    let open_bucket = to.div_euclid(bucket_width);
+    let closed = if from_bucket < open_bucket {
+        let scope = scope.clone();
+        db.with_read_conn(move |conn| {
+            // Only constant table/column names are interpolated.
+            let sql = format!(
+                "SELECT {bucket_col},
+                        COALESCE(SUM(query_count), 0),
+                        COALESCE(SUM(blocked_count), 0)
+                 FROM {table}
+                 WHERE {bucket_col} >= ?1 AND {bucket_col} <= ?2
+                   AND (?3 IS NULL OR node_id = ?3)
+                   AND (?4 IS NULL OR profile_id = ?4)
+                 GROUP BY {bucket_col}
+                 ORDER BY 1"
+            );
+            let mut stmt = conn.prepare(&sql).map_err(db_err)?;
+            let rows = stmt
+                .query_map(
+                    params![
+                        from_bucket,
+                        open_bucket - 1,
+                        scope.node_id,
+                        scope.profile_id
+                    ],
+                    |row| {
+                        let bucket: i64 = row.get(0)?;
+                        Ok(TimeSeriesBucket {
+                            bucket_start: format_micros(bucket.saturating_mul(bucket_width)),
+                            total: row.get(1)?,
+                            blocked: row.get(2)?,
+                        })
+                    },
+                )
+                .map_err(db_err)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+        })
+        .await?
+    } else {
+        Vec::new()
+    };
+    let tail_from = (open_bucket.saturating_mul(bucket_width)).max(from);
+    let tail = if tail_from <= to {
+        timeseries_raw(db, tail_from, to, scope, width).await?
+    } else {
+        Vec::new()
+    };
+    Ok(closed.into_iter().chain(tail).collect())
+}
+
 async fn cache_stats_raw(
     db: &Db,
     from: i64,
@@ -1611,6 +1746,42 @@ async fn cache_stats_raw(
         .map_err(db_err)
     })
     .await
+}
+
+/// Rolls the rollup watermark back to cover a late cluster backfill.
+///
+/// `ingest_remote` calls this when it inserts rows older than the
+/// late-arrival window; the next [`QueryLog::run_rollup`] then re-folds those
+/// hours (the MAX upserts keep a re-fold idempotent). A missing watermark
+/// means the rollup is unseeded and the next pass scans from hour 0 anyway,
+/// so nothing is done then. Runs inside the caller's transaction.
+pub(crate) fn lower_rollup_watermark(
+    conn: &rusqlite::Connection,
+    min_time_us: i64,
+) -> Result<(), ControlApiError> {
+    let through: Option<i64> =
+        crate::storage::kv_get(conn, ROLLUP_THROUGH_HOUR_KEY)?.and_then(|value| value.parse().ok());
+    let Some(through) = through else {
+        return Ok(());
+    };
+    let min_hour = min_time_us.div_euclid(MICROS_PER_HOUR);
+    if min_hour < through.saturating_sub(ROLLUP_LATE_HOURS) {
+        crate::storage::kv_set(conn, ROLLUP_THROUGH_HOUR_KEY, &min_hour.to_string())?;
+    }
+    Ok(())
+}
+
+/// The watermark value a finished pass stores.
+///
+/// Normally the pass's `until_hour`, but a watermark lowered below the pass's
+/// scan window (a late backfill committed between the pass's read phase and
+/// its write phase) stays put: those hours were not part of this pass's scan
+/// and must remain behind the watermark so the next pass re-reads them.
+fn advance_watermark(stored: Option<i64>, since_hour: i64, until_hour: i64) -> i64 {
+    match stored {
+        Some(stored) if stored < since_hour => stored,
+        _ => until_hour,
+    }
 }
 
 /// Merge rollup domain rows with an optional open-hour raw tail, then re-rank.
@@ -2485,6 +2656,19 @@ fn format_day(day: i64) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn advance_watermark_keeps_a_rollback_below_the_scan_window() {
+        // Normal pass: the watermark moves up to the scanned hour.
+        assert_eq!(advance_watermark(Some(100), 98, 102), 102);
+        assert_eq!(advance_watermark(None, 98, 102), 102);
+        // A concurrent late ingest lowered the watermark below this pass's
+        // scan window: those hours were not scanned, so the rollback stands.
+        assert_eq!(advance_watermark(Some(40), 98, 102), 40);
+        // A watermark inside or at the edge of the scan window is advanced:
+        // the pass re-reads [since, until] and covers it.
+        assert_eq!(advance_watermark(Some(98), 98, 102), 102);
+    }
 
     #[test]
     fn nearest_rank_uses_ceil_of_percentile_times_len() {

@@ -1031,6 +1031,7 @@ impl QueryLog {
             .with_conn(move |conn| {
                 let tx = conn.transaction().map_err(db_err)?;
                 let mut duplicates = 0u64;
+                let mut inserted_min_time: Option<i64> = None;
                 let mut inserted_ids = Vec::with_capacity(rows.len());
                 for (row, seq, device_id) in &rows {
                     let seq =
@@ -1134,10 +1135,19 @@ impl QueryLog {
                             .map_err(db_err)?;
                         }
                         inserted_ids.push(row.id.clone());
+                        inserted_min_time =
+                            Some(inserted_min_time.map_or(row.time_us, |min| min.min(row.time_us)));
                     }
                 }
                 let highest = highest_contiguous_seq(&tx, &node_for_tx)?;
                 store_contiguous_seq(&tx, &node_for_tx, highest)?;
+                // A backfill older than the rollup's late-arrival window (a
+                // sub-node offline for hours) must be folded into the
+                // rollups: roll the watermark back in the same transaction, so
+                // the next pass re-reads those hours.
+                if let Some(min_time) = inserted_min_time {
+                    crate::stats::lower_rollup_watermark(&tx, min_time)?;
+                }
                 tx.commit().map_err(db_err)?;
                 if duplicates > 0 {
                     tracing::debug!(

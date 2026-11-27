@@ -15,7 +15,7 @@ use axum::body::Body;
 use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{HeaderMap, Request, StatusCode, header};
 use dnscraft_api::{
-    AppState, Db, ManualClock, QueryLog, QueryLogConfig, QueryLogFilter, RollupWindow,
+    AppState, Db, ManualClock, QueryLog, QueryLogConfig, QueryLogFilter, RollupWindow, StatsScope,
 };
 use dnscraft_filtering::{BlockMode, ListId, Reason, RuleSource, SetId};
 use dnscraft_listeners::{QueryEvent, QueryEventSink};
@@ -368,6 +368,123 @@ async fn stats_export_rollups_populate_hourly_and_daily_and_prune_after_a_year()
             .await
             .unwrap()
             .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn stats_timeseries_serves_closed_buckets_from_rollups_after_raw_rows_expire() {
+    // The raw log keeps one day; the rollups keep a year. A timeseries over a
+    // closed window must come from the rollups, not re-scan (or miss) raw rows
+    // that retention has already deleted.
+    let (log, clock) = harness(QueryLogConfig {
+        retention_days: 1,
+        ..QueryLogConfig::default()
+    })
+    .await;
+    log.insert_batch(vec![
+        Spec::new(at_secs(BASE_SECS - 2 * 3600 - 30), "old-a.example.com").event(),
+        Spec::new(at_secs(BASE_SECS - 2 * 3600 - 10), "old-b.example.com").event(),
+    ])
+    .await
+    .unwrap();
+    log.run_rollup().await.unwrap();
+
+    // Two days later the raw rows age out of the 1-day retention window...
+    clock.advance(Duration::from_secs(2 * 86_400));
+    assert!(log.apply_retention().await.unwrap() >= 2);
+
+    // ...but the folded hour still answers the timeseries from the rollups.
+    let from = ((BASE_SECS as i64) - 3 * 3600) * 1_000_000;
+    let to = (BASE_SECS as i64 + 2 * 86_400) * 1_000_000;
+    let series = log
+        .timeseries_scoped(Some(from), Some(to), StatsScope::default(), "hour")
+        .await
+        .unwrap();
+    assert!(
+        !series.buckets.is_empty(),
+        "the folded hour must survive the raw log's retention"
+    );
+    assert_eq!(series.buckets.iter().map(|b| b.total).sum::<i64>(), 2);
+    assert_eq!(series.buckets.iter().map(|b| b.blocked).sum::<i64>(), 0);
+}
+
+#[tokio::test]
+async fn stats_timeseries_groups_day_buckets_from_daily_rollups() {
+    let (log, _clock) = harness(QueryLogConfig::default()).await;
+    log.insert_batch(vec![
+        Spec::new(at_secs(BASE_SECS - 3 * 86_400 - 60), "day-a.example.com").event(),
+        Spec::new(at_secs(BASE_SECS - 60), "today.example.com").event(),
+    ])
+    .await
+    .unwrap();
+    log.run_rollup().await.unwrap();
+
+    let from = ((BASE_SECS as i64) - 4 * 86_400) * 1_000_000;
+    let to = (BASE_SECS as i64) * 1_000_000;
+    let series = log
+        .timeseries_scoped(Some(from), Some(to), StatsScope::default(), "day")
+        .await
+        .unwrap();
+    assert_eq!(series.bucket, "day");
+    assert_eq!(series.buckets.len(), 2, "two distinct day buckets");
+    assert_eq!(series.buckets.iter().map(|b| b.total).sum::<i64>(), 2);
+}
+
+#[tokio::test]
+async fn late_cluster_backfill_rolls_the_rollup_watermark_back() {
+    // A sub-node offline for days backfills old rows through ingest_remote;
+    // those hours are older than the rollup's late-arrival window, so the
+    // watermark must roll back and the next pass must fold them in.
+    let clock = Arc::new(ManualClock::new(base_time()));
+    let db = Db::open_in_memory(clock).await.unwrap();
+    let log = Arc::new(QueryLog::new(db, QueryLogConfig::default(), "master"));
+
+    // Seed the rollup: one current event, one pass, watermark set.
+    log.insert_batch(vec![
+        Spec::new(at_secs(BASE_SECS - 60), "new.example.com").event(),
+    ])
+    .await
+    .unwrap();
+    log.run_rollup().await.unwrap();
+
+    let backfill_secs = BASE_SECS as i64 - 9 * 86_400;
+    let wire = serde_json::json!({
+        "id": "r-backfill",
+        "time_us": backfill_secs * 1_000_000,
+        "source_ip": "192.0.2.10",
+        "query_name": "backfill.example.com",
+        "listener_id": "lan-udp",
+        "protocol": "udp53",
+        "source_ip_truncated": false,
+        "client_id": null,
+        "client_name": null,
+        "query_type": "A",
+        "query_class": "IN",
+        "view_id": "lan",
+        "profile_id": "default",
+        "status": "allowed",
+        "answer_source": "cache",
+        "rcode": "NOERROR",
+        "record": {
+            "id": "r-backfill",
+            "node_id": "local",
+            "source_ip": "192.0.2.10",
+            "client_id": null,
+            "client": null,
+            "query": { "name": "backfill.example.com", "type": "A", "class": "IN" },
+            "status": "allowed",
+        }
+    });
+    assert_eq!(log.ingest_remote("node-b", 1, 1, &[wire]).await.unwrap(), 1);
+
+    log.run_rollup().await.unwrap();
+    let hourly = log.rollup_rows(RollupWindow::Hourly).await.unwrap();
+    let old_hour = (backfill_secs * 1_000_000) / 3_600_000_000;
+    assert!(
+        hourly
+            .iter()
+            .any(|row| row.bucket == old_hour && row.query_count == 1),
+        "the late backfill must be folded into the hourly rollups"
     );
 }
 

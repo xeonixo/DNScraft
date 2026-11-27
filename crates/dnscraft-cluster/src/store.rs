@@ -240,7 +240,10 @@ impl ClusterStore {
         let bound_node = node_id.to_owned();
 
         self.with_conn(move |conn| {
-            let already: Option<i64> = conn
+            // One transaction: the check and the insert commit together, so a
+            // mint takes the writer lock once instead of twice.
+            let tx = conn.transaction().map_err(db_err)?;
+            let already: Option<i64> = tx
                 .query_row(
                     "SELECT 1 FROM cluster_nodes WHERE node_id = ?1 AND revoked = 0",
                     params![bound_node],
@@ -253,13 +256,13 @@ impl ClusterStore {
                     node_id: bound_node,
                 });
             }
-            conn.execute(
+            tx.execute(
                 "INSERT INTO join_tokens (token_hash, node_id, created_at, expires_at)
                  VALUES (?1, ?2, ?3, ?4)",
                 params![token_hash, bound_node, now, expires_at],
             )
             .map_err(db_err)?;
-            Ok(())
+            tx.commit().map_err(db_err)
         })
         .await?;
 
@@ -392,7 +395,10 @@ impl ClusterStore {
         };
         let insert = node.clone();
         self.with_conn(move |conn| {
-            let already: Option<i64> = conn
+            // One transaction: the duplicate check and the insert commit
+            // together (single writer lock, no interleaving window).
+            let tx = conn.transaction().map_err(db_err)?;
+            let already: Option<i64> = tx
                 .query_row(
                     "SELECT 1 FROM cluster_nodes WHERE node_id = ?1",
                     params![insert.node_id],
@@ -405,7 +411,7 @@ impl ClusterStore {
                     node_id: insert.node_id.clone(),
                 });
             }
-            conn.execute(
+            tx.execute(
                 "INSERT INTO cluster_nodes
                     (node_id, fingerprint, joined_at, last_seen, applied_config_version, revoked)
                  VALUES (?1, ?2, ?3, ?4, ?5, 0)",
@@ -418,7 +424,7 @@ impl ClusterStore {
                 ],
             )
             .map_err(db_err)?;
-            Ok(())
+            tx.commit().map_err(db_err)
         })
         .await?;
         Ok(node)
@@ -470,6 +476,46 @@ impl ClusterStore {
                 .query_map([], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?))))
                 .map_err(db_err)?;
             rows.collect::<Result<_, _>>().map_err(db_err)
+        })
+        .await
+    }
+
+    /// [`Self::list_nodes`] and [`Self::node_meta`] in one reader roundtrip.
+    ///
+    /// Bundle for callers that need both (the node dashboard); both queries
+    /// run on one reader connection instead of two pool roundtrips. A `LEFT
+    /// JOIN` would not be equivalent: `node_meta` rows are deliberately kept
+    /// apart from `cluster_nodes` so the master's own (unregistered) row can
+    /// carry metadata too.
+    pub async fn list_nodes_with_meta(
+        &self,
+    ) -> Result<
+        (
+            Vec<ClusterNode>,
+            std::collections::HashMap<String, (Option<String>, Option<String>)>,
+        ),
+        ClusterError,
+    > {
+        self.with_read_conn(|conn| {
+            let nodes = {
+                let mut statement = conn
+                    .prepare(
+                        "SELECT node_id, fingerprint, joined_at, last_seen,
+                                applied_config_version, revoked, remote_addr, software_version
+                         FROM cluster_nodes ORDER BY node_id",
+                    )
+                    .map_err(db_err)?;
+                let rows = statement.query_map([], node_from_row).map_err(db_err)?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(db_err)?
+            };
+            let mut statement = conn
+                .prepare("SELECT node_id, display_name, hostname FROM node_meta")
+                .map_err(db_err)?;
+            let meta_rows = statement
+                .query_map([], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?))))
+                .map_err(db_err)?;
+            let meta = meta_rows.collect::<Result<_, _>>().map_err(db_err)?;
+            Ok((nodes, meta))
         })
         .await
     }
@@ -1098,6 +1144,38 @@ mod tests {
         assert_eq!(error.code(), "cluster.node.already_joined");
     }
 
+    /// Minting is one atomic commit: a rejected mint leaves no token row, an
+    /// accepted mint leaves exactly one.
+    #[tokio::test]
+    async fn mint_is_one_atomic_commit() {
+        let store = store(clock()).await;
+        store.register_node("node-a", "aa").await.unwrap();
+        assert!(store.mint_join_token("node-a").await.is_err());
+        assert_eq!(join_token_count(&store).await, 0);
+
+        store.mint_join_token("node-b").await.unwrap();
+        store.mint_join_token("node-c").await.unwrap();
+        assert_eq!(join_token_count(&store).await, 2);
+
+        // Registration is atomic the same way: a duplicate leaves the
+        // original row untouched and adds nothing. Minting creates no
+        // registry row, so only `node-a` is registered.
+        assert!(store.register_node("node-a", "bb").await.is_err());
+        let node = store.get_node("node-a").await.unwrap().unwrap();
+        assert_eq!(node.fingerprint, "aa");
+        assert_eq!(store.list_nodes().await.unwrap().len(), 1);
+    }
+
+    async fn join_token_count(store: &ClusterStore) -> i64 {
+        store
+            .with_conn(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM join_tokens", [], |row| row.get(0))
+                    .map_err(db_err)
+            })
+            .await
+            .unwrap()
+    }
+
     #[tokio::test]
     async fn revoked_node_id_can_be_rejoined_and_old_certs_stop_working() {
         let store = store(clock()).await;
@@ -1228,6 +1306,37 @@ mod tests {
         );
         store.set_node_meta("dns1", None, None).await.unwrap();
         assert_eq!(store.node_meta().await.unwrap()["dns1"], (None, None));
+    }
+
+    /// The bundled dashboard query returns exactly what `list_nodes` and
+    /// `node_meta` return separately — including metadata of a node that is
+    /// not registered in `cluster_nodes` (the master's own row), which a
+    /// plain `LEFT JOIN` would drop.
+    #[tokio::test]
+    async fn list_nodes_with_meta_matches_the_separate_queries() {
+        let store = store(clock()).await;
+        store.register_node("node-a", "aa").await.unwrap();
+        store.register_node("node-b", "bb").await.unwrap();
+        store
+            .set_node_meta("node-a", Some("A"), Some("ns1.dns.example.com"))
+            .await
+            .unwrap();
+        store.set_node_meta("node-b", None, None).await.unwrap();
+        // Meta without a registry row (the unregistered local node).
+        store
+            .set_node_meta("master", Some("Master"), Some("dns.example.com"))
+            .await
+            .unwrap();
+
+        let (nodes, meta) = store.list_nodes_with_meta().await.unwrap();
+        assert_eq!(nodes, store.list_nodes().await.unwrap());
+        assert_eq!(meta, store.node_meta().await.unwrap());
+        assert_eq!(nodes.len(), 2);
+        assert!(meta.contains_key("master"));
+        assert_eq!(
+            meta["node-a"],
+            (Some("A".into()), Some("ns1.dns.example.com".into()))
+        );
     }
 
     #[tokio::test]

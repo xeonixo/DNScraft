@@ -146,7 +146,8 @@ pub(crate) async fn list_nodes(
         .cluster_broadcast()
         .map(|broadcast| broadcast.connected_node_ids().into_iter().collect())
         .unwrap_or_default();
-    let meta = store(&state)?.node_meta().await?;
+    // One bundled store roundtrip for the registry and the metadata map.
+    let (registered, meta) = store(&state)?.list_nodes_with_meta().await?;
     let meta_of = |id: &str| meta.get(id).cloned().unwrap_or_default();
     let mut nodes: Vec<Value> = Vec::new();
     if let Some(status) = state
@@ -175,7 +176,7 @@ pub(crate) async fn list_nodes(
         .and_then(|row| row.get("node_id"))
         .and_then(Value::as_str)
         .map(str::to_owned);
-    for node in store(&state)?.list_nodes().await? {
+    for node in registered {
         if local_id.as_deref() == Some(node.node_id.as_str()) {
             continue;
         }

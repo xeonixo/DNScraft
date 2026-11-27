@@ -332,44 +332,48 @@ impl OfflineWriteQueue {
             if let Some(validator) = &self.validator
                 && !validator.is_valid(&row.relay.actor).await?
             {
-                self.set_state(&row.relay.request_id, OfflineWriteState::Expired, None)
+                self.finish_row(&row.relay.request_id, OfflineWriteState::Expired, None, 0)
                     .await?;
                 outcome.expired += 1;
                 continue;
             }
-            match self.send_with_retry(executor, &row).await? {
+            let (send, tries) = self.send_with_retry(executor, &row).await?;
+            match send {
                 SendOutcome::Applied(status) => {
-                    self.set_state(
+                    self.finish_row(
                         &row.relay.request_id,
                         OfflineWriteState::Applied,
                         Some(status),
+                        tries,
                     )
                     .await?;
                     outcome.applied += 1;
                 }
                 SendOutcome::Failed(status) => {
-                    self.set_state(
+                    self.finish_row(
                         &row.relay.request_id,
                         OfflineWriteState::Failed,
                         Some(status),
+                        tries,
                     )
                     .await?;
                     outcome.failed += 1;
                 }
                 SendOutcome::Expired => {
-                    self.set_state(&row.relay.request_id, OfflineWriteState::Expired, None)
-                        .await?;
+                    self.finish_row(
+                        &row.relay.request_id,
+                        OfflineWriteState::Expired,
+                        None,
+                        tries,
+                    )
+                    .await?;
                     outcome.expired += 1;
                 }
                 SendOutcome::Conflict(status) => {
-                    self.set_state(
-                        &row.relay.request_id,
-                        OfflineWriteState::Conflict,
-                        Some(status),
-                    )
-                    .await?;
+                    outcome.blocked = self
+                        .finish_conflict(&row.relay.request_id, status, tries)
+                        .await?;
                     outcome.conflict = Some(row.relay.request_id.clone());
-                    outcome.blocked = self.block_pending().await?;
                     break;
                 }
             }
@@ -468,22 +472,28 @@ impl OfflineWriteQueue {
     }
 
     /// Sends one row, retrying transient failures until its `max_age` deadline.
+    ///
+    /// Returns the terminal outcome plus the number of transport attempts
+    /// made; the count is persisted with the row's outcome by [`Self::finish_row`]
+    /// instead of writing per attempt, so a replayed row needs one writer
+    /// roundtrip regardless of how many times it was sent.
     async fn send_with_retry(
         &self,
         executor: &dyn WriteExecutor,
         row: &StoredWrite,
-    ) -> Result<SendOutcome, ClusterError> {
+    ) -> Result<(SendOutcome, u32), ClusterError> {
         let clock = self.store.clock();
         let deadline = Self::deadline(row.enqueued_at, self.config.max_age);
         let wake = tokio::sync::Notify::new();
         let mut backoff = Backoff::new(self.backoff.0, self.backoff.1);
+        let mut tries: u32 = 0;
 
         loop {
             let started = clock.now();
             if started >= deadline {
-                return Ok(SendOutcome::Expired);
+                return Ok((SendOutcome::Expired, tries));
             }
-            self.record_attempt(&row.relay.request_id).await?;
+            tries = tries.saturating_add(1);
             let response = executor
                 .execute(
                     // Transport-only caller: the master authenticates the
@@ -501,13 +511,13 @@ impl OfflineWriteQueue {
 
             match response {
                 Ok(response) if (200..300).contains(&response.status) => {
-                    return Ok(SendOutcome::Applied(response.status));
+                    return Ok((SendOutcome::Applied(response.status), tries));
                 }
                 Ok(response) if response.status == 409 && is_version_conflict(&response.body) => {
-                    return Ok(SendOutcome::Conflict(response.status));
+                    return Ok((SendOutcome::Conflict(response.status), tries));
                 }
                 Ok(response) if (400..500).contains(&response.status) => {
-                    return Ok(SendOutcome::Failed(response.status));
+                    return Ok((SendOutcome::Failed(response.status), tries));
                 }
                 // 5xx or transport failure: retry with backoff until `max_age`.
                 Ok(_) | Err(_) => {
@@ -563,34 +573,27 @@ impl OfflineWriteQueue {
             .await
     }
 
-    async fn record_attempt(&self, request_id: &str) -> Result<(), ClusterError> {
-        let request_id = request_id.to_owned();
-        self.store
-            .with_conn(move |conn| {
-                conn.execute(
-                    "UPDATE offline_writes SET attempts = attempts + 1 WHERE request_id = ?1",
-                    params![request_id],
-                )
-                .map_err(db_err)?;
-                Ok(())
-            })
-            .await
-    }
-
-    async fn set_state(
+    /// Persists a replay outcome — state, the master's answer status and the
+    /// transport attempts made — in one writer roundtrip. The attempt count is
+    /// folded into the same statement instead of being written per send, so a
+    /// row costs one `UPDATE` however often it was sent.
+    async fn finish_row(
         &self,
         request_id: &str,
         state: OfflineWriteState,
         result_status: Option<u16>,
+        tries: u32,
     ) -> Result<(), ClusterError> {
         let request_id = request_id.to_owned();
+        let tries = i64::from(tries);
         let result_status = result_status.map(i64::from);
         self.store
             .with_conn(move |conn| {
                 conn.execute(
-                    "UPDATE offline_writes SET state = ?1, result_status = ?2
-                     WHERE request_id = ?3",
-                    params![state.as_str(), result_status, request_id],
+                    "UPDATE offline_writes
+                     SET state = ?1, result_status = ?2, attempts = attempts + ?3
+                     WHERE request_id = ?4",
+                    params![state.as_str(), result_status, tries, request_id],
                 )
                 .map_err(db_err)?;
                 Ok(())
@@ -598,19 +601,44 @@ impl OfflineWriteQueue {
             .await
     }
 
-    /// Marks every still-pending write `blocked` and returns the count.
-    async fn block_pending(&self) -> Result<u32, ClusterError> {
-        let changed = self
-            .store
-            .with_conn(|conn| {
-                conn.execute(
-                    "UPDATE offline_writes SET state = ?1 WHERE state = 'pending'",
-                    params![OfflineWriteState::Blocked.as_str()],
+    /// Marks the conflicted head and every still-pending write behind it
+    /// `blocked` in one transaction, and returns the blocked count.
+    async fn finish_conflict(
+        &self,
+        request_id: &str,
+        result_status: u16,
+        tries: u32,
+    ) -> Result<u32, ClusterError> {
+        let request_id = request_id.to_owned();
+        let tries = i64::from(tries);
+        let result_status = i64::from(result_status);
+        self.store
+            .with_conn(move |conn| {
+                let tx = conn.transaction().map_err(db_err)?;
+                tx.execute(
+                    "UPDATE offline_writes
+                     SET state = ?1, result_status = ?2, attempts = attempts + ?3
+                     WHERE request_id = ?4",
+                    params![
+                        OfflineWriteState::Conflict.as_str(),
+                        result_status,
+                        tries,
+                        request_id
+                    ],
                 )
-                .map_err(db_err)
+                .map_err(db_err)?;
+                // The head is `conflict` now, so it is no longer `pending`:
+                // this marks exactly the writes behind it.
+                let blocked = tx
+                    .execute(
+                        "UPDATE offline_writes SET state = ?1 WHERE state = 'pending'",
+                        params![OfflineWriteState::Blocked.as_str()],
+                    )
+                    .map_err(db_err)?;
+                tx.commit().map_err(db_err)?;
+                Ok(u32::try_from(blocked).unwrap_or(u32::MAX))
             })
-            .await?;
-        Ok(changed as u32)
+            .await
     }
 
     fn deadline(enqueued_at: i64, max_age: Duration) -> SystemTime {
@@ -836,6 +864,39 @@ mod tests {
         }
     }
 
+    /// Replies with scripted statuses, advancing the manual clock past the
+    /// retry backoff after a 5xx so the replay proceeds without real sleeps.
+    struct ScriptedExecutor {
+        clock: Arc<ManualClock>,
+        replies: Mutex<VecDeque<u16>>,
+    }
+
+    #[async_trait::async_trait]
+    impl WriteExecutor for ScriptedExecutor {
+        async fn execute(
+            &self,
+            _node_id: &str,
+            _request_id: &str,
+            _actor: RelayedActor,
+            _method: String,
+            _path: String,
+            _body: Value,
+            _if_match: Option<String>,
+            _idempotency_key: Option<String>,
+        ) -> Result<RelayResponse, ClusterError> {
+            let status = self.replies.lock().unwrap().pop_front().unwrap_or(200);
+            if (500..600).contains(&status) {
+                self.clock.advance(Duration::from_secs(5));
+            }
+            let body = if status == 409 {
+                json!({ "error": { "code": "control_api.config.version" } })
+            } else {
+                json!({ "data": {} })
+            };
+            Ok(RelayResponse { status, body })
+        }
+    }
+
     #[tokio::test]
     async fn enqueue_requires_idempotency_and_if_match() {
         let (queue, _clock) = queue(10).await;
@@ -1058,6 +1119,36 @@ mod tests {
         assert_eq!(outcome.applied, 1);
         assert_eq!(executor.calls.load(Ordering::SeqCst), 2);
         assert_eq!(queue.get("a").await.unwrap().unwrap().attempts, 2);
+    }
+
+    /// A conflict hit after a transient retry persists the attempt count
+    /// together with the conflict state in one commit, and the blocked rows
+    /// behind it keep their fields (no result status, no phantom attempts).
+    #[tokio::test]
+    async fn conflict_after_transient_retry_persists_attempts_and_blocks_tail() {
+        let (queue, clock) = queue(10).await;
+        for id in ["a", "b"] {
+            queue.enqueue(relay(id)).await.unwrap();
+        }
+        let executor = ScriptedExecutor {
+            clock: Arc::clone(&clock),
+            replies: Mutex::new(VecDeque::from([503_u16, 409])),
+        };
+
+        let outcome = queue.replay_all(&executor).await.unwrap();
+        assert_eq!(outcome.applied, 0);
+        assert_eq!(outcome.conflict.as_deref(), Some("a"));
+        assert_eq!(outcome.blocked, 1);
+
+        let conflict = queue.get("a").await.unwrap().unwrap();
+        assert_eq!(conflict.state, OfflineWriteState::Conflict);
+        assert_eq!(conflict.result_status, Some(409));
+        assert_eq!(conflict.attempts, 2, "both sends must be counted");
+
+        let blocked = queue.get("b").await.unwrap().unwrap();
+        assert_eq!(blocked.state, OfflineWriteState::Blocked);
+        assert_eq!(blocked.result_status, None);
+        assert_eq!(blocked.attempts, 0, "a blocked row is never sent");
     }
 
     #[tokio::test]

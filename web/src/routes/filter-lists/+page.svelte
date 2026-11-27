@@ -861,7 +861,6 @@
 		font-size: 0.8125rem;
 		font-weight: 600;
 		color: var(--label-3);
-		text-transform: uppercase;
 	}
 	.globals-form {
 		padding: 0.5rem 0;

@@ -198,7 +198,7 @@
 		align-items: center;
 		min-height: 1.75rem;
 		padding: 0.125rem 0.625rem;
-		border-radius: 999px;
+		border-radius: var(--r-ctl);
 		background: var(--accent-fill);
 		color: var(--accent);
 		font-size: 0.75rem;

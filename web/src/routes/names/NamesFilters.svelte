@@ -78,7 +78,7 @@
 	.chip {
 		border: 1px solid color-mix(in srgb, var(--label) 18%, transparent);
 		background: transparent;
-		border-radius: 999px;
+		border-radius: var(--r-ctl);
 		padding: 0.2rem 0.65rem;
 		font: inherit;
 		font-size: 0.8125rem;
@@ -86,8 +86,8 @@
 		color: inherit;
 	}
 	.chip[aria-pressed='true'] {
-		background: color-mix(in srgb, var(--system-blue) 18%, transparent);
-		border-color: var(--system-blue);
+		background: color-mix(in srgb, var(--accent) 18%, transparent);
+		border-color: var(--accent);
 	}
 	.toggles {
 		display: flex;

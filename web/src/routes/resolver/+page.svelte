@@ -374,7 +374,6 @@
 		font-size: 0.8125rem;
 		font-weight: 600;
 		color: var(--label-3);
-		text-transform: uppercase;
 	}
 	.section-head:first-of-type {
 		margin-top: 0;

@@ -185,11 +185,7 @@
 				detail="{client.source} · {client.ips.join(' · ')}"
 				mono
 				detailMono
-			>
-				{#snippet trailing()}
-					<span class="tag">{client.source}</span>
-				{/snippet}
-			</GroupedRow>
+			/>
 		{:else}
 			<GroupedRow label={search.trim() ? m.clients_nothing_found() : m.clients_empty()} />
 		{/each}
@@ -311,11 +307,6 @@
 		font-size: 0.8125rem;
 		font-weight: 600;
 		color: var(--label-3);
-		text-transform: uppercase;
-	}
-	.tag {
-		font-size: 0.75rem;
-		color: var(--label-2);
 	}
 	.note {
 		margin: 0 0 0.75rem;

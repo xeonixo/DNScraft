@@ -129,7 +129,7 @@
 		overflow-y: auto;
 		padding: 1rem 1.25rem 1.5rem;
 		background: var(--surface);
-		border-radius: 0.875rem 0.875rem 0 0;
+		border-radius: var(--r-card) var(--r-card) 0 0;
 		box-shadow: var(--shadow-sheet);
 		pointer-events: auto;
 	}

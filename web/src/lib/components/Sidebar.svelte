@@ -256,7 +256,7 @@
 		flex: 0 0 auto;
 		min-width: 1.25rem;
 		padding: 0.0625rem 0.375rem;
-		border-radius: 999px;
+		border-radius: var(--r-ctl);
 		background: var(--danger);
 		color: var(--on-accent);
 		font-size: 0.6875rem;

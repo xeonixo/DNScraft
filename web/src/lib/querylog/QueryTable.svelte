@@ -343,13 +343,13 @@
 
 	.burst {
 		padding: 0 0.375rem;
-		border-radius: 999px;
+		border-radius: var(--r-ctl);
 		background: var(--surface-2);
 		color: var(--label-2);
 		font-size: 0.75rem;
 	}
 	.slow {
-		color: var(--warning, var(--danger));
+		color: var(--warn);
 		font-weight: 600;
 	}
 	/* The per-domain statistics link only appears on the row under the pointer. */

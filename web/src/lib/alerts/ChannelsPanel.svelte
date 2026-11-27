@@ -448,16 +448,17 @@
 
 	.section-head {
 		margin: 0;
-		font: var(--text-section);
-		color: var(--label-secondary);
+		font-size: 0.8125rem;
+		font-weight: 600;
+		color: var(--label-2);
 	}
 
 	.lead,
 	.note,
 	.hint {
 		margin: 0;
-		font: var(--text-body);
-		color: var(--label-secondary);
+		font-size: 0.9375rem;
+		color: var(--label-2);
 	}
 
 	.hosts {
@@ -466,7 +467,7 @@
 	}
 
 	.hosts-label {
-		font: var(--text-body);
+		font-size: 0.9375rem;
 	}
 
 	.hosts-switch {
@@ -477,10 +478,10 @@
 	textarea.field {
 		width: 100%;
 		padding: 0.625rem 0.75rem;
-		font: var(--text-body);
+		font-size: 0.9375rem;
 		font-family: var(--font-mono);
 		border: 1px solid var(--separator);
-		border-radius: var(--r-control);
+		border-radius: var(--r-ctl);
 		background: var(--surface);
 		color: var(--label);
 	}
@@ -512,12 +513,12 @@
 		gap: 0.5rem;
 		align-items: center;
 		margin-bottom: 0.75rem;
-		font: var(--text-body);
+		font-size: 0.9375rem;
 	}
 
 	.events-label {
 		margin: 0 0 0.375rem;
-		font: var(--text-body);
+		font-size: 0.9375rem;
 	}
 
 	.events {
@@ -534,7 +535,7 @@
 		display: flex;
 		gap: 0.5rem;
 		align-items: center;
-		font: var(--text-caption);
+		font-size: 0.8125rem;
 	}
 
 	.events code {

@@ -1674,7 +1674,7 @@
 	.node-dns-row.node-dns-focus {
 		outline: 2px solid var(--accent);
 		outline-offset: -2px;
-		border-radius: var(--r-control);
+		border-radius: var(--r-ctl);
 	}
 
 	.node-dns-row + .node-dns-row {
@@ -1866,7 +1866,7 @@
 		min-height: 1.5rem;
 		padding: 0 0.45rem;
 		border: 1px solid var(--separator);
-		border-radius: 999px;
+		border-radius: var(--r-ctl);
 		font-size: 0.6875rem;
 		font-weight: 600;
 		color: var(--label-2);

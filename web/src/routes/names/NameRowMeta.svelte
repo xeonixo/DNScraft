@@ -59,7 +59,7 @@
 		display: inline-block;
 		padding: 0.1rem 0.4rem;
 		border-radius: 0.35rem;
-		background: color-mix(in srgb, var(--system-blue) 12%, transparent);
+		background: color-mix(in srgb, var(--accent) 12%, transparent);
 		font-size: 0.75rem;
 		color: var(--label-2);
 	}

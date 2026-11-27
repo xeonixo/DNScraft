@@ -122,7 +122,7 @@
 		margin-bottom: 1rem;
 		padding: 0.5rem 0.75rem;
 		border: 1px solid var(--separator);
-		border-radius: var(--r-control);
+		border-radius: var(--r-ctl);
 		background: var(--surface);
 	}
 
@@ -137,8 +137,6 @@
 		margin: 0.75rem 0 0.375rem;
 		font-size: 0.78125rem;
 		font-weight: 600;
-		letter-spacing: 0.04em;
-		text-transform: uppercase;
 		color: var(--label-2);
 	}
 
@@ -148,7 +146,7 @@
 		overflow-x: auto;
 		font-size: 0.8125rem;
 		background: var(--surface-2);
-		border-radius: var(--r-control);
+		border-radius: var(--r-ctl);
 		white-space: pre-wrap;
 		overflow-wrap: anywhere;
 	}

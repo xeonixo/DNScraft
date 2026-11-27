@@ -325,7 +325,7 @@
 		min-height: 2.75rem;
 		padding: 0.375rem 0.5rem;
 		border: 1px solid var(--separator);
-		border-radius: var(--r-control);
+		border-radius: var(--r-ctl);
 		background: var(--surface);
 	}
 
@@ -342,7 +342,7 @@
 		min-height: 2.75rem;
 		padding: 0.375rem 0.5rem;
 		border: 1px solid var(--separator);
-		border-radius: var(--r-control);
+		border-radius: var(--r-ctl);
 		background: var(--surface);
 		font: inherit;
 	}

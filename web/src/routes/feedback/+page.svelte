@@ -147,7 +147,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.35rem;
-		color: var(--label-1);
+		color: var(--label);
 		font-size: 0.875rem;
 	}
 
@@ -156,9 +156,9 @@
 		min-height: 4.5rem;
 		padding: 0.65rem 0.75rem;
 		border: 1px solid var(--separator);
-		border-radius: var(--r-control);
+		border-radius: var(--r-ctl);
 		background: var(--surface);
-		color: var(--label-1);
+		color: var(--label);
 		font: inherit;
 	}
 

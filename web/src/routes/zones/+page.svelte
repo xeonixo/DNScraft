@@ -607,7 +607,7 @@
 	}
 	.badge {
 		padding: 0.05rem 0.4rem;
-		border-radius: 999px;
+		border-radius: var(--r-ctl);
 		background: var(--accent-fill);
 		font-size: 0.6875rem;
 		font-weight: 600;

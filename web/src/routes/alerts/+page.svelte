@@ -103,14 +103,15 @@
 
 	.lead {
 		margin: 0;
-		font: var(--text-body);
-		color: var(--label-secondary);
+		font-size: 0.9375rem;
+		color: var(--label-2);
 	}
 
 	.section-head {
 		margin: 0 0 0.5rem;
-		font: var(--text-section);
-		color: var(--label-secondary);
+		font-size: 0.8125rem;
+		font-weight: 600;
+		color: var(--label-2);
 	}
 
 	.group {
@@ -120,7 +121,7 @@
 
 	.symbol {
 		display: inline-flex;
-		color: var(--label-secondary);
+		color: var(--label-2);
 	}
 
 	.symbol.ok {

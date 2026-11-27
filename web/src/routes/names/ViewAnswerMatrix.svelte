@@ -188,7 +188,7 @@
 		align-self: flex-start;
 		background: none;
 		border: none;
-		color: var(--system-blue);
+		color: var(--accent);
 		cursor: pointer;
 		padding: 0;
 		font: inherit;

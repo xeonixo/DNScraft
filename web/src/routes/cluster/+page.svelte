@@ -653,7 +653,7 @@
 		border: 1px solid var(--warn);
 		border-radius: 0.5rem;
 		background: color-mix(in srgb, var(--warn) 12%, transparent);
-		color: var(--label-1);
+		color: var(--label);
 		font-size: 0.875rem;
 	}
 
@@ -681,7 +681,7 @@
 		margin-bottom: 1rem;
 		padding: 0.5rem 0.75rem;
 		border: 1px solid var(--separator);
-		border-radius: var(--r-control);
+		border-radius: var(--r-ctl);
 		background: var(--surface);
 	}
 
@@ -692,7 +692,7 @@
 		overflow-x: auto;
 		word-break: break-all;
 		background: var(--surface-2);
-		border-radius: var(--r-control);
+		border-radius: var(--r-ctl);
 	}
 
 	.rpc-result {
@@ -701,7 +701,7 @@
 		overflow-x: auto;
 		font-size: 0.75rem;
 		background: var(--surface-2);
-		border-radius: var(--r-control);
+		border-radius: var(--r-ctl);
 	}
 
 	.actions {

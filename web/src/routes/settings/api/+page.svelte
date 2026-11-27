@@ -111,7 +111,7 @@
 		overflow-x: auto;
 		font-size: 0.8125rem;
 		background: var(--surface-2);
-		border-radius: var(--r-control);
+		border-radius: var(--r-ctl);
 		white-space: pre-wrap;
 		overflow-wrap: anywhere;
 	}

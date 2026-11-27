@@ -415,6 +415,41 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     // repo's index style: SQLite serves the all-DESC ordering with a plain
     // reverse scan of the index, at the same cost as a DESC index.
     "CREATE INDEX IF NOT EXISTS audit_log_time_id_idx ON audit_log(time, id);",
+    // v17: distinct-name inventory for substring search. `filter_clause` used to
+    // enumerate the whole distinct-name set of the retention window per
+    // list()/export call through a recursive CTE over (query_name, time); a
+    // maintained name table turns each search into one index scan of the names.
+    // Every insert maintains the table (INSERT OR IGNORE); rows aged out by
+    // retention leave harmless orphaned names behind (a superset — the outer
+    // query filters rows, not names) until the explicit retention run prunes
+    // them with one anti-join.
+    "CREATE TABLE IF NOT EXISTS query_log_name (
+        name TEXT PRIMARY KEY
+    ) WITHOUT ROWID;
+    INSERT OR IGNORE INTO query_log_name (name)
+        SELECT DISTINCT query_name FROM query_log;",
+    // v18: the default listing orders by `time DESC, id DESC`; the plain
+    // (time) index cannot serve the `id` tie-breaker without sorting every
+    // page, so a composite (time, id) index makes that sort disappear.
+    "CREATE INDEX IF NOT EXISTS query_log_time_id_idx ON query_log(time, id);",
+    // v19: backfill `cached` for legacy rows written before v11 flagged the
+    // column at write time. The condition is the exact EXISTS the status
+    // `cache` filter evaluated per row until now (steps with a resolve-from-
+    // cache hit in the record/detail JSON); afterwards every row carries the
+    // correct flag and the filter is a plain `cached = 1`. Guarded by
+    // `cached = 0`, so re-running is a no-op.
+    "UPDATE query_log SET cached = 1 WHERE cached = 0 AND (
+        EXISTS (
+            SELECT 1 FROM query_log_record r, json_each(r.record, '$.steps') AS step
+            WHERE r.node_id = query_log.node_id AND r.id = query_log.id
+              AND json_extract(step.value, '$.stage') = 'resolve'
+              AND json_extract(step.value, '$.source') = 'cache'
+        ) OR EXISTS (
+            SELECT 1 FROM query_log_detail d, json_each(d.detail, '$.steps') AS step
+            WHERE d.node_id = query_log.node_id AND d.id = query_log.id
+              AND json_extract(step.value, '$.stage') = 'resolve'
+              AND json_extract(step.value, '$.source') = 'cache'
+        ));",
 ];
 
 /// Applies every migration newer than the recorded version, then records it.
@@ -423,8 +458,9 @@ pub(crate) fn migrate(conn: &mut Connection) -> Result<(), ControlApiError> {
     conn.pragma_update(None, "cache_size", -262_144)
         .map_err(db_err)?;
     let result = migrate_inner(conn);
-    // Restore the default so steady-state memory use is unchanged.
-    let _ = conn.pragma_update(None, "cache_size", -2_000);
+    // Restore the runtime writer cache (db.rs `apply_pragmas`); the migration
+    // boost must not stick.
+    let _ = conn.pragma_update(None, "cache_size", -65_536);
     result
 }
 
@@ -460,7 +496,7 @@ mod tests {
     fn device_id_migration_adds_column_and_index() {
         let mut conn = Connection::open_in_memory().unwrap();
         migrate(&mut conn).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 16);
+        assert_eq!(schema_version(&conn).unwrap(), 19);
 
         let columns: Vec<String> = conn
             .prepare("PRAGMA table_info(query_log)")
@@ -497,7 +533,7 @@ mod tests {
     fn dashboard_rollup_migration_adds_cache_columns_and_top_n_tables() {
         let mut conn = Connection::open_in_memory().unwrap();
         migrate(&mut conn).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 16);
+        assert_eq!(schema_version(&conn).unwrap(), 19);
 
         let hourly: Vec<String> = conn
             .prepare("PRAGMA table_info(stats_hourly)")
@@ -531,7 +567,7 @@ mod tests {
     fn audit_log_rejects_update_and_delete_after_v2() {
         let mut conn = Connection::open_in_memory().unwrap();
         migrate(&mut conn).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 16);
+        assert_eq!(schema_version(&conn).unwrap(), 19);
 
         conn.execute(
             "INSERT INTO audit_log (
@@ -562,7 +598,7 @@ mod tests {
     fn audit_list_query_uses_v16_index() {
         let mut conn = Connection::open_in_memory().unwrap();
         migrate(&mut conn).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 16);
+        assert_eq!(schema_version(&conn).unwrap(), 19);
 
         // The v16 index exists on a freshly migrated database.
         let index: i64 = conn

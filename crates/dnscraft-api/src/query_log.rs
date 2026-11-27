@@ -602,6 +602,11 @@ impl QueryLog {
                              VALUES (?1, ?2, ?3)",
                         )
                         .map_err(db_err)?;
+                    // Keeps the distinct-name inventory behind substring search
+                    // current; OR IGNORE makes re-inserts and rollbacks cheap.
+                    let mut name_stmt = tx
+                        .prepare("INSERT OR IGNORE INTO query_log_name (name) VALUES (?1)")
+                        .map_err(db_err)?;
                     for (offset, row) in rows.iter().enumerate() {
                         let seq =
                             first_seq.saturating_add(i64::try_from(offset).unwrap_or(i64::MAX));
@@ -631,6 +636,7 @@ impl QueryLog {
                         record_stmt
                             .execute(params![row.node_id, row.id, row.record])
                             .map_err(db_err)?;
+                        name_stmt.execute(params![row.query_name]).map_err(db_err)?;
                         if let Some(detail) = &row.detail {
                             detail_stmt
                                 .execute(params![row.node_id, row.id, detail])
@@ -666,7 +672,20 @@ impl QueryLog {
             .saturating_mul(1_000_000)
             .saturating_sub(window);
         self.db
-            .with_conn(move |conn| delete_expired_chunked(conn, cutoff))
+            .with_conn(move |conn| {
+                let deleted = delete_expired_chunked(conn, cutoff)?;
+                // The single anti-join per explicit retention run: names whose
+                // rows have all aged out leave the substring-search inventory.
+                // The per-batch path leaves orphans behind on purpose — they are
+                // a harmless superset and this join is too costly per batch.
+                conn.execute(
+                    "DELETE FROM query_log_name
+                     WHERE name NOT IN (SELECT query_name FROM query_log)",
+                    [],
+                )
+                .map_err(db_err)?;
+                Ok(deleted)
+            })
             .await
     }
 
@@ -678,21 +697,12 @@ impl QueryLog {
         let offset = i64::try_from(filter.offset).unwrap_or(i64::MAX);
 
         let (conditions, mut values) = filter_clause(filter);
-        let total = {
-            // ponytail: total is capped at TOTAL_CAP so a rare substring search stops
-            // early instead of counting the whole table; exact counts need an index.
-            let sql = format!(
-                "SELECT COUNT(*) FROM (SELECT 1 FROM query_log WHERE 1 = 1{conditions} LIMIT {TOTAL_CAP})"
-            );
-            let values = values.clone();
-            self.db
-                .with_read_conn(move |conn| {
-                    conn.query_row(&sql, params_from_iter(values), |row| row.get::<_, i64>(0))
-                        .map_err(db_err)
-                })
-                .await
-                .map_err(read_error)?
-        };
+        // ponytail: total is capped at TOTAL_CAP so a rare substring search stops
+        // early instead of counting the whole table; exact counts need an index.
+        let count_sql = format!(
+            "SELECT COUNT(*) FROM (SELECT 1 FROM query_log WHERE 1 = 1{conditions} LIMIT {TOTAL_CAP})"
+        );
+        let count_values = values.clone();
 
         let mut sql = format!("SELECT {HYDRATE_COLS} FROM query_log WHERE 1 = 1");
         sql.push_str(&conditions);
@@ -714,14 +724,23 @@ impl QueryLog {
         values.push(Value::Integer(i64::from(limit) + 1));
         values.push(Value::Integer(offset));
 
-        let fetched = self
+        // COUNT and page run on the same reader connection in one roundtrip:
+        // the probe/scan work is not paid twice and no second reader slot is
+        // taken while the first one waits.
+        let (total, fetched) = self
             .db
             .with_read_conn(move |conn| {
+                let total = conn
+                    .query_row(&count_sql, params_from_iter(count_values), |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .map_err(db_err)?;
                 let mut stmt = conn.prepare(&sql).map_err(db_err)?;
                 let rows = stmt
                     .query_map(params_from_iter(values), |row| hydrate_from_row(row, None))
                     .map_err(db_err)?;
-                rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+                let fetched = rows.collect::<Result<Vec<_>, _>>().map_err(db_err)?;
+                Ok((total, fetched))
             })
             .await
             .map_err(read_error)?;
@@ -1003,6 +1022,7 @@ impl QueryLog {
         }
         let node_id = node_id.to_owned();
         let enricher = self.enricher.clone();
+        let now_us = self.db.now_unix().saturating_mul(1_000_000);
         let rows = records
             .iter()
             .enumerate()
@@ -1033,51 +1053,15 @@ impl QueryLog {
                 let mut duplicates = 0u64;
                 let mut inserted_min_time: Option<i64> = None;
                 let mut inserted_ids = Vec::with_capacity(rows.len());
-                for (row, seq, device_id) in &rows {
-                    let seq =
-                        i64::try_from(*seq).map_err(|_| ControlApiError::QueryLogInvalid {
-                            reason: "log sequence number out of range".to_owned(),
-                        })?;
-                    let existing: Option<String> = tx
-                        .query_row(
-                            "SELECT id FROM query_log WHERE node_id = ?1 AND seq = ?2",
-                            params![node_for_tx, seq],
-                            |row| row.get(0),
-                        )
-                        .optional()
+                {
+                    // Every row compiles the same five statements; preparing them
+                    // once per batch (cached on the writer connection) keeps the
+                    // per-row cost to binding and stepping.
+                    let mut probe = tx
+                        .prepare_cached("SELECT id FROM query_log WHERE node_id = ?1 AND seq = ?2")
                         .map_err(db_err)?;
-                    if let Some(existing) = existing {
-                        if existing != row.id {
-                            return Err(ControlApiError::QueryLogInvalid {
-                                reason: format!(
-                                    "sequence {seq} already carries a different record id"
-                                ),
-                            });
-                        }
-                        duplicates = duplicates.saturating_add(1);
-                        continue;
-                    }
-                    let status = StatusCode::from_str(&row.status);
-                    let (slim, detail) = split_record(row.record.clone(), status);
-                    let cached = slim
-                        .pointer("/steps")
-                        .and_then(Json::as_array)
-                        .into_iter()
-                        .flatten()
-                        .chain(
-                            detail
-                                .as_ref()
-                                .and_then(|value| value.get("steps"))
-                                .and_then(Json::as_array)
-                                .into_iter()
-                                .flatten(),
-                        )
-                        .any(|step| {
-                            step.get("stage").and_then(Json::as_str) == Some("resolve")
-                                && step.get("source").and_then(Json::as_str) == Some("cache")
-                        });
-                    let inserted = tx
-                        .execute(
+                    let mut insert = tx
+                        .prepare_cached(
                             "INSERT INTO query_log (
                              id, time, node_id, source_ip, query_name, listener_id,
                              protocol, source_ip_truncated, client_id, client_name,
@@ -1087,7 +1071,68 @@ impl QueryLog {
                              ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
                              ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20
                          ) ON CONFLICT DO NOTHING",
-                            params![
+                        )
+                        .map_err(db_err)?;
+                    let mut record_insert = tx
+                        .prepare_cached(
+                            "INSERT INTO query_log_record (node_id, id, record)
+                             VALUES (?1, ?2, ?3)
+                             ON CONFLICT(node_id, id) DO UPDATE SET record = excluded.record",
+                        )
+                        .map_err(db_err)?;
+                    let mut detail_insert = tx
+                        .prepare_cached(
+                            "INSERT INTO query_log_detail (node_id, id, detail)
+                             VALUES (?1, ?2, ?3)
+                             ON CONFLICT(node_id, id) DO UPDATE SET detail = excluded.detail",
+                        )
+                        .map_err(db_err)?;
+                    // Keeps the distinct-name inventory behind substring search
+                    // current; OR IGNORE makes re-inserts and rollbacks cheap.
+                    let mut name_insert = tx
+                        .prepare_cached("INSERT OR IGNORE INTO query_log_name (name) VALUES (?1)")
+                        .map_err(db_err)?;
+                    for (row, seq, device_id) in &rows {
+                        let seq =
+                            i64::try_from(*seq).map_err(|_| ControlApiError::QueryLogInvalid {
+                                reason: "log sequence number out of range".to_owned(),
+                            })?;
+                        let existing: Option<String> = probe
+                            .query_row(params![node_for_tx, seq], |row| row.get(0))
+                            .optional()
+                            .map_err(db_err)?;
+                        if let Some(existing) = existing {
+                            if existing != row.id {
+                                return Err(ControlApiError::QueryLogInvalid {
+                                    reason: format!(
+                                        "sequence {seq} already carries a different record id"
+                                    ),
+                                });
+                            }
+                            duplicates = duplicates.saturating_add(1);
+                            continue;
+                        }
+                        let status = StatusCode::from_str(&row.status);
+                        let (slim, detail) = split_record(row.record.clone(), status);
+                        let cached = slim
+                            .pointer("/steps")
+                            .and_then(Json::as_array)
+                            .into_iter()
+                            .flatten()
+                            .chain(
+                                detail
+                                    .as_ref()
+                                    .and_then(|value| value.get("steps"))
+                                    .and_then(Json::as_array)
+                                    .into_iter()
+                                    .flatten(),
+                            )
+                            .any(|step| {
+                                step.get("stage").and_then(Json::as_str) == Some("resolve")
+                                    && step.get("source").and_then(Json::as_str) == Some("cache")
+                            });
+                        let inserted = insert
+                            .execute(params![
                                 row.id,
                                 row.time_us,
                                 node_for_tx,
@@ -1112,31 +1157,27 @@ impl QueryLog {
                                 seq,
                                 device_id,
                                 i64::from(cached),
-                            ],
-                        )
-                        .map_err(db_err)?;
-                    if inserted == 0 {
-                        duplicates = duplicates.saturating_add(1);
-                    } else {
-                        tx.execute(
-                            "INSERT INTO query_log_record (node_id, id, record)
-                             VALUES (?1, ?2, ?3)
-                             ON CONFLICT(node_id, id) DO UPDATE SET record = excluded.record",
-                            params![node_for_tx, row.id, slim.to_string()],
-                        )
-                        .map_err(db_err)?;
-                        if let Some(detail) = detail {
-                            tx.execute(
-                                "INSERT INTO query_log_detail (node_id, id, detail)
-                                 VALUES (?1, ?2, ?3)
-                                 ON CONFLICT(node_id, id) DO UPDATE SET detail = excluded.detail",
-                                params![node_for_tx, row.id, detail.to_string()],
-                            )
+                            ])
                             .map_err(db_err)?;
+                        if inserted == 0 {
+                            duplicates = duplicates.saturating_add(1);
+                        } else {
+                            record_insert
+                                .execute(params![node_for_tx, row.id, slim.to_string()])
+                                .map_err(db_err)?;
+                            if let Some(detail) = detail {
+                                detail_insert
+                                    .execute(params![node_for_tx, row.id, detail.to_string()])
+                                    .map_err(db_err)?;
+                            }
+                            name_insert
+                                .execute(params![row.query_name])
+                                .map_err(db_err)?;
+                            inserted_ids.push(row.id.clone());
+                            inserted_min_time = Some(
+                                inserted_min_time.map_or(row.time_us, |min| min.min(row.time_us)),
+                            );
                         }
-                        inserted_ids.push(row.id.clone());
-                        inserted_min_time =
-                            Some(inserted_min_time.map_or(row.time_us, |min| min.min(row.time_us)));
                     }
                 }
                 let highest = highest_contiguous_seq(&tx, &node_for_tx)?;
@@ -1146,7 +1187,7 @@ impl QueryLog {
                 // rollups: roll the watermark back in the same transaction, so
                 // the next pass re-reads those hours.
                 if let Some(min_time) = inserted_min_time {
-                    crate::stats::lower_rollup_watermark(&tx, min_time)?;
+                    crate::stats::lower_rollup_watermark(&tx, min_time, now_us)?;
                 }
                 tx.commit().map_err(db_err)?;
                 if duplicates > 0 {
@@ -1492,18 +1533,17 @@ fn filter_clause(filter: &QueryLogFilter) -> (String, Vec<Value>) {
         values.push(Value::Text(normalize_name(domain)));
     }
     if let Some(needle) = &filter.domain_substr {
-        // Skip-scan the distinct names through the (query_name, time) index (a few
-        // 10k names even on millions of rows), then fetch rows by exact name. A plain
-        // `query_name LIKE '%x%'` scans the whole table for every search.
+        // The distinct-name inventory lives in `query_log_name` (v17), kept
+        // current by every insert; the recursive CTE this replaces re-enumerated
+        // the whole inventory through the (query_name, time) index per call.
+        // Match semantics are unchanged: stored names are normalized (lowercase),
+        // the needle is escaped and lowercased by `like_contains`, LIKE is
+        // ASCII-case-insensitive — and the subquery is timeless on purpose; the
+        // outer query alone owns the time window. Names orphaned by retention are
+        // a harmless superset: the outer query filters rows, not names.
         sql.push_str(
             " AND query_name IN (
-                 WITH RECURSIVE n(name) AS (
-                     SELECT MIN(query_name) FROM query_log
-                     UNION ALL
-                     SELECT (SELECT MIN(query_name) FROM query_log WHERE query_name > n.name)
-                     FROM n WHERE name IS NOT NULL
-                 )
-                 SELECT name FROM n WHERE name LIKE ? ESCAPE '\\'
+                 SELECT name FROM query_log_name WHERE name LIKE ? ESCAPE '\\'
              )",
         );
         values.push(Value::Text(like_contains(needle)));
@@ -1531,20 +1571,9 @@ fn filter_clause(filter: &QueryLogFilter) -> (String, Vec<Value>) {
     }
     if let Some(status) = &filter.status {
         if status == "cache" {
-            // New rows set `cached`; legacy fat blobs still expose steps in record.
-            sql.push_str(
-                " AND (cached = 1 OR EXISTS (
-                     SELECT 1 FROM query_log_record r, json_each(r.record, '$.steps') AS step
-                     WHERE r.node_id = query_log.node_id AND r.id = query_log.id
-                       AND json_extract(step.value, '$.stage') = 'resolve'
-                       AND json_extract(step.value, '$.source') = 'cache'
-                   ) OR EXISTS (
-                     SELECT 1 FROM query_log_detail d, json_each(d.detail, '$.steps') AS step
-                     WHERE d.node_id = query_log.node_id AND d.id = query_log.id
-                       AND json_extract(step.value, '$.stage') = 'resolve'
-                       AND json_extract(step.value, '$.source') = 'cache'
-                   ))",
-            );
+            // v19 backfilled `cached` from the legacy record/detail JSON once,
+            // so the filter no longer evaluates json_each per row.
+            sql.push_str(" AND cached = 1");
         } else {
             sql.push_str(" AND status = ?");
             values.push(Value::Integer(StatusCode::from_str(status).as_i64()));
@@ -2173,5 +2202,226 @@ mod tests {
                 "addresses": ["192.0.2.1"],
             })
         );
+    }
+
+    /// Applies migrations `0..upto` (schema version `upto`) to a fresh
+    /// connection, simulating a database last run at that version.
+    fn migrate_to(upto: usize) -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        for sql in crate::storage::migrations::MIGRATIONS.iter().take(upto) {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn
+    }
+
+    /// Applies the migrations from `from` to the current head.
+    fn migrate_rest(conn: &mut Connection, from: usize) {
+        for sql in crate::storage::migrations::MIGRATIONS.iter().skip(from) {
+            conn.execute_batch(sql).unwrap();
+        }
+    }
+
+    /// How many `query_log` rows `filter_clause` matches on `conn`.
+    fn filter_count(conn: &Connection, filter: &QueryLogFilter) -> i64 {
+        let (clause, values) = filter_clause(filter);
+        let sql = format!("SELECT COUNT(*) FROM query_log WHERE 1 = 1{clause}");
+        conn.query_row(&sql, params_from_iter(values), |row| row.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn domain_substr_finds_backfilled_names_and_ignores_orphans() {
+        // A database last run at v16 already holds rows when the distinct-name
+        // table rolls out: v17's backfill must cover them.
+        let mut conn = migrate_to(16);
+        conn.execute_batch(
+            "INSERT INTO query_log (id, time, node_id, source_ip, query_name)
+             VALUES ('legacy-1', 1, 'node-a', '192.0.2.1', 'tracker.example.com');
+             INSERT INTO query_log (id, time, node_id, source_ip, query_name)
+             VALUES ('legacy-2', 2, 'node-a', '192.0.2.2', 'tracker.example.com');
+             INSERT INTO query_log (id, time, node_id, source_ip, query_name)
+             VALUES ('legacy-3', 3, 'node-a', '192.0.2.3', 'ads.example.net');",
+        )
+        .unwrap();
+        migrate_rest(&mut conn, 16);
+
+        // Backfill: distinct names only, not one entry per row.
+        let names: i64 = conn
+            .query_row("SELECT COUNT(*) FROM query_log_name", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(names, 2);
+
+        // An orphaned name (all of its rows aged out) stays in the inventory.
+        conn.execute_batch("INSERT INTO query_log_name (name) VALUES ('gone.example.com');")
+            .unwrap();
+
+        // Pre-rollout rows stay findable, case-insensitively.
+        let filter = QueryLogFilter {
+            domain_substr: Some("TRACKER.Example".to_owned()),
+            ..QueryLogFilter::default()
+        };
+        assert_eq!(filter_count(&conn, &filter), 2);
+
+        // The orphaned name alone matches no rows: the inventory is a superset
+        // and the outer query filters rows, not names.
+        let filter = QueryLogFilter {
+            domain_substr: Some("gone".to_owned()),
+            ..QueryLogFilter::default()
+        };
+        assert_eq!(filter_count(&conn, &filter), 0);
+
+        // LIKE wildcards in the needle stay literal, as with the old CTE.
+        let filter = QueryLogFilter {
+            domain_substr: Some("%".to_owned()),
+            ..QueryLogFilter::default()
+        };
+        assert_eq!(filter_count(&conn, &filter), 0);
+    }
+
+    #[test]
+    fn cache_filter_finds_legacy_rows_after_v19_backfill() {
+        // A database last run at v18: rows predating the `cached` column carry
+        // resolve-from-cache steps only in their record/detail JSON.
+        let mut conn = migrate_to(18);
+        conn.execute_batch(
+            "INSERT INTO query_log (id, time, node_id, source_ip, query_name)
+             VALUES ('record-cache', 1, 'node-a', '192.0.2.1', 'cached.example.com');
+             INSERT INTO query_log_record (node_id, id, record) VALUES
+                 ('node-a', 'record-cache',
+                  '{\"steps\":[{\"stage\":\"resolve\",\"source\":\"cache\"}]}');
+             INSERT INTO query_log (id, time, node_id, source_ip, query_name)
+             VALUES ('detail-cache', 2, 'node-a', '192.0.2.2', 'cached.example.com');
+             INSERT INTO query_log_detail (node_id, id, detail) VALUES
+                 ('node-a', 'detail-cache',
+                  '{\"steps\":[{\"stage\":\"resolve\",\"source\":\"cache\"}]}');
+             INSERT INTO query_log (id, time, node_id, source_ip, query_name)
+             VALUES ('plain', 3, 'node-a', '192.0.2.3', 'plain.example.com');
+             INSERT INTO query_log_record (node_id, id, record) VALUES
+                 ('node-a', 'plain',
+                  '{\"steps\":[{\"stage\":\"resolve\",\"source\":\"recursion\"}]}');",
+        )
+        .unwrap();
+        migrate_rest(&mut conn, 18);
+
+        // v19 flagged exactly the two legacy cache rows.
+        let flagged: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM query_log WHERE cached = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(flagged, 2);
+
+        // The status=cache filter (now a plain `cached = 1`) still finds them.
+        let filter = QueryLogFilter {
+            status: Some("cache".to_owned()),
+            ..QueryLogFilter::default()
+        };
+        assert_eq!(filter_count(&conn, &filter), 2);
+
+        // Re-running v19 is a no-op: the UPDATE is guarded by `cached = 0`.
+        conn.execute_batch(crate::storage::migrations::MIGRATIONS[18])
+            .unwrap();
+        assert_eq!(filter_count(&conn, &filter), 2);
+    }
+
+    #[test]
+    fn list_default_order_walks_the_time_id_index_without_a_sort() {
+        let conn = migrate_to(crate::storage::migrations::MIGRATIONS.len());
+        conn.execute_batch(
+            "INSERT INTO query_log (id, time, node_id, source_ip, query_name)
+             VALUES ('a', 1, 'node-a', '192.0.2.1', 'a.example.com');
+             INSERT INTO query_log (id, time, node_id, source_ip, query_name)
+             VALUES ('b', 1, 'node-a', '192.0.2.2', 'b.example.com');
+             INSERT INTO query_log (id, time, node_id, source_ip, query_name)
+             VALUES ('c', 2, 'node-a', '192.0.2.3', 'c.example.com');",
+        )
+        .unwrap();
+
+        // The exact SQL list() builds for the default page (no filter, time
+        // order): the v18 composite index must carry the full ORDER BY, so no
+        // TEMP B-TREE may appear in the plan.
+        let sql = format!(
+            "EXPLAIN QUERY PLAN SELECT {HYDRATE_COLS} FROM query_log WHERE 1 = 1
+             ORDER BY time DESC, id DESC LIMIT ? OFFSET ?"
+        );
+        let plan: Vec<String> = conn
+            .prepare(&sql)
+            .unwrap()
+            .query_map([50i64, 0i64], |row| row.get(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let plan = plan.join("\n");
+        assert!(
+            plan.contains("INDEX query_log_time_id_idx"),
+            "expected the composite time/id index in the plan, got:\n{plan}"
+        );
+        assert!(
+            !plan.contains("TEMP B-TREE"),
+            "expected no fallback sort outside the index, got:\n{plan}"
+        );
+    }
+
+    #[tokio::test]
+    async fn retention_prunes_orphaned_names_only_on_the_explicit_pass() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let db = Db::open_in_memory(Arc::new(ManualClock::new(now)))
+            .await
+            .unwrap();
+        let log = QueryLog::new(
+            db.clone(),
+            QueryLogConfig {
+                retention_days: 1,
+                ..QueryLogConfig::default()
+            },
+            "node-a",
+        );
+
+        // The stale row ages out during the *next* batch's chunked delete,
+        // which (by design) does not maintain the name inventory.
+        let day = Duration::from_secs(86_400);
+        log.insert_batch(vec![
+            event("stale", now - 2 * day),
+            event("fresh", now - Duration::from_secs(60)),
+        ])
+        .await
+        .unwrap();
+        log.insert_batch(vec![event("later", now - Duration::from_secs(30))])
+            .await
+            .unwrap();
+
+        let stale_name = "SELECT COUNT(*) FROM query_log_name WHERE name = 'stale.example.com'";
+        let orphaned = db
+            .with_conn(move |conn| {
+                conn.query_row(stale_name, [], |row| row.get::<_, i64>(0))
+                    .map_err(db_err)
+            })
+            .await
+            .unwrap();
+        assert_eq!(orphaned, 1, "the chunked delete must leave the name behind");
+
+        // The orphan is harmless: substring search over it finds no rows.
+        let page = log
+            .list(&QueryLogFilter {
+                domain_substr: Some("stale".to_owned()),
+                ..QueryLogFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.total, 0);
+
+        // The explicit retention pass has no rows left to delete but prunes
+        // the orphaned name.
+        assert_eq!(log.apply_retention().await.unwrap(), 0);
+        let orphaned = db
+            .with_conn(move |conn| {
+                conn.query_row(stale_name, [], |row| row.get::<_, i64>(0))
+                    .map_err(db_err)
+            })
+            .await
+            .unwrap();
+        assert_eq!(orphaned, 0, "apply_retention must prune the name inventory");
     }
 }

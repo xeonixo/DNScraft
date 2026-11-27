@@ -64,6 +64,8 @@ const ROLLUP_LATE_HOURS: i64 = 2;
 const ROLLUP_DOMAIN_TOP_K: i64 = 200;
 /// Clients kept per hour/day and node in the top-N rollup tables.
 const ROLLUP_CLIENT_TOP_K: i64 = 100;
+/// Hours folded per chunk while seeding (or after a large late rollback).
+const SEED_CHUNK_HOURS: i64 = 24;
 /// `kv` key: last closed unix hour fully folded into the rollups.
 const ROLLUP_THROUGH_HOUR_KEY: &str = "stats.rollup.through_hour";
 
@@ -73,6 +75,13 @@ const SECONDS_PER_DAY: i64 = 86_400;
 const HOURS_PER_DAY: i64 = 24;
 /// Rules listed in the overview's `filter_hits.top_rules`.
 const OVERVIEW_TOP_RULES: i64 = 10;
+/// Stats-memo: slots above this count are pruned one by one (expired first).
+const MEMO_SOFT_CAP: usize = 128;
+/// Stats-memo: hard cap even when every slot still looks fresh.
+const MEMO_HARD_CAP: usize = 256;
+/// Stats-memo: age beyond which a slot is evictable, regardless of its key's
+/// own TTL (the largest dashboard TTL).
+const MEMO_MAX_AGE_SECS: i64 = 600;
 const DEFAULT_WINDOW_HOURS: i64 = 24;
 const EXPORT_PAGE_ROWS: u32 = 512;
 const EXPORT_CHANNEL_DEPTH: usize = 16;
@@ -549,7 +558,10 @@ impl QueryLog {
     /// After the first seed, only closed hours since the watermark (plus a
     /// [`ROLLUP_LATE_HOURS`] late-arrival window) are re-read. Daily buckets are
     /// derived from hourly rows so the raw log is scanned once. Top-N domain and
-    /// client tables are rewritten for the same hour range.
+    /// client tables are rewritten for the same hour range. A first seed (or a
+    /// large late rollback) folds in [`SEED_CHUNK_HOURS`]-sized chunks, each
+    /// committed separately, so no single transaction holds the writer for the
+    /// whole raw log.
     pub async fn run_rollup(&self) -> Result<(), ControlApiError> {
         let now = self.db().now_unix();
         // Include the still-open hour: MAX upserts refresh it each pass. Dashboard
@@ -561,26 +573,74 @@ impl QueryLog {
         let day_cutoff = cutoff_seconds.div_euclid(SECONDS_PER_DAY);
 
         // Decide the raw window on a reader; scans stay off the writer.
-        let (since_hour, since_us) = self
+        // Seeding is decided by the watermark, never by stats_hourly rows: a
+        // crash mid-seed leaves partial rows but no watermark, and the next
+        // pass must restart the (idempotent) seed instead of continuing from
+        // the partial state and skipping uncovered hours forever.
+        let (raw_since_hour, scan_since_hour) = self
             .db()
             .with_read_conn(move |conn| {
-                let seeded: bool = conn
-                    .query_row("SELECT EXISTS(SELECT 1 FROM stats_hourly)", [], |row| {
-                        row.get(0)
-                    })
-                    .map_err(db_err)?;
                 let through: Option<i64> = crate::storage::kv_get(conn, ROLLUP_THROUGH_HOUR_KEY)?
                     .and_then(|value| value.parse().ok());
-                let since_hour = if !seeded {
-                    0
-                } else {
-                    through
-                        .unwrap_or(until_hour)
-                        .saturating_sub(ROLLUP_LATE_HOURS)
+                let raw_since_hour = match through {
+                    Some(through) => through.saturating_sub(ROLLUP_LATE_HOURS),
+                    None => 0,
                 };
-                Ok((since_hour, since_hour.saturating_mul(MICROS_PER_HOUR)))
+                // Floor the scan window at the oldest raw row: a seed must not
+                // walk thousands of empty hours before the first logged
+                // query, and hours whose raw rows are retention-deleted cannot
+                // be re-folded anyway. An empty log folds nothing.
+                let oldest: Option<i64> = conn
+                    .query_row("SELECT MIN(time) FROM query_log", [], |row| {
+                        row.get::<_, Option<i64>>(0)
+                    })
+                    .map_err(db_err)?;
+                let scan_since_hour = match oldest {
+                    Some(time) => raw_since_hour
+                        .max(time.div_euclid(MICROS_PER_HOUR))
+                        .min(until_hour),
+                    None => until_hour,
+                };
+                Ok((raw_since_hour, scan_since_hour))
             })
             .await?;
+
+        let mut hour = scan_since_hour;
+        while hour <= until_hour {
+            let chunk_end = (hour.saturating_add(SEED_CHUNK_HOURS))
+                .saturating_sub(1)
+                .min(until_hour);
+            self.fold_hours(hour, chunk_end).await?;
+            hour = chunk_end.saturating_add(1);
+        }
+
+        // Pruning and the watermark advance: one short writer transaction at
+        // the end. The clamp compares against the *unfloored* window: a
+        // rollback below the raw horizon must not freeze the watermark when
+        // the scan was floored at the oldest surviving raw row.
+        self.db()
+            .with_conn(move |conn| {
+                let tx = conn.transaction().map_err(db_err)?;
+                prune_rollups(&tx, hour_cutoff, day_cutoff)?;
+                let stored: Option<i64> = crate::storage::kv_get(&tx, ROLLUP_THROUGH_HOUR_KEY)?
+                    .and_then(|value| value.parse().ok());
+                let next = advance_watermark(stored, raw_since_hour, until_hour);
+                crate::storage::kv_set(&tx, ROLLUP_THROUGH_HOUR_KEY, &next.to_string())?;
+                tx.commit().map_err(db_err)?;
+                Ok(())
+            })
+            .await
+    }
+
+    /// Folds the raw log for the hour range `[since_hour, until_hour]` into
+    /// the rollup tables: one reader scan (dimensions plus the top-N domain
+    /// and client buckets) and one writer transaction.
+    ///
+    /// The watermark and pruning stay with the caller; the MAX upserts make a
+    /// chunk-by-chunk fold idempotent, so an interrupted seed simply restarts
+    /// from the beginning.
+    async fn fold_hours(&self, since_hour: i64, until_hour: i64) -> Result<(), ControlApiError> {
+        let since_us = since_hour.saturating_mul(MICROS_PER_HOUR);
 
         type DimBucket = (i64, String, String, String, String, i64, i64, i64, i64);
 
@@ -640,9 +700,6 @@ impl QueryLog {
 
         let from_day = since_hour.div_euclid(HOURS_PER_DAY);
         let to_day = until_hour.div_euclid(HOURS_PER_DAY);
-        // Copied for the writer closure: the watermark clamp below must not
-        // move the binding other closures use.
-        let since_for_watermark = since_hour;
 
         self.db()
             .with_conn(move |conn| {
@@ -684,7 +741,7 @@ impl QueryLog {
                     .map_err(db_err)?
                     .map(|time| time.div_euclid(MICROS_PER_HOUR));
                 let delete_from = match oldest_raw_hour {
-                    Some(hour) => since_for_watermark.max(hour),
+                    Some(hour) => since_hour.max(hour),
                     // No raw rows at all: rewrite nothing (an empty scan has
                     // nothing to replace the deleted rows with).
                     None => until_hour.saturating_add(1),
@@ -732,16 +789,6 @@ impl QueryLog {
                 rebuild_daily_domains(&tx, from_day, to_day)?;
                 rebuild_daily_clients(&tx, from_day, to_day)?;
 
-                prune_rollups(&tx, hour_cutoff, day_cutoff)?;
-                // Advance the watermark, but never clobber a rollback: an
-                // `ingest_remote` commit between this pass's read phase and
-                // here may have lowered the watermark below this pass's scan
-                // window (late backfill). Those hours were not part of this
-                // scan and must stay behind the watermark for the next pass.
-                let stored: Option<i64> = crate::storage::kv_get(&tx, ROLLUP_THROUGH_HOUR_KEY)?
-                    .and_then(|value| value.parse().ok());
-                let next = advance_watermark(stored, since_for_watermark, until_hour);
-                crate::storage::kv_set(&tx, ROLLUP_THROUGH_HOUR_KEY, &next.to_string())?;
                 tx.commit().map_err(db_err)?;
                 Ok(())
             })
@@ -1754,17 +1801,21 @@ async fn cache_stats_raw(
 /// late-arrival window; the next [`QueryLog::run_rollup`] then re-folds those
 /// hours (the MAX upserts keep a re-fold idempotent). A missing watermark
 /// means the rollup is unseeded and the next pass scans from hour 0 anyway,
-/// so nothing is done then. Runs inside the caller's transaction.
+/// so nothing is done then. `now_us` (the caller's clock) floors the rollback
+/// at the rollup retention window, so a sub-node with a broken clock cannot
+/// force unbounded re-scan passes. Runs inside the caller's transaction.
 pub(crate) fn lower_rollup_watermark(
     conn: &rusqlite::Connection,
     min_time_us: i64,
+    now_us: i64,
 ) -> Result<(), ControlApiError> {
     let through: Option<i64> =
         crate::storage::kv_get(conn, ROLLUP_THROUGH_HOUR_KEY)?.and_then(|value| value.parse().ok());
     let Some(through) = through else {
         return Ok(());
     };
-    let min_hour = min_time_us.div_euclid(MICROS_PER_HOUR);
+    let floor_us = now_us.saturating_sub(ROLLUP_RETENTION_DAYS * SECONDS_PER_DAY * 1_000_000);
+    let min_hour = min_time_us.max(floor_us).div_euclid(MICROS_PER_HOUR);
     if min_hour < through.saturating_sub(ROLLUP_LATE_HOURS) {
         crate::storage::kv_set(conn, ROLLUP_THROUGH_HOUR_KEY, &min_hour.to_string())?;
     }
@@ -2747,20 +2798,32 @@ impl QueryLog {
         T: Serialize,
         F: Future<Output = Result<T, ControlApiError>>,
     {
+        let now = self.db().now_unix();
         let slot = {
             let mut map = self
                 .stats_memo
                 .0
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            // Keys embed the window, so they drift; a bounded map is enough.
-            if map.len() > 128 && !map.contains_key(&key) {
-                map.clear();
+            // Keys embed the window, so they drift. Evict expired slots one by
+            // one instead of dropping everything: a full clear would make
+            // every concurrent poll recompute at the same moment. Slots busy
+            // computing (or still fresh) survive; a hard cap keeps the map
+            // bounded even when everything looks fresh.
+            if map.len() > MEMO_SOFT_CAP && !map.contains_key(&key) {
+                map.retain(|_, slot| match slot.try_lock() {
+                    Ok(guard) => guard
+                        .as_ref()
+                        .is_none_or(|(at, _)| now.saturating_sub(*at) < MEMO_MAX_AGE_SECS),
+                    Err(_) => true,
+                });
+                if map.len() > MEMO_HARD_CAP {
+                    map.clear();
+                }
             }
             Arc::clone(map.entry(key).or_default())
         };
         let mut guard = slot.lock().await;
-        let now = self.db().now_unix();
         if let Some((at, value)) = guard.as_ref()
             && now.saturating_sub(*at) < ttl_secs
         {

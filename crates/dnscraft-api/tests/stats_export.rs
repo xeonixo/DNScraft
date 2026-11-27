@@ -489,6 +489,48 @@ async fn late_cluster_backfill_rolls_the_rollup_watermark_back() {
 }
 
 #[tokio::test]
+async fn a_lost_watermark_reseeds_instead_of_continuing_from_partial_state() {
+    // Simulates a crash mid-seed: the chunked seed committed rows into
+    // stats_hourly but the watermark never landed. The next pass must restart
+    // the (idempotent) seed and fold hours it never covered — not continue
+    // from the partial state and skip them forever.
+    let clock = Arc::new(ManualClock::new(base_time()));
+    let db = Db::open_in_memory(clock).await.unwrap();
+    let log = Arc::new(QueryLog::new(
+        db.clone(),
+        QueryLogConfig::default(),
+        "node-a",
+    ));
+
+    log.insert_batch(vec![
+        Spec::new(at_secs(BASE_SECS - 60), "seeded.example.com").event(),
+    ])
+    .await
+    .unwrap();
+    log.run_rollup().await.unwrap();
+
+    // The crash: the folded rows survive, the watermark is lost. An hour the
+    // seed never covered gains rows (a late local batch).
+    db.kv_delete("stats.rollup.through_hour").await.unwrap();
+    let uncovered_secs = BASE_SECS - 86_400;
+    log.insert_batch(vec![
+        Spec::new(at_secs(uncovered_secs), "uncovered.example.com").event(),
+    ])
+    .await
+    .unwrap();
+
+    log.run_rollup().await.unwrap();
+    let hourly = log.rollup_rows(RollupWindow::Hourly).await.unwrap();
+    let uncovered_hour = ((uncovered_secs as i64) * 1_000_000) / 3_600_000_000;
+    assert!(
+        hourly
+            .iter()
+            .any(|row| row.bucket == uncovered_hour && row.query_count == 1),
+        "the never-folded hour must be folded after the watermark was lost"
+    );
+}
+
+#[tokio::test]
 async fn stats_rollups_and_filters_carry_the_node_id_dimension() {
     let clock = Arc::new(ManualClock::new(base_time()));
     let db = Db::open_in_memory(clock).await.unwrap();

@@ -19,7 +19,9 @@ mod audit;
 mod config_store;
 mod db;
 mod kv;
-mod migrations;
+// `pub(crate)` so in-crate tests can replay partial migration histories
+// against the real schema (query_log backfill coverage).
+pub(crate) mod migrations;
 mod paths;
 
 pub(crate) use kv::{kv_get, kv_set};

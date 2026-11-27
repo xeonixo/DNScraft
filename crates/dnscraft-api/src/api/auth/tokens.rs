@@ -249,17 +249,20 @@ impl TokenStore {
         let row = self
             .db
             .with_read_conn(move |conn| {
-                conn.query_row(
-                    "SELECT actor_id, scope, expires_at FROM tokens WHERE id_hash = ?1",
-                    params![id_for_read],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, Option<i64>>(2)?,
-                        ))
-                    },
-                )
+                // Hot path: prepared once per connection, reused by every
+                // token-authenticated request.
+                let mut stmt = conn
+                    .prepare_cached(
+                        "SELECT actor_id, scope, expires_at FROM tokens WHERE id_hash = ?1",
+                    )
+                    .map_err(db_err)?;
+                stmt.query_row(params![id_for_read], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                    ))
+                })
                 .optional()
                 .map_err(db_err)
             })
@@ -270,7 +273,9 @@ impl TokenStore {
         if expires_at.is_some_and(|expires| now >= expires) {
             self.db
                 .with_conn(move |conn| {
-                    conn.execute("DELETE FROM tokens WHERE id_hash = ?1", params![id])
+                    conn.prepare_cached("DELETE FROM tokens WHERE id_hash = ?1")
+                        .map_err(db_err)?
+                        .execute(params![id])
                         .map_err(db_err)?;
                     Ok(())
                 })

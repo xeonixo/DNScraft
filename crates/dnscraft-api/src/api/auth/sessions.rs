@@ -189,19 +189,23 @@ impl SessionStore {
         let row = self
             .db
             .with_read_conn(move |conn| {
-                conn.query_row(
-                    "SELECT actor_id, role, last_active, expires_at, epoch FROM sessions WHERE id_hash = ?1",
-                    params![id_hash_for_read],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, i64>(2)?,
-                            row.get::<_, i64>(3)?,
-                            row.get::<_, i64>(4)?,
-                        ))
-                    },
-                )
+                // Hot path: prepared once per connection, reused by every
+                // authenticated request.
+                let mut stmt = conn
+                    .prepare_cached(
+                        "SELECT actor_id, role, last_active, expires_at, epoch
+                         FROM sessions WHERE id_hash = ?1",
+                    )
+                    .map_err(db_err)?;
+                stmt.query_row(params![id_hash_for_read], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                })
                 .optional()
                 .map_err(db_err)
             })
@@ -218,7 +222,9 @@ impl SessionStore {
         {
             self.db
                 .with_conn(move |conn| {
-                    conn.execute("DELETE FROM sessions WHERE id_hash = ?1", params![id_hash])
+                    conn.prepare_cached("DELETE FROM sessions WHERE id_hash = ?1")
+                        .map_err(db_err)?
+                        .execute(params![id_hash])
                         .map_err(db_err)?;
                     Ok(())
                 })
@@ -236,10 +242,12 @@ impl SessionStore {
             let refresh_before = now - LAST_ACTIVE_UPDATE_SECS;
             self.db
                 .with_conn(move |conn| {
-                    conn.execute(
-                        "UPDATE sessions SET last_active = ?1 WHERE id_hash = ?2 AND last_active <= ?3",
-                        params![now, id_hash, refresh_before],
+                    conn.prepare_cached(
+                        "UPDATE sessions SET last_active = ?1
+                         WHERE id_hash = ?2 AND last_active <= ?3",
                     )
+                    .map_err(db_err)?
+                    .execute(params![now, id_hash, refresh_before])
                     .map_err(db_err)?;
                     Ok(())
                 })

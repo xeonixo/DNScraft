@@ -7,27 +7,30 @@ use crate::error::ControlApiError;
 
 /// Looks up the value for `key`, or `None` when the key is absent.
 pub(crate) fn kv_get(conn: &Connection, key: &str) -> Result<Option<String>, ControlApiError> {
-    conn.query_row("SELECT value FROM kv WHERE key = ?1", params![key], |row| {
-        row.get(0)
-    })
-    .optional()
-    .map_err(db_err)
+    conn.prepare_cached("SELECT value FROM kv WHERE key = ?1")
+        .map_err(db_err)?
+        .query_row(params![key], |row| row.get(0))
+        .optional()
+        .map_err(db_err)
 }
 
 /// Inserts or replaces the value for `key`.
 pub(crate) fn kv_set(conn: &Connection, key: &str, value: &str) -> Result<(), ControlApiError> {
-    conn.execute(
+    conn.prepare_cached(
         "INSERT INTO kv (key, value) VALUES (?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        params![key, value],
     )
+    .map_err(db_err)?
+    .execute(params![key, value])
     .map_err(db_err)?;
     Ok(())
 }
 
 /// Removes `key`, if present.
 fn kv_delete(conn: &Connection, key: &str) -> Result<(), ControlApiError> {
-    conn.execute("DELETE FROM kv WHERE key = ?1", params![key])
+    conn.prepare_cached("DELETE FROM kv WHERE key = ?1")
+        .map_err(db_err)?
+        .execute(params![key])
         .map_err(db_err)?;
     Ok(())
 }

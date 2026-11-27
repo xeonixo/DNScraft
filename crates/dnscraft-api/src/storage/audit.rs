@@ -41,35 +41,36 @@ pub struct AuditRecord {
 }
 
 fn insert(conn: &Connection, record: &AuditRecord) -> Result<i64, ControlApiError> {
-    conn.execute(
+    conn.prepare_cached(
         "INSERT INTO audit_log (
             time, node_id, actor_id, actor_type, action, object_type, object_id,
             config_version, before_digest, after_digest, before, after, result, error_code
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-        params![
-            record.time,
-            record.node_id,
-            record.actor_id,
-            record.actor_type,
-            record.action,
-            record.object_type,
-            record.object_id,
-            record.config_version,
-            record.before_digest,
-            record.after_digest,
-            record.before,
-            record.after,
-            record.result,
-            record.error_code,
-        ],
     )
+    .map_err(db_err)?
+    .execute(params![
+        record.time,
+        record.node_id,
+        record.actor_id,
+        record.actor_type,
+        record.action,
+        record.object_type,
+        record.object_id,
+        record.config_version,
+        record.before_digest,
+        record.after_digest,
+        record.before,
+        record.after,
+        record.result,
+        record.error_code,
+    ])
     .map_err(db_err)?;
     Ok(conn.last_insert_rowid())
 }
 
 fn list(conn: &Connection, limit: u32, offset: u32) -> Result<Vec<AuditRecord>, ControlApiError> {
     let mut stmt = conn
-        .prepare(
+        .prepare_cached(
             "SELECT id, time, node_id, actor_id, actor_type, action, object_type, object_id,
                     config_version, before_digest, after_digest, before, after, result, error_code
              FROM audit_log

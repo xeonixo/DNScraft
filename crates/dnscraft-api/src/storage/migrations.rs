@@ -409,6 +409,12 @@ pub(crate) const MIGRATIONS: &[&str] = &[
          blocked     INTEGER NOT NULL,
          PRIMARY KEY (day, node_id, client_key)
      );",
+    // v16: the audit dashboard lists records newest-first
+    // (`ORDER BY time DESC, id DESC LIMIT/OFFSET`); without an index that sorts
+    // the whole append-only table on every page view. ASC columns follow the
+    // repo's index style: SQLite serves the all-DESC ordering with a plain
+    // reverse scan of the index, at the same cost as a DESC index.
+    "CREATE INDEX IF NOT EXISTS audit_log_time_id_idx ON audit_log(time, id);",
 ];
 
 /// Applies every migration newer than the recorded version, then records it.
@@ -454,7 +460,7 @@ mod tests {
     fn device_id_migration_adds_column_and_index() {
         let mut conn = Connection::open_in_memory().unwrap();
         migrate(&mut conn).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 15);
+        assert_eq!(schema_version(&conn).unwrap(), 16);
 
         let columns: Vec<String> = conn
             .prepare("PRAGMA table_info(query_log)")
@@ -491,7 +497,7 @@ mod tests {
     fn dashboard_rollup_migration_adds_cache_columns_and_top_n_tables() {
         let mut conn = Connection::open_in_memory().unwrap();
         migrate(&mut conn).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 15);
+        assert_eq!(schema_version(&conn).unwrap(), 16);
 
         let hourly: Vec<String> = conn
             .prepare("PRAGMA table_info(stats_hourly)")
@@ -525,7 +531,7 @@ mod tests {
     fn audit_log_rejects_update_and_delete_after_v2() {
         let mut conn = Connection::open_in_memory().unwrap();
         migrate(&mut conn).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 15);
+        assert_eq!(schema_version(&conn).unwrap(), 16);
 
         conn.execute(
             "INSERT INTO audit_log (
@@ -550,5 +556,50 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn audit_list_query_uses_v16_index() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 16);
+
+        // The v16 index exists on a freshly migrated database.
+        let index: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'audit_log_time_id_idx'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(index, 1);
+
+        // The audit list query (storage/audit.rs) must walk the index instead
+        // of sorting the whole table.
+        let plan: Vec<String> = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN
+                 SELECT id FROM audit_log
+                 ORDER BY time DESC, id DESC
+                 LIMIT ?1 OFFSET ?2",
+            )
+            .unwrap()
+            .query_map([50, 0], |row| {
+                let detail: String = row.get(3)?;
+                Ok(detail)
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let plan = plan.join("\n");
+        assert!(
+            plan.contains("INDEX audit_log_time_id_idx"),
+            "expected the audit index in the plan, got:\n{plan}"
+        );
+        assert!(
+            !plan.contains("TEMP B-TREE"),
+            "expected no fallback sort outside the index, got:\n{plan}"
+        );
     }
 }

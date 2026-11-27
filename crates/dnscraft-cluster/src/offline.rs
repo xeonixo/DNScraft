@@ -381,7 +381,7 @@ impl OfflineWriteQueue {
     pub async fn status(&self) -> Result<OfflineQueueStatus, ClusterError> {
         let rows: Vec<(String, i64)> = self
             .store
-            .with_conn(|conn| {
+            .with_read_conn(|conn| {
                 let mut statement = conn
                     .prepare("SELECT state, COUNT(*) FROM offline_writes GROUP BY state")
                     .map_err(db_err)?;
@@ -412,7 +412,7 @@ impl OfflineWriteQueue {
         let request_id = request_id.to_owned();
         let row = self
             .store
-            .with_conn(move |conn| {
+            .with_read_conn(move |conn| {
                 conn.query_row(
                     "SELECT request_id, idempotency_key, if_match, method, path,
                             enqueued_at, state, attempts, expires_at, result_status
@@ -539,14 +539,21 @@ impl OfflineWriteQueue {
     }
 
     /// First pending row by insertion order (strict FIFO).
+    ///
+    /// Ordered by `enqueued_at, rowid` because `enqueued_at` has second
+    /// granularity and rows enqueued in the same second must still replay in
+    /// insertion (`rowid`) order. The `(state, enqueued_at)` index serves this
+    /// ordering directly: index entries with equal `enqueued_at` are stored by
+    /// `rowid`, so SQLite needs no sort step (SQLite cannot index the implicit
+    /// `rowid` itself).
     async fn next_pending(&self) -> Result<Option<StoredWrite>, ClusterError> {
         self.store
-            .with_conn(|conn| {
+            .with_read_conn(|conn| {
                 conn.query_row(
                     "SELECT request_id, idempotency_key, if_match, method, path,
                             body, actor, enqueued_at
                      FROM offline_writes WHERE state = 'pending'
-                     ORDER BY rowid LIMIT 1",
+                     ORDER BY enqueued_at, rowid LIMIT 1",
                     [],
                     stored_from_row,
                 )
@@ -1114,5 +1121,52 @@ mod tests {
 
         drop(reopened);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The head-of-queue lookup must be served by the FIFO index (no scan, no
+    /// sort), and rows enqueued within the same second stay in `rowid` order.
+    #[tokio::test]
+    async fn next_pending_head_lookup_uses_the_fifo_index() {
+        let (queue, _clock) = queue(10).await;
+        let plan: Vec<String> = queue
+            .store
+            .with_conn(|conn| {
+                let mut statement = conn
+                    .prepare(
+                        "EXPLAIN QUERY PLAN
+                         SELECT request_id FROM offline_writes
+                         WHERE state = 'pending' ORDER BY enqueued_at, rowid LIMIT 1",
+                    )
+                    .map_err(db_err)?;
+                let rows = statement
+                    .query_map([], |row| row.get::<_, String>(3))
+                    .map_err(db_err)?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
+            })
+            .await
+            .unwrap();
+        assert!(
+            plan.iter()
+                .any(|detail| detail.contains("USING INDEX offline_writes_state_idx")),
+            "expected the FIFO index, got plan: {plan:?}"
+        );
+        assert!(
+            plan.iter().all(|detail| !detail.contains("TEMP B-TREE")),
+            "no sort step expected, got plan: {plan:?}"
+        );
+
+        // Same-second enqueues replay in insertion (rowid) order.
+        for id in ["a", "b"] {
+            queue.enqueue(relay(id)).await.unwrap();
+        }
+        let executor = MockExecutor::with_replies(&[200, 200]);
+        let outcome = queue.replay_all(&executor).await.unwrap();
+        assert_eq!(outcome.applied, 2);
+        let calls = executor.calls();
+        let keys: Vec<Option<&str>> = calls
+            .iter()
+            .map(|call| call.idempotency_key.as_deref())
+            .collect();
+        assert_eq!(keys, vec![Some("key-a"), Some("key-b")]);
     }
 }

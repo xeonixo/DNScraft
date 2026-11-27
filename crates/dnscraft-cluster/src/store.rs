@@ -8,12 +8,13 @@
 
 use std::fmt;
 use std::os::unix::fs::PermissionsExt;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, TryLockError};
 use std::time::Duration;
 
 use dnscraft_common::clock::{Clock, unix_seconds};
 use dnscraft_common::secret::Secret;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
 use crate::config::validate_node_id;
 use crate::error::ClusterError;
@@ -86,6 +87,11 @@ const MIGRATIONS: &[&str] = &[
     );",
     // v8: running software version last reported in a heartbeat.
     "ALTER TABLE cluster_nodes ADD COLUMN software_version TEXT;",
+    // v9: `remember_relay_response` prunes rows older than `max_age` on every
+    // store; without an index that DELETE scans the whole table per relayed
+    // write.
+    "CREATE INDEX IF NOT EXISTS relay_responses_stored_at_idx
+        ON relay_responses(stored_at);",
 ];
 
 /// One registered cluster node.
@@ -145,10 +151,18 @@ impl fmt::Debug for MintedJoinToken {
     }
 }
 
+/// Read-only connections kept next to the writer, so registry reads neither
+/// queue behind each other nor block the writer (WAL readers). Empty for
+/// in-memory databases, which fall back to the shared connection.
+const READ_CONNECTIONS: usize = 6;
+
 /// SQLite-backed master registry: `cluster_nodes` + `join_tokens`.
 #[derive(Clone)]
 pub struct ClusterStore {
     conn: Arc<Mutex<Connection>>,
+    /// WAL reader pool; empty for in-memory databases (tests).
+    readers: Arc<Vec<Mutex<Connection>>>,
+    next_reader: Arc<AtomicUsize>,
     clock: Arc<dyn Clock>,
     token_ttl: Duration,
 }
@@ -164,22 +178,27 @@ impl ClusterStore {
         token_ttl: Duration,
     ) -> Result<Self, ClusterError> {
         let path = path.to_owned();
-        let conn = tokio::task::spawn_blocking(move || -> Result<Connection, ClusterError> {
-            let existed = path.exists();
-            prepare_parent(&path)?;
-            if !existed {
-                create_file_0600(&path)?;
-            }
-            let mut conn = Connection::open(&path).map_err(db_err)?;
-            tighten_file(&path)?;
-            apply_pragmas(&mut conn, true)?;
-            migrate(&mut conn)?;
-            Ok(conn)
-        })
+        let (conn, readers) = tokio::task::spawn_blocking(
+            move || -> Result<(Connection, Vec<Connection>), ClusterError> {
+                let existed = path.exists();
+                prepare_parent(&path)?;
+                if !existed {
+                    create_file_0600(&path)?;
+                }
+                let mut conn = Connection::open(&path).map_err(db_err)?;
+                tighten_file(&path)?;
+                apply_pragmas(&mut conn, true)?;
+                migrate(&mut conn)?;
+                let readers = open_readers(&path)?;
+                Ok((conn, readers))
+            },
+        )
         .await
         .map_err(join_err)??;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            readers: Arc::new(readers.into_iter().map(Mutex::new).collect::<Vec<_>>()),
+            next_reader: Arc::new(AtomicUsize::new(0)),
             clock,
             token_ttl,
         })
@@ -200,6 +219,8 @@ impl ClusterStore {
         .map_err(join_err)??;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            readers: Arc::new(Vec::new()),
+            next_reader: Arc::new(AtomicUsize::new(0)),
             clock,
             token_ttl,
         })
@@ -406,7 +427,7 @@ impl ClusterStore {
     /// Loads one registered node, if present.
     pub async fn get_node(&self, node_id: &str) -> Result<Option<ClusterNode>, ClusterError> {
         let node_id = node_id.to_owned();
-        self.with_conn(move |conn| {
+        self.with_read_conn(move |conn| {
             conn.query_row(
                 "SELECT node_id, fingerprint, joined_at, last_seen,
                         applied_config_version, revoked, remote_addr, software_version
@@ -422,7 +443,7 @@ impl ClusterStore {
 
     /// Lists registered nodes ordered by `node_id`.
     pub async fn list_nodes(&self) -> Result<Vec<ClusterNode>, ClusterError> {
-        self.with_conn(|conn| {
+        self.with_read_conn(|conn| {
             let mut statement = conn
                 .prepare(
                     "SELECT node_id, fingerprint, joined_at, last_seen,
@@ -441,7 +462,7 @@ impl ClusterStore {
         &self,
     ) -> Result<std::collections::HashMap<String, (Option<String>, Option<String>)>, ClusterError>
     {
-        self.with_conn(|conn| {
+        self.with_read_conn(|conn| {
             let mut statement = conn
                 .prepare("SELECT node_id, display_name, hostname FROM node_meta")
                 .map_err(db_err)?;
@@ -656,7 +677,7 @@ impl ClusterStore {
     ) -> Result<Option<(u16, serde_json::Value)>, ClusterError> {
         let dedupe_key = dedupe_key.to_owned();
         let oldest = self.now_unix() - duration_seconds(max_age);
-        self.with_conn(move |conn| {
+        self.with_read_conn(move |conn| {
             let row: Option<(i64, String)> = conn
                 .query_row(
                     "SELECT status, body FROM relay_responses
@@ -717,7 +738,7 @@ impl ClusterStore {
     ) -> Result<bool, ClusterError> {
         let node_id = node_id.to_owned();
         let fingerprint = fingerprint.to_owned();
-        self.with_conn(move |conn| {
+        self.with_read_conn(move |conn| {
             let found: Option<i64> = conn
                 .query_row(
                     "SELECT 1 FROM cluster_superseded_certs
@@ -757,6 +778,59 @@ impl ClusterStore {
         .await
         .map_err(join_err)?
     }
+
+    /// Runs a read-only `f` on a free reader connection (WAL: concurrent with
+    /// the writer and with other readers). In-memory databases have no readers
+    /// and use the shared connection.
+    pub(crate) async fn with_read_conn<T, F>(&self, f: F) -> Result<T, ClusterError>
+    where
+        F: FnOnce(&mut Connection) -> Result<T, ClusterError> + Send + 'static,
+        T: Send + 'static,
+    {
+        if self.readers.is_empty() {
+            return self.with_conn(f).await;
+        }
+        let readers = Arc::clone(&self.readers);
+        let start = self.next_reader.fetch_add(1, Ordering::Relaxed);
+        tokio::task::spawn_blocking(move || {
+            let count = readers.len();
+            for offset in 0..count {
+                match readers[(start + offset) % count].try_lock() {
+                    Ok(mut guard) => return f(&mut guard),
+                    Err(TryLockError::Poisoned(poisoned)) => return f(&mut poisoned.into_inner()),
+                    Err(TryLockError::WouldBlock) => {}
+                }
+            }
+            // All busy: wait for the one this call was assigned.
+            let mut guard = match readers[start % count].lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            f(&mut guard)
+        })
+        .await
+        .map_err(join_err)?
+    }
+}
+
+/// Opens the WAL reader pool beside the writer (file databases only).
+///
+/// Each reader is `READ_ONLY` + `NO_MUTEX`, with a 5 s `busy_timeout` and
+/// `query_only` so a bug cannot turn a read path into a write.
+fn open_readers(path: &std::path::Path) -> Result<Vec<Connection>, ClusterError> {
+    let mut readers = Vec::with_capacity(READ_CONNECTIONS);
+    for _ in 0..READ_CONNECTIONS {
+        let reader = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(db_err)?;
+        reader
+            .execute_batch("PRAGMA busy_timeout = 5000; PRAGMA query_only = ON;")
+            .map_err(db_err)?;
+        readers.push(reader);
+    }
+    Ok(readers)
 }
 
 fn node_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ClusterNode> {
@@ -868,6 +942,7 @@ fn apply_pragmas(conn: &mut Connection, wal: bool) -> Result<(), ClusterError> {
         "PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;
          PRAGMA busy_timeout = 5000;
+         PRAGMA journal_size_limit = 67108864;
          PRAGMA foreign_keys = ON;"
     } else {
         "PRAGMA synchronous = NORMAL;
@@ -1162,5 +1237,69 @@ mod tests {
         assert_eq!(error.code(), "cluster.role.invalid");
         let error = store.register_node("node.a", "aa").await.unwrap_err();
         assert_eq!(error.code(), "cluster.role.invalid");
+    }
+
+    /// File-backed stores serve reads from the WAL reader pool: writes through
+    /// the read path are rejected (`query_only`), reads succeed, and the pool
+    /// has the expected size. In-memory stores have no readers.
+    #[tokio::test]
+    async fn file_backed_reads_run_on_query_only_readers() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "dnscraft-cluster-readers-{}-{nanos}",
+            std::process::id()
+        ));
+        let path = dir.join("cluster.db");
+
+        let store = ClusterStore::open(&path, clock(), TTL).await.unwrap();
+        store.register_node("node-a", "aa").await.unwrap();
+        assert_eq!(store.readers.len(), READ_CONNECTIONS);
+
+        // The read path is a distinct connection with query_only: a write
+        // attempt through it must fail, proving reads do not touch the writer.
+        let error = store
+            .with_read_conn(|conn| {
+                conn.execute("DELETE FROM cluster_nodes WHERE node_id = 'node-a'", [])
+                    .map_err(db_err)?;
+                Ok(())
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().to_ascii_lowercase().contains("readonly"),
+            "write through the reader must fail, got: {error}"
+        );
+        // Reads through the reader see the committed writer state.
+        assert_eq!(
+            store.get_node("node-a").await.unwrap().unwrap().fingerprint,
+            "aa"
+        );
+
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// In-memory databases keep a single shared connection: with_read_conn
+    /// falls back to it, so writes (and reads) behave exactly as with_conn.
+    #[tokio::test]
+    async fn in_memory_reads_fall_back_to_the_writer() {
+        let store = store(clock()).await;
+        assert!(store.readers.is_empty());
+        store
+            .with_read_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO node_meta (node_id, display_name, hostname)
+                     VALUES ('node-a', 'A', NULL)",
+                    [],
+                )
+                .map_err(db_err)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert!(store.node_meta().await.unwrap().contains_key("node-a"));
     }
 }

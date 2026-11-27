@@ -238,6 +238,31 @@ impl LocalAccountStore {
         }
         let username = username.to_owned();
         let password = Zeroizing::new(password.to_owned());
+        // The taken-check runs first, through a reader: hashing only when the
+        // account set is empty keeps the unauthenticated bootstrap route from
+        // paying the memory-hard Argon2 cost on an already-bootstrapped
+        // system. The writer transaction below re-checks, so a concurrent
+        // bootstrap still cannot insert twice.
+        let existing: i64 = self
+            .db
+            .with_read_conn(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM local_accounts", [], |row| row.get(0))
+                    .map_err(db_err)
+            })
+            .await?;
+        if existing > 0 {
+            return Err(ControlApiError::Module {
+                code: "control_api.auth.bootstrap_taken",
+                params: None,
+            });
+        }
+        // Hash on the blocking pool before taking the writer: the memory-hard
+        // Argon2 work must neither block an async executor thread nor hold the
+        // single writer lock.
+        let password_for_hash = password.clone();
+        let hash = tokio::task::spawn_blocking(move || hash_password(password_for_hash.as_bytes()))
+            .await
+            .map_err(join_err)??;
         self.db
             .with_conn(move |conn| {
                 let tx = conn.transaction().map_err(db_err)?;
@@ -250,7 +275,6 @@ impl LocalAccountStore {
                         params: None,
                     });
                 }
-                let hash = hash_password(password.as_bytes())?;
                 tx.execute(
                     "INSERT INTO local_accounts
                         (username, password_hash, role, failed_attempts, window_started, locked_until)
@@ -294,11 +318,15 @@ impl LocalAccountStore {
         let username = username.to_owned();
         let username_for_clear = username.clone();
         let password = Zeroizing::new(password.to_owned());
-        // Hashing runs inside `with_conn`, i.e. on the blocking pool, never on
-        // an async executor thread.
+        // Hash on the blocking pool before taking the writer: the memory-hard
+        // Argon2 work must neither block an async executor thread nor hold the
+        // single writer lock.
+        let password_for_hash = password.clone();
+        let hash = tokio::task::spawn_blocking(move || hash_password(password_for_hash.as_bytes()))
+            .await
+            .map_err(join_err)??;
         self.db
             .with_conn(move |conn| {
-                let hash = hash_password(password.as_bytes())?;
                 conn.execute(
                     "INSERT INTO local_accounts
                         (username, password_hash, role, failed_attempts, window_started, locked_until)
@@ -339,13 +367,14 @@ impl LocalAccountStore {
         let now = self.db.now_unix();
         let window = self.lock_window.as_secs() as i64;
         if self.source_locked(source, now, window) {
-            // Same Argon2 cost as a real attempt, so timing does not reveal the lock.
-            self.db
-                .with_conn(move |_| {
-                    let _ = hash_password(password.as_bytes());
-                    Ok(())
-                })
-                .await?;
+            // Same Argon2 cost as a real attempt, so timing does not reveal the
+            // lock. Runs on the blocking pool without any DB lock: a burn must
+            // not hold the single writer.
+            tokio::task::spawn_blocking(move || {
+                let _ = hash_password(password.as_bytes());
+            })
+            .await
+            .map_err(join_err)?;
             self.audit(
                 LOGIN_ACTION,
                 username.trim(),
@@ -464,86 +493,173 @@ impl LocalAccountStore {
         let max_attempts = i64::from(self.max_attempts);
         let window = self.lock_window.as_secs() as i64;
         let now = self.db.now_unix();
+
+        // The stored hash is read through a WAL reader and the memory-hard
+        // Argon2 work runs on the blocking pool outside every DB lock: a login
+        // must not hold the single writer (and thereby every other database
+        // operation) for the tens of milliseconds the verification takes. The
+        // read-verify-update sequence is split by design; the counter update
+        // below re-reads the row under the writer, so concurrent attempts
+        // still count every failure exactly once.
         let username_for_db = username.clone();
-
-        // One `with_conn` keeps the read-verify-update sequence atomic against
-        // concurrent attempts (the single connection is serialized) and runs
-        // the memory-hard verification on the blocking pool.
-        let attempt = self
+        let row = self
             .db
-            .with_conn(move |conn| {
-                let row = conn
-                    .query_row(
-                        "SELECT password_hash, role, failed_attempts, window_started, locked_until
-                         FROM local_accounts WHERE username = ?1",
-                        params![username_for_db],
-                        |row| {
-                            Ok((
-                                row.get::<_, String>(0)?,
-                                row.get::<_, String>(1)?,
-                                row.get::<_, i64>(2)?,
-                                row.get::<_, Option<i64>>(3)?,
-                                row.get::<_, Option<i64>>(4)?,
-                            ))
-                        },
-                    )
-                    .optional()
-                    .map_err(db_err)?;
-                let Some((hash, role_str, failed, window_started, locked_until)) = row else {
-                    // Unknown account: one generic credential error, and do the
-                    // same memory-hard work as a real verification so response
-                    // timing does not reveal whether the username exists.
-                    let _ = hash_password(password.as_bytes());
-                    return Ok(Attempt::Failure(ControlApiError::AuthLocal));
-                };
-                let role = Role::parse(&role_str).ok_or_else(|| ControlApiError::Internal {
-                    message: format!("unknown local account role in storage: {role_str}"),
-                })?;
-                let locked = locked_until.is_some_and(|until| now < until);
-                if locked && !bypass_account_lock {
-                    // Run the same Argon2 verification a real attempt would, so a
-                    // locked account is not timing-distinguishable. The result is
-                    // ignored: a locked account never succeeds from an untrusted
-                    // source.
-                    let _ = password_matches(password.as_bytes(), &hash);
-                    return Ok(Attempt::Failure(ControlApiError::AuthLocked));
-                }
-
-                // Failures count only inside the window that started at the
-                // first failure; an elapsed window resets the counter.
-                let in_window =
-                    window_started.is_some_and(|start| now.saturating_sub(start) < window);
-                let effective_failed = if in_window { failed } else { 0 };
-                let window_start = if in_window { window_started } else { Some(now) };
-
-                if password_matches(password.as_bytes(), &hash) {
-                    conn.execute(
-                        "UPDATE local_accounts
-                         SET failed_attempts = 0, window_started = NULL, locked_until = NULL
-                         WHERE username = ?1",
-                        params![username_for_db],
-                    )
-                    .map_err(db_err)?;
-                    return Ok(Attempt::Success(role));
-                }
-
-                let attempts = effective_failed.saturating_add(1);
-                let locked = attempts >= max_attempts;
-                let locked_until = locked.then(|| now.saturating_add(window));
-                conn.execute(
-                    "UPDATE local_accounts
-                     SET failed_attempts = ?1, window_started = ?2, locked_until = ?3
-                     WHERE username = ?4",
-                    params![attempts, window_start, locked_until, username_for_db],
+            .with_read_conn(move |conn| {
+                conn.query_row(
+                    "SELECT password_hash, locked_until
+                     FROM local_accounts WHERE username = ?1",
+                    params![username_for_db],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?)),
                 )
-                .map_err(db_err)?;
-                Ok(Attempt::Failure(if locked {
-                    ControlApiError::AuthLocked
-                } else {
-                    ControlApiError::AuthLocal
-                }))
+                .optional()
+                .map_err(db_err)
             })
             .await?;
+
+        enum PreVerify {
+            UnknownAccount,
+            Locked,
+            Verified { hash: String, matches: bool },
+        }
+        let pre = match row {
+            // Unknown account: one generic credential error, and do the same
+            // memory-hard work as a real verification so response timing does
+            // not reveal whether the username exists.
+            None => {
+                let password = password.clone();
+                tokio::task::spawn_blocking(move || {
+                    let _ = hash_password(password.as_bytes());
+                })
+                .await
+                .map_err(join_err)?;
+                PreVerify::UnknownAccount
+            }
+            Some((hash, locked_until)) => {
+                let locked = locked_until.is_some_and(|until| now < until);
+                let password = password.clone();
+                let hash_for_verify = hash.clone();
+                let (burn, verify) = tokio::task::spawn_blocking(move || {
+                    if locked && !bypass_account_lock {
+                        // Run the same Argon2 verification a real attempt
+                        // would, so a locked account is not timing-
+                        // distinguishable. The result is ignored: a locked
+                        // account never succeeds from an untrusted source.
+                        (
+                            true,
+                            password_matches(password.as_bytes(), &hash_for_verify),
+                        )
+                    } else {
+                        (
+                            false,
+                            password_matches(password.as_bytes(), &hash_for_verify),
+                        )
+                    }
+                })
+                .await
+                .map_err(join_err)?;
+                if burn {
+                    PreVerify::Locked
+                } else {
+                    PreVerify::Verified {
+                        hash,
+                        matches: verify,
+                    }
+                }
+            }
+        };
+
+        let attempt = match pre {
+            PreVerify::UnknownAccount => Attempt::Failure(ControlApiError::AuthLocal),
+            // Decided from the reader snapshot: an account unlocked a
+            // millisecond after the read is refused once; the retry succeeds.
+            PreVerify::Locked => Attempt::Failure(ControlApiError::AuthLocked),
+            PreVerify::Verified { hash, matches } => {
+                let username_for_db = username.clone();
+                // Short writer hold: one primary-key read plus one UPDATE.
+                self.db
+                    .with_conn(move |conn| {
+                        let row = conn
+                            .query_row(
+                                "SELECT password_hash, role, failed_attempts, window_started, locked_until
+                                 FROM local_accounts WHERE username = ?1",
+                                params![username_for_db],
+                                |row| {
+                                    Ok((
+                                        row.get::<_, String>(0)?,
+                                        row.get::<_, String>(1)?,
+                                        row.get::<_, i64>(2)?,
+                                        row.get::<_, Option<i64>>(3)?,
+                                        row.get::<_, Option<i64>>(4)?,
+                                    ))
+                                },
+                            )
+                            .optional()
+                            .map_err(db_err)?;
+                        let Some((stored_hash, role_str, failed, window_started, locked_until)) =
+                            row
+                        else {
+                            // The account vanished between the read and the
+                            // update (replaced while logging in): one generic
+                            // credential error, like an unknown account.
+                            return Ok(Attempt::Failure(ControlApiError::AuthLocal));
+                        };
+                        if stored_hash != hash {
+                            // Replaced while logging in: the verification above
+                            // ran against the old hash and proves nothing about
+                            // the stored one.
+                            return Ok(Attempt::Failure(ControlApiError::AuthLocal));
+                        }
+                        let role = Role::parse(&role_str).ok_or_else(|| {
+                            ControlApiError::Internal {
+                                message: format!(
+                                    "unknown local account role in storage: {role_str}"
+                                ),
+                            }
+                        })?;
+                        let locked = locked_until.is_some_and(|until| now < until);
+                        if locked && !bypass_account_lock {
+                            // Locked by a concurrent attempt while this one was
+                            // verifying.
+                            return Ok(Attempt::Failure(ControlApiError::AuthLocked));
+                        }
+
+                        // Failures count only inside the window that started at
+                        // the first failure; an elapsed window resets the counter.
+                        let in_window =
+                            window_started.is_some_and(|start| now.saturating_sub(start) < window);
+                        let effective_failed = if in_window { failed } else { 0 };
+                        let window_start = if in_window { window_started } else { Some(now) };
+
+                        if matches {
+                            conn.execute(
+                                "UPDATE local_accounts
+                                 SET failed_attempts = 0, window_started = NULL, locked_until = NULL
+                                 WHERE username = ?1",
+                                params![username_for_db],
+                            )
+                            .map_err(db_err)?;
+                            return Ok(Attempt::Success(role));
+                        }
+
+                        let attempts = effective_failed.saturating_add(1);
+                        let locked = attempts >= max_attempts;
+                        let locked_until = locked.then(|| now.saturating_add(window));
+                        conn.execute(
+                            "UPDATE local_accounts
+                             SET failed_attempts = ?1, window_started = ?2, locked_until = ?3
+                             WHERE username = ?4",
+                            params![attempts, window_start, locked_until, username_for_db],
+                        )
+                        .map_err(db_err)?;
+                        Ok(Attempt::Failure(if locked {
+                            ControlApiError::AuthLocked
+                        } else {
+                            ControlApiError::AuthLocal
+                        }))
+                    })
+                    .await?
+            }
+        };
 
         let (result, error_code) = match &attempt {
             Attempt::Success(_) => ("ok", None),
@@ -742,6 +858,13 @@ pub(crate) async fn local_login(
         .authenticate_from(source, &req.username, req.password)
         .await?;
     local_session_response(&state, peer, &headers, actor_id, role).await
+}
+
+/// Maps a blocking-pool join failure to the internal error code.
+fn join_err(err: tokio::task::JoinError) -> ControlApiError {
+    ControlApiError::Internal {
+        message: err.to_string(),
+    }
 }
 
 /// Argon2id hash of `password` as a PHC string (`$argon2id$v=19$…`).

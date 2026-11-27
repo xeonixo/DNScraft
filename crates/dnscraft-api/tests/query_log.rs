@@ -1013,6 +1013,36 @@ async fn query_log_retention_deletes_rows_outside_the_configured_window() {
 }
 
 #[tokio::test]
+async fn query_log_retention_deletes_every_row_across_chunk_boundaries() {
+    let (log, clock) = harness(dnscraft_api::QueryLogConfig {
+        retention_days: 1,
+        ..dnscraft_api::QueryLogConfig::default()
+    })
+    .await;
+
+    // Store twice the retention chunk size (5000) plus a partial chunk while
+    // the rows are inside the window...
+    let total: usize = 10_002;
+    for chunk in (0..total).step_by(1000) {
+        let events: Vec<_> = (chunk..(chunk + 1000).min(total))
+            .map(|i| sample_event(at_secs(BASE_SECS - 60 - i as u64), i))
+            .collect();
+        log.insert_batch(events).await.unwrap();
+    }
+    // ...then age them all out at once: the chunked delete must keep looping
+    // until every chunk is gone, not stop after the first bounded commit.
+    clock.advance(Duration::from_secs(2 * 86_400));
+    assert_eq!(log.apply_retention().await.unwrap(), total);
+    assert!(
+        log.list(&default_filter())
+            .await
+            .unwrap()
+            .records
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn query_log_why_blocked_returns_the_full_decision_record() {
     let (log, _clock) = harness(dnscraft_api::QueryLogConfig::default()).await;
     log.insert_batch(vec![sample_event(at_secs(BASE_SECS - 1), 0)])

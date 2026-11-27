@@ -106,6 +106,10 @@ fn hydrate_from_row(
 /// Largest batch drained from the channel before one SQLite transaction.
 const BATCH_MAX: usize = 1024;
 
+/// Expired `query_log` rows deleted per retention transaction; bounds each
+/// commit (and the WAL frames it appends) while a large window ages out.
+const RETENTION_CHUNK: usize = 5_000;
+
 /// Live-stream queue per subscriber, in events (WX2).
 const STREAM_QUEUE: usize = 512;
 /// Live streams one principal may hold open (WX2).
@@ -546,44 +550,31 @@ impl QueryLog {
         let node_id = self.node_id.clone();
         let enricher = self.enricher.clone();
         let now_us = self.db.now_unix().saturating_mul(1_000_000);
+        // Row preparation (enrichment lookup, JSON build, two serializations per
+        // row) is pure CPU work: run it before taking the writer mutex, so the
+        // lock only covers SQL.
+        let mut rows = Vec::with_capacity(events.len());
+        for event in &events {
+            if event.loggable {
+                rows.push(prepare_row(event, &node_id, &config, enricher.as_deref())?);
+            }
+        }
+        let cutoff =
+            now_us.saturating_sub(i64::from(config.retention_days).saturating_mul(MICROS_PER_DAY));
+        let seq_key = outbox_key(SEQ_ALLOC_PREFIX, &node_id);
         let ids = db
             .with_conn(move |conn| {
-                let mut rows = Vec::with_capacity(events.len());
-                for event in &events {
-                    if event.loggable {
-                        rows.push(prepare_row(event, &node_id, &config, enricher.as_deref())?);
-                    }
-                }
-                let cutoff = now_us.saturating_sub(
-                    i64::from(config.retention_days).saturating_mul(MICROS_PER_DAY),
-                );
+                // Retention keeps the window bounded without an extra timer task.
+                // It stays driven from `query_log(time)` (an EXISTS probe per
+                // detail row once scanned the whole detail table, 11 s on 190k
+                // rows) and deletes in bounded chunks, each in its own
+                // transaction, so no single commit grows the WAL by the whole
+                // expired window at once.
+                delete_expired_chunked(conn, cutoff)?;
                 let tx = conn.transaction().map_err(db_err)?;
-                // Retention is an indexed range delete; running it with each batch
-                // keeps the window bounded without an extra timer task. Driven from
-                // `query_log(time)`: an EXISTS probe per detail row scanned the whole
-                // detail table (11 s on 190k rows) while holding the writer lock.
-                tx.execute(
-                    "DELETE FROM query_log_detail
-                     WHERE (node_id, id) IN (
-                         SELECT node_id, id FROM query_log WHERE time < ?1
-                     )",
-                    params![cutoff],
-                )
-                .map_err(db_err)?;
-                tx.execute(
-                    "DELETE FROM query_log_record
-                     WHERE (node_id, id) IN (
-                         SELECT node_id, id FROM query_log WHERE time < ?1
-                     )",
-                    params![cutoff],
-                )
-                .map_err(db_err)?;
-                tx.execute("DELETE FROM query_log WHERE time < ?1", params![cutoff])
-                    .map_err(db_err)?;
                 // The per-node `seq` is allocated in this same transaction: a
                 // crash can roll the rows and the cursor back together, never
                 // leaving a logged query without an outbox position.
-                let seq_key = outbox_key(SEQ_ALLOC_PREFIX, &node_id);
                 let first_seq = read_counter(&tx, &seq_key, 1)?;
                 {
                     let mut stmt = tx
@@ -675,26 +666,7 @@ impl QueryLog {
             .saturating_mul(1_000_000)
             .saturating_sub(window);
         self.db
-            .with_conn(move |conn| {
-                conn.execute(
-                    "DELETE FROM query_log_detail
-                     WHERE (node_id, id) IN (
-                         SELECT node_id, id FROM query_log WHERE time < ?1
-                     )",
-                    params![cutoff],
-                )
-                .map_err(db_err)?;
-                conn.execute(
-                    "DELETE FROM query_log_record
-                     WHERE (node_id, id) IN (
-                         SELECT node_id, id FROM query_log WHERE time < ?1
-                     )",
-                    params![cutoff],
-                )
-                .map_err(db_err)?;
-                conn.execute("DELETE FROM query_log WHERE time < ?1", params![cutoff])
-                    .map_err(db_err)
-            })
+            .with_conn(move |conn| delete_expired_chunked(conn, cutoff))
             .await
     }
 
@@ -899,7 +871,7 @@ impl QueryLog {
         let max = i64::try_from(max.max(1)).unwrap_or(i64::MAX);
         let node_id = self.node_id.clone();
         self.db
-            .with_conn(move |conn| {
+            .with_read_conn(move |conn| {
                 let mut stmt = conn
                     .prepare(
                         "SELECT q.seq, q.id, q.time, q.source_ip, q.query_name, q.listener_id,
@@ -1000,7 +972,7 @@ impl QueryLog {
         let node_id = node_id.to_owned();
         let seq: i64 = self
             .db
-            .with_conn(move |conn| highest_contiguous_seq(conn, &node_id))
+            .with_read_conn(move |conn| highest_contiguous_seq(conn, &node_id))
             .await?;
         Ok(u64::try_from(seq).unwrap_or_default())
     }
@@ -1196,7 +1168,7 @@ impl QueryLog {
         let key = outbox_key(ACKED_SEQ_PREFIX, &self.node_id);
         let node_id = self.node_id.clone();
         self.db
-            .with_conn(move |conn| {
+            .with_read_conn(move |conn| {
                 let acked = read_counter(conn, &key, 0)?;
                 let oldest: Option<i64> = conn
                     .query_row(
@@ -1717,6 +1689,57 @@ struct PreparedRow {
     record: String,
     detail: Option<String>,
     cached: i64,
+}
+
+/// Deletes `query_log` rows older than `cutoff` together with their
+/// `query_log_detail`/`query_log_record` children, in bounded chunks.
+///
+/// Children and parents both key on `(node_id, id)`, so each pair delete is an
+/// exact primary-key lookup and no `IN (SELECT …)` list of the whole expired
+/// window is materialized. Each chunk commits its own transaction, so no
+/// single commit grows the WAL by the whole window while it ages out. When
+/// nothing is expired the cost is one indexed probe. Returns the number of
+/// deleted `query_log` rows.
+fn delete_expired_chunked(conn: &mut Connection, cutoff: i64) -> Result<usize, ControlApiError> {
+    let mut deleted = 0usize;
+    loop {
+        let pairs: Vec<(String, String)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT node_id, id FROM query_log WHERE time < ?1
+                     ORDER BY time LIMIT ?2",
+                )
+                .map_err(db_err)?;
+            let rows = stmt
+                .query_map(params![cutoff, RETENTION_CHUNK as i64], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(db_err)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db_err)?
+        };
+        if pairs.is_empty() {
+            return Ok(deleted);
+        }
+        let tx = conn.transaction().map_err(db_err)?;
+        {
+            let mut detail = tx
+                .prepare("DELETE FROM query_log_detail WHERE node_id = ?1 AND id = ?2")
+                .map_err(db_err)?;
+            let mut record = tx
+                .prepare("DELETE FROM query_log_record WHERE node_id = ?1 AND id = ?2")
+                .map_err(db_err)?;
+            let mut parent = tx
+                .prepare("DELETE FROM query_log WHERE node_id = ?1 AND id = ?2")
+                .map_err(db_err)?;
+            for (node_id, id) in &pairs {
+                detail.execute(params![node_id, id]).map_err(db_err)?;
+                record.execute(params![node_id, id]).map_err(db_err)?;
+                parent.execute(params![node_id, id]).map_err(db_err)?;
+            }
+        }
+        tx.commit().map_err(db_err)?;
+        deleted += pairs.len();
+    }
 }
 
 fn prepare_row(
